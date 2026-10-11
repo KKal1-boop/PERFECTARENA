@@ -345,6 +345,24 @@ async function suiteArenaCity(page) {
     `missing: ${(st?.missingTextures ?? []).join(', ')}`);
   check('the player is standing on the city ground', st?.grounded === true, `grounded=${st?.grounded} y=${st?.feet?.[1]} spawn=${JSON.stringify(st?.spawn)}`);
 
+  // The arrival direction must be the open one. A city's start point is a passage
+  // through the perimeter wall, so the default yaw would put the player's first
+  // frame against the wall beside them: walking forward from the spawn has to go
+  // somewhere without touching the mouse or the look API at all.
+  const arrival = await page.evalJs('window.__debug.state()');
+  await page.pressKey('KeyW', true);
+  await new Promise((r) => setTimeout(r, 2500));
+  await page.pressKey('KeyW', false);
+  const walked = await page.evalJs('window.__debug.state()');
+  const travelled = Math.hypot(walked.feet[0] - arrival.feet[0], walked.feet[2] - arrival.feet[2]);
+  // Walking covers about a unit a second, and a capsule facing a wall it is
+  // already touching covers a third of one, so 2.5 s of walking separates
+  // "facing the city" from "facing the wall beside the gate" by an order of
+  // magnitude. Measured: 2.7 units here, 0.19 with the default yaw.
+  check('the player arrives facing into the city, not at a wall', travelled > 1.5,
+    `yaw ${arrival.yaw.toFixed(2)} travelled ${travelled.toFixed(2)}`);
+  await page.evalJs(`window.__debug.teleport(${arrival.feet.join(', ')})`);
+
   // A city gate is a tunnel through the wall, so the spawn's vantage is a wall
   // and not a sky. Look down a street from the middle of the city instead: that is
   // the vantage the picture checks are about.

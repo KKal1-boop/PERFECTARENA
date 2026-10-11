@@ -93,6 +93,48 @@ function inputOf(keys) {
 }
 
 /**
+ * Which way to face on arrival: the most open of the four grid directions.
+ *
+ * Worth doing because a spawn is not always a room. A city's start point is a
+ * two-cell passage *through* the perimeter wall, so facing the default `yaw 0`
+ * puts the first frame of the game against a wall — measured, and visible in
+ * `tests/shots/m4-city.png` before this existed. Dungeons get the same treatment
+ * for free: an arrival cell in a dead end should not stare at the corner.
+ *
+ * @param {import('../game/mifLevel.js').ArenaLevel} level
+ * @param {number} row  the spawn's row (world X)
+ * @param {number} col  the spawn's column (world Z)
+ * @param {number} [reach]  how far to look ahead before giving up
+ * @returns {number} yaw in radians
+ */
+export function openYaw(level, row, col, reach = 12) {
+  const { width, depth, cells } = level;
+  const walkable = (r, c) => {
+    if (r < 0 || c < 0 || r >= depth || c >= width) return false;
+    const cell = cells[r * width + c];
+    return !cell.solid && !cell.floor.chasm;
+  };
+  // `row`/`col` are cell-unit coordinates, so the containing cell is `floor` — a
+  // spawn sits at the *centre* of a cell (k + 0.5) and `round` would step into the
+  // neighbour, which is how a gate passage reads as open when its far end is a
+  // wall. Measured: with `round`, `?city` faced the wall at the end of the gate.
+  const r0 = Math.floor(row);
+  const c0 = Math.floor(col);
+  // (row step, col step, yaw) — yaw 0 faces +Z, which is the column axis.
+  const directions = [[0, 1, 0], [1, 0, Math.PI / 2], [0, -1, Math.PI], [-1, 0, -Math.PI / 2]];
+  let best = { score: -1, yaw: 0 };
+  for (const [dRow, dCol, yaw] of directions) {
+    let score = 0;
+    for (let step = 1; step <= reach; step++) {
+      if (!walkable(r0 + dRow * step, c0 + dCol * step)) break;
+      score = step;
+    }
+    if (score > best.score) best = { score, yaw };
+  }
+  return best.yaw;
+}
+
+/**
  * Read the URL's city request, if the page asked for one.
  *
  * `?city` alone means a city-state at the default seed; `?city=town` and
@@ -251,6 +293,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   await loadLevel(startIndex);
+
+  // Arrive facing out of the gate, the doorway or the room rather than into it.
+  if (!params.has('shot') && !params.has('yaw')) {
+    cam.yaw = openYaw(current.level, current.spawn.x, current.spawn.z);
+  }
 
   // ── input ──────────────────────────────────────────────────────────────────
   addEventListener('keydown', (e) => {

@@ -48,8 +48,8 @@ original's draw order, with Arena's own RNG.
 | Evidence | Result |
 |---|---|
 | `node --test tests/unit/*.test.mjs` | **22/22** — 13 MIF + 9 city |
-| `node tests/run-browser.mjs city` | **28/28** in headless Chrome with WebGL2 |
-| `node tests/run-browser.mjs` (all four suites) | **78/78**, no console errors, no WebGL misuse warnings |
+| `node tests/run-browser.mjs city` | **29/29** in headless Chrome with WebGL2 |
+| `node tests/run-browser.mjs` (all four suites) | **79/79**, no console errors, no WebGL misuse warnings |
 | `node tools/city-dump.mjs CITY1.MIF --slots` | 36/36 slots stamped, none missing, plan printed slot by slot |
 | `node tools/lib/shotascii.mjs tests/shots/m4-city.png` | a street-level frame: sky above, sunlit buildings, ground below |
 
@@ -91,6 +91,15 @@ original's draw order, with Arena's own RNG.
 4. **The table's `NB` variation count disagrees with the data** (10 vs 12). Kept as
    the original's, with the eight unreachable records asserted by name so the
    disagreement stays visible instead of quietly shrinking the city.
+5. **Arriving at a city gate stared at a wall.** A city's start point is a two-cell
+   passage *through* the perimeter wall, so the default `yaw 0` put the player's
+   first frame against the end of the passage — visible in `tests/shots/m4-city.png`
+   before the fix. The player now arrives facing the most open of the four grid
+   directions (`openYaw`), which took two attempts: the first version rounded the
+   spawn's cell-unit coordinates instead of flooring them, so it stepped into the
+   neighbour cell, read the passage as open, and the arrival walk measured 0.90
+   units instead of 8.40. That is what the `arrives facing into the city` check is
+   for.
 
 ### Broken / not yet established (UNVERIFIED)
 
