@@ -27,7 +27,7 @@
 // 249/250 = temperate, 251/252 = mountain, 253/254 = desert, which also matches the
 // order the original tests them in. Logged as S16 in PROGRESS.md.
 
-import { parseCityData, settlementsOf, questDungeonsOf, locationGlobalPoint, WORLD_MAP_SIZE } from '../arena/cityDataFile.js';
+import { parseCityData, questDungeonsOf, locationGlobalPoint, WORLD_MAP_SIZE } from '../arena/cityDataFile.js';
 import { citySeed, dungeonSeed, mainQuestDungeonMifName, wildernessSeed } from '../arena/cityDataSeeds.js';
 
 /** The terrain pixel that means open sea. */
@@ -214,4 +214,3 @@ export async function loadWorldMap(data) {
   return new WorldMap({ cityData, terrain });
 }
 
-void settlementsOf;
