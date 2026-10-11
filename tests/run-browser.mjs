@@ -298,7 +298,127 @@ async function suiteArenaInterior(page) {
   check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
 }
 
-const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior };
+/**
+ * Suite: Milestone 4 — an assembled Arena city.
+ *
+ * A city is the one level in the game that exists in no file: it is a skeleton
+ * plus a seeded grid of block `.MIF`s. So this suite checks the *assembly* (the
+ * plan, the block names, the location INF) as well as the picture and the walk —
+ * and it checks that the same seed gives the same city, because without that
+ * none of the rest would be reproducible.
+ */
+async function suiteArenaCity(page) {
+  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
+  const q = `arena=${encodeURIComponent(arena)}`;
+  await page.goto(`http://localhost:${PORT}/?city&seed=20232&${q}`);
+  try {
+    await page.waitFor('window.__ready === true || !!window.__bootError', { label: 'boot', timeoutMs: 60000 });
+  } catch (e) {
+    const diag = await page.evalJs('JSON.stringify({ href: location.href, boot: window.__bootError || null, errs: window.__debug?.pageErrors })');
+    throw new Error(`${e.message}; page state ${diag}`);
+  }
+  const bootError = await page.evalJs('window.__bootError || null');
+  check('the city boots without a boot error', !bootError, bootError ? String(bootError).slice(0, 400) : '');
+  await page.waitFor('window.__debug.state().painted > 3', { label: 'frames' });
+
+  const st = await page.evalJs('window.__debug.state()');
+  const city = st?.city;
+  check('the scene reports a generated city', st?.scene === 'interior' && !!city, `${st?.map} city=${!!city}`);
+  check('the skeleton is a city template with no INFO of its own', city?.kind === 'city' && /^CITYW?\d\.MIF$/.test(st?.map ?? ''), `${st?.map} kind=${city?.kind}`);
+  check('the block grid is six blocks per side', city?.blocksPerSide === 6, `blocksPerSide=${city?.blocksPerSide}`);
+  check('the grid was placed inside the skeleton', city?.start?.x === 3 && city?.start?.z === 3, JSON.stringify(city?.start));
+  check('every slot of the plan was accounted for', city && city.stamped + city.reserved.length === 36,
+    `${city?.stamped} stamped + ${city?.reserved?.length} reserved of 36`);
+  check('every block the plan named exists in this Arena install', (city?.missing ?? ['?']).length === 0,
+    `missing: ${(city?.missing ?? []).join(', ')}`);
+  check('the blocks are real city block files', (city?.blocks ?? []).every((n) => /^(EQ|MG|NB|TP|TV|TS|BS)BD\d+[A-D]\.MIF$/.test(n)),
+    `${city?.blocks?.length} blocks, e.g. ${city?.blocks?.slice(0, 3).join(', ')}`);
+  // A skeleton has no `INFO`, so the INF can only have come from the location.
+  check('the textures came from the location INF, not the map', /^TCN\.INF$/.test(st?.inf ?? ''), `inf=${st?.inf}`);
+
+  check('the assembled city decoded into real geometry', (st?.quads ?? 0) > 3000, `${st?.quads} quads, ${st?.tris} triangles`);
+  check('the city is far more built than its skeleton', (st?.stats?.wall ?? 0) > 3000, JSON.stringify(st?.stats));
+  check('building entrances are menu edges', (st?.stats?.edge ?? 0) > 0, `edges=${st?.stats?.edge}`);
+  check('the city has open sky over its streets', st?.openSky === true && (st?.stats?.ceilinged ?? 0) > 0,
+    `openSky=${st?.openSky} ceilinged=${st?.stats?.ceilinged}`);
+  check('every sub-mesh has its texture (no untextured surface)', (st?.missingTextures ?? ['?']).length === 0,
+    `missing: ${(st?.missingTextures ?? []).join(', ')}`);
+  check('the player is standing on the city ground', st?.grounded === true, `grounded=${st?.grounded} y=${st?.feet?.[1]} spawn=${JSON.stringify(st?.spawn)}`);
+
+  // A city gate is a tunnel through the wall, so the spawn's vantage is a wall
+  // and not a sky. Look down a street from the middle of the city instead: that is
+  // the vantage the picture checks are about.
+  await page.evalJs('window.__debug.teleportCell(63, 63); window.__debug.look(0, 0.22)');
+  await new Promise((r) => setTimeout(r, 200));
+  const decoded = decodePng(await page.screenshot(path.join(SHOTS, 'm4-city.png')));
+  const stats = imageStats(decoded);
+  check('the city screenshot is not blank', stats.distinctColors > 30 && stats.dominantShare < 0.95,
+    `${stats.distinctColors} colours, dominant ${(stats.dominantShare * 100).toFixed(1)}%`);
+  const edges = Math.max(...[0.35, 0.5, 0.65].map((f) => scanlineEdges(decoded, Math.floor(decoded.height * f))));
+  check('the city frame has hard colour edges', edges > 12, `${edges} edges along the best scanline`);
+  // Outdoors, so unlike a dungeon the top of the frame is sky.
+  const bands = bandMeans(decoded);
+  check('the top of the city frame is sky (blue-dominant)', bands.top.b > bands.top.r + 10 && bands.top.b > 60,
+    `top rgb ${fmt(bands.top)}`);
+
+  // ── walking into a building ──────────────────────────────────────────────
+  const target = await page.evalJs(`(() => {
+    const d = window.__debug;
+    const s = d.state();
+    const [cols, rows] = s.size;
+    for (let row = 1; row < rows - 1; row++) {
+      for (let col = 1; col < cols - 1; col++) {
+        const here = d.cellAt(row, col);
+        const ahead = d.cellAt(row, col + 1);
+        if (here && !here.solid && !here.chasm && ahead && ahead.solid && ahead.kind === 'wall') return { row, col };
+      }
+    }
+    return null;
+  })()`);
+  check('the city contains a wall to walk into', !!target, JSON.stringify(target));
+  if (target) {
+    await page.evalJs(`window.__debug.teleportCell(${target.row}, ${target.col}); window.__debug.look(0, 0)`);
+    await new Promise((r) => setTimeout(r, 150));
+    const before = await page.evalJs('window.__debug.state()');
+    await page.pressKey('KeyW', true);
+    await new Promise((r) => setTimeout(r, 1800));
+    await page.pressKey('KeyW', false);
+    const after = await page.evalJs('window.__debug.state()');
+    const dz = after.feet[2] - before.feet[2];
+    const wallFace = (target.col + 1) * 2.5;
+    check('holding W walks the player down the street', dz > 0.4, `Δz=${dz.toFixed(2)}`);
+    check('a building wall stops the player', after.feet[2] < wallFace - 0.25 && after.feet[2] > wallFace - 2.5,
+      `z=${after.feet[2].toFixed(2)}, wall face at ${wallFace.toFixed(2)}`);
+    check('the player did not fall through the city ground', after.feet[1] > 1.5 && after.feet[1] < 3.5, `y=${after.feet[1].toFixed(2)}`);
+  }
+
+  // ── the same seed is the same city, and a different seed is not ──────────
+  await page.goto(`http://localhost:${PORT}/?city&seed=99&${q}`);
+  await page.waitFor('window.__ready === true', { label: 'boot 2', timeoutMs: 60000 });
+  const other = await page.evalJs('window.__debug.state()');
+  check('a different seed is a different city',
+    JSON.stringify(other?.city?.blocks) !== JSON.stringify(city?.blocks),
+    `seed 99: ${other?.city?.blocks?.slice(0, 3).join(', ')}`);
+
+  // ── a town is the same pipeline with a smaller grid and another skeleton ──
+  await page.goto(`http://localhost:${PORT}/?city=town&seed=5&${q}`);
+  await page.waitFor('window.__ready === true', { label: 'boot 3', timeoutMs: 60000 });
+  await page.waitFor('window.__debug.state().painted > 3', { label: 'frames 3' });
+  const town = await page.evalJs('window.__debug.state()');
+  check('a town generates too, from the town skeleton', town?.city?.kind === 'town' && /^TOWNW?\d\.MIF$/.test(town?.map ?? ''),
+    `${town?.map} ${town?.city?.blocksPerSide}×${town?.city?.blocksPerSide} · ${town?.quads} quads`);
+  check('a town has its own guaranteed services', town?.city?.blocks?.some((b) => b.startsWith('MG')), town?.city?.blocks?.join(' '));
+  await page.screenshot(path.join(SHOTS, 'm4-town.png'));
+
+  const glWarnings = page.consoleMessages().filter((m) => /INVALID_OPERATION|INVALID_VALUE|GL_INVALID|GL_OUT_OF_MEMORY/.test(m.text));
+  check('no WebGL misuse warnings', glWarnings.length === 0, glWarnings.length ? `${glWarnings.length}× ${glWarnings[0].text}` : '');
+  const errs = realErrors(page.consoleErrors());
+  check('no console errors', errs.length === 0, errs.map((e) => e.text).join(' | ').slice(0, 400));
+  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
+  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
+}
+
+const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity };
 
 async function main() {
   if (!findBrowser()) {

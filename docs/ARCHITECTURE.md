@@ -132,6 +132,14 @@ world map (continental)  ──pick province──▶  province map  ──pick 
   them means the decoding can be tested (and printed as ASCII) on its own, and it
   is: `tools/lib/mapascii.mjs` prints a decoded level, which is how the bitfields
   were established.
+* **`game/cityPlan.js` is the one place a level is not a file.** A city has no map
+  to load: the module seeds `game/arenaRandom.js` with the city seed and stamps a
+  grid of 20×20 block `.MIF`s (`game/tables/cityBlocks.js`) into a *skeleton* `.MIF`,
+  producing the same shape `arena/mifFile.js` produces — so the decoder, mesher,
+  collider and renderer all need nothing new for a city (DECISIONS.md D15). Its
+  INF comes from the location (`cityInfName`) rather than the map, because a
+  skeleton has no `INFO` chunk. This is the seam Milestone 5's world map plugs into:
+  climate + city seed + settlement kind in, a city out.
 * **Wilderness** is assembled from RMD blocks around the settlement using the
   settlement seed, matching Arena's 64×64-block area with the town in the middle
   128×128 cells. Only a window of blocks around the player is built (Milestone 5).

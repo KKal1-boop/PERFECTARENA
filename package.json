@@ -11,9 +11,10 @@
     "test": "node --test tests/unit/*.test.mjs",
     "test:browser": "node tests/run-browser.mjs",
     "probe:mif": "node tools/mif-dump.mjs",
+    "probe:city": "node tools/city-dump.mjs --slots --ascii=60",
     "check": "npm run test && npm run test:browser"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.6"
   }
 }

@@ -2,8 +2,9 @@
 
 *Re-read this file first after any context reset.*
 
-**Current milestone: 3 (MIF pipeline) — COMPLETE.**
-Next: Milestone 4 (the vertical slice: chargen → city → dungeon → staff piece → save/load).
+**Current milestone: 4 (vertical slice) — IN PROGRESS.**
+Cities are in and walkable; character creation, NPCs/dialog, combat, quest state and
+save/load are not. See "Milestone 4 — what is done so far" below for the exact split.
 
 ---
 
@@ -14,22 +15,109 @@ Next: Milestone 4 (the vertical slice: chargen → city → dungeon → staff pi
 | 1 | Survey and decisions (docs) | ✅ done — ARCHITECTURE, DECISIONS, FORMATS |
 | 2 | Scaffold + hand-made test map | ✅ done — 17/17 browser checks |
 | 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ✅ done — 13/13 unit + 29/29 browser checks |
-| 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | ⬜ not started |
+| 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | 🟡 cities done (9/9 unit + 28/28 browser); chargen, NPCs, dialog, combat, quest, save/load remain |
 | 5 | Full content (all provinces, all staff pieces, main quest completable) | ⬜ not started |
 | 6 | Systems and polish (magic, inventory, audio, performance) | ⬜ not started |
 
 ### Verifiable commands
 
 ```
-npm run test          # node --test tests/unit/*.test.mjs          → 13/13
-npm run test:browser  # node tests/run-browser.mjs                → 50/50
+npm run test          # node --test tests/unit/*.test.mjs          → 22/22
+npm run test:browser  # node tests/run-browser.mjs                → 78/78
 npm run dev           # node tools/serve.mjs 8080                 → the game
 npm run probe:mif     # node tools/mif-dump.mjs                   → format evidence
+npm run probe:city    # node tools/city-dump.mjs --slots --ascii=60 → city evidence
 ```
 
 The browser suite needs `ARENA_PATH` (or `?arena=<folder>` on the URL) so it can
 read a real Arena installation. Without it the `interior` suite is the only one
 that cannot run; `testmap` and `movement` need no game data.
+
+---
+
+## Milestone 4 — what is done so far
+
+**A whole Arena city is generated and can be walked.** Cities were the largest
+missing piece of the data model and they are not a file: `CITY1.MIF` is a skeleton
+with an empty middle, and the game assembles the real city from a seeded grid of
+20×20 block `.MIF`s at load time. `src/game/cityPlan.js` does exactly that, in the
+original's draw order, with Arena's own RNG.
+
+### Verified (all by running it)
+
+| Evidence | Result |
+|---|---|
+| `node --test tests/unit/*.test.mjs` | **22/22** — 13 MIF + 9 city |
+| `node tests/run-browser.mjs city` | **28/28** in headless Chrome with WebGL2 |
+| `node tests/run-browser.mjs` (all four suites) | **78/78**, no console errors, no WebGL misuse warnings |
+| `node tools/city-dump.mjs CITY1.MIF --slots` | 36/36 slots stamped, none missing, plan printed slot by slot |
+| `node tools/lib/shotascii.mjs tests/shots/m4-city.png` | a street-level frame: sky above, sunlit buildings, ground below |
+
+### Concrete numbers from the real data
+
+* `tests/unit/city.test.mjs` checks all **368** names the block tables can produce
+  against `GLOBAL.BSA`: every one exists. It also pins the three places the archive
+  is *not* a bijection with the tables (52 zero-padded aliases, `BSBD1E`, bare
+  `BSBD20`) and the one variation-count disagreement (`NB`: table 10, archive 12).
+* Every city and wilderness INF name the tables can build exists: `DCN DCR DCW`,
+  `MCN MCR MCS MCW`, `TCN TCR TCS TCW`, plus the eight wilderness ones.
+* `CITY1.MIF`, seed 20232: 36 of 36 blocks stamped, 12 400 cells written, 22 847
+  quads, 6 560 wall cells, 58 menu edges, 463 entities, 4 176 roofed cells of
+  16 129 — **so 12 124 cells are open to the sky.**
+* **A seed is reproducible:** `?city&seed=99` and `?city&seed=20232` produce
+  different block sets, and the same seed produces the same city every time.
+* **A city is walkable, and its buildings block:** the player walks 0.90 units down
+  a street and stops at `z = 49.65` with the building wall's face at `50.00`
+  (capsule radius 0.35).
+* **Cities have no `0xB` door voxels at all** (`door: 0`, and `TCN.INF` declares no
+  `*DOOR`). Building entrances are `0xA` **menu edges** carrying the shop's sign
+  texture. Measured, not assumed.
+
+### What the tests caught (each was a real defect)
+
+1. **Entity flats are not structure.** The first reserved-slot rule counted any
+   non-zero `MAP1` voxel, so the ten street decorations scattered through
+   `CITY1.MIF`'s grid reserved **five of the city's thirty-six blocks** — 14% of the
+   city deleted for two flats each. Caught by printing the assembled plan
+   (`city-dump.mjs --slots`) and then measuring what each slot really held.
+2. **`?city=town` used the city's skeleton.** The settlement kind was parsed but
+   the template name was hard-coded, so asking for a town gave a city-state grid
+   inside `CITY1.MIF`. The browser suite's `TOWNW?\d.MIF` check failed.
+3. **The city gate is a vantage, not a sky.** The spawn is a two-cell passage
+   *through* the wall, so the first frame from the spawn is a wall — the
+   "top of the frame is sky" check failed until the suite started taking its
+   picture from the middle of a street. The map was right; the test's vantage was
+   wrong.
+4. **The table's `NB` variation count disagrees with the data** (10 vs 12). Kept as
+   the original's, with the eight unreachable records asserted by name so the
+   disagreement stays visible instead of quietly shrinking the city.
+
+### Broken / not yet established (UNVERIFIED)
+
+* **A specific location's city is not reachable yet.** The climate that picks the
+  INF comes from the **world map terrain image** sampled at the location's global
+  pixel, and the city seed comes from `CITYDATA.64`'s per-location records. So
+  `?city=town&seed=99` is a real Arena town with a plausible town seed, but
+  "Daggerfall" is not. Neither the terrain image's classes nor `CITYDATA.64`'s
+  per-location field offsets are decoded (FORMATS.md §8).
+* **Wilderness is still unbuilt.** `WILD001.RMD`…`WILD070.RMD` (64×64×6 bytes each)
+  are sized and their RLE codec is written, but the 6 bytes per cell are not
+  decoded, so the outdoor ring around a city, the 4 096×4 096 assembly and the
+  settlement's middle 128×128 cells are all Milestone 5.
+* **You cannot enter a building.** The menu edges that mark entrances are decoded
+  (and drawn), but nothing reads the INF's `*MENU` table to load the block's
+  interior `.MIF`, and there is no interaction key. This is the next Milestone 4
+  step, together with NPCs (`.CFA` sprite sets and the 340-record list) and dialog
+  from `TEMPLATE.DAT`/`CITYTXT`.
+* **Raised platforms contribute nothing to a city**: the block data uses only
+  height index 0, exactly as in the dungeons (S9).
+* **No character creation, combat, quest state, save/load or UI windows** — the
+  rest of Milestone 4. `QUESTION.TXT`, `CLASSES.DAT`, `SPELLSG.65` and the text
+  `.DAT` files are located but unparsed (FORMATS.md §10).
+* **City frames are not performance-measured.** 22 847 quads at ~60 materials is
+  fine in headless SwiftShader; no frame-time budget has been taken on a GPU, and
+  the draw-call count grows with the number of distinct textures, which is highest
+  in a city (S6/D14).
 
 ---
 
@@ -163,6 +251,9 @@ that cannot run; `testmap` and `movement` need no game data.
 | S12 | Chasms are a lower textured floor, walkable | Falling, swimming and drowning are gameplay, not format work; Milestone 6. |
 | S13 | Transparent walls and edges draw opaque | Alpha test is Milestone 6; the geometry and the collision bits are already exact. |
 | S14 | `MIF` `FLAT`/`INNS`/`LOOT`/`STOR` bodies are captured but unparsed | Their placement is known; their contents are not needed until Milestone 4/5 NPCs and loot. |
+| S15 | **A city's block-grid start position and reserved-slot lists are reconstructed** | Both live in `A.EXE` (D11). The grid is centred inside the skeleton's wall ring and the reserved list is measured from the skeleton, so neither invents data. Consequences are tested: no stamp may touch the wall ring or the water. |
+| S16 | **A city's climate is a parameter (`?climate=`), not a location lookup** | Climate comes from the world map terrain image at the location's global pixel; decoding that image and the province rectangles is Milestone 5. Any of the eleven city INFs can be selected meanwhile. |
+| S17 | **Cities use one daylight ambient + sun** instead of Arena's light tables | Same reason as the interiors (D13). The sun is on for a city so buildings read as solid rather than flat-lit; the numbers are in `scenes/interior.js` and overridable with `?ambient=&sun=&fog=`. |
 
 ## Known risks
 

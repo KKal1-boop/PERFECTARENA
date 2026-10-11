@@ -2,19 +2,27 @@
 //
 //   node tools/lib/mapascii.mjs 39300577.MIF 0 40        # centre 40×40 of level 0
 //   node tools/lib/mapascii.mjs IMPPAL.MIF 0 50 0 0      # top-left 50×50
+//
+// A map with no `INFO` chunk of its own (every city skeleton) needs its INF named:
+//
+//   node tools/lib/mapascii.mjs CITY1.MIF 0 60 --inf=TCN.INF --map=city
 
 import { ArenaData } from '../../src/arena/arenaData.js';
 import { decodeLevel } from '../../src/game/mifLevel.js';
 import { nodeSource } from './nodeSource.mjs';
 
 const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
-const [name = '39300577.MIF', levelArg = '0', sizeArg = '40', x0Arg, z0Arg] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const flag = (name) => argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+const [name = '39300577.MIF', levelArg = '0', sizeArg = '40', x0Arg, z0Arg] = argv.filter((a) => !a.startsWith('--'));
+const mapType = flag('map') || 'interior';
 
 const data = new ArenaData(nodeSource(ARENA_PATH), { onWarn: () => {} });
 const mif = await data.mif(name);
 const level = mif.levels[Number(levelArg)];
-const inf = await data.inf(level.info.toUpperCase());
-const model = decodeLevel(level, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+const infName = (flag('inf') || level.info || '').toUpperCase();
+const inf = infName ? await data.inf(infName) : null;
+const model = decodeLevel(level, inf, { width: mif.width, depth: mif.height, mapType });
 
 const size = Number(sizeArg);
 const x0 = x0Arg !== undefined ? Number(x0Arg) : Math.max(0, Math.floor((mif.height - size) / 2));
@@ -25,7 +33,7 @@ const GLYPH = {
   transparent: 't', diagonal: '/', entity: 'e',
 };
 
-console.log(`${name} level ${levelArg}  ${mif.width}×${mif.height}  INF=${inf.name}  origin (${x0},${z0})`);
+console.log(`${name} level ${levelArg}  ${mif.width}×${mif.height}  INF=${inf ? inf.name : '(none)'}  origin (${x0},${z0})`);
 for (let row = z0; row < Math.min(z0 + size, mif.height); row++) {
   let line = '';
   for (let col = x0; col < Math.min(x0 + size, mif.width); col++) {

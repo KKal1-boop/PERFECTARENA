@@ -353,6 +353,127 @@ field offsets are being established in Milestone 5 (the province rectangle and t
 per-location map pixel live in there). `CITYDATA.65` is 11 052 bytes too but is a
 binary working copy — **UNVERIFIED**.
 
+## 8b. Cities and wilderness — the level that is not a file (**VERIFIED**)
+
+A dungeon is a `.MIF` you can point at. **A city is not.** There is no `CITY.INF`
+and no complete `CITY1.MIF` holding a city: the map is *assembled* at load time from
+a skeleton plus a grid of block `.MIF`s. This is why `?interior=CITY1.MIF` renders
+an empty walled field, and why every city needs the tables in
+`src/game/tables/cityBlocks.js` before it has textures at all.
+
+### The skeleton
+
+`CITY1..5.MIF`, `CITYW1..3.MIF`, `TOWN1..5.MIF`, `TOWNW1..2.MIF`,
+`VILLAGE1..5.MIF`, `VILLAGW1..2.MIF`. `W` variants are coastal. All are in
+`GLOBAL.BSA`, all have **one level**, and:
+
+* **no `NAME` and no `INFO` chunk.** `level.info` is `""`. The file cannot name its
+  own `.INF` — see "The INF" below. Measured on `CITY1.MIF` and `CITY2.MIF`.
+* a full `FLOR`/`MAP1`/`MAP2` triple of `width × height` voxels (127×127 for
+  `CITY1.MIF`, 128×128 for `CITY2.MIF`), plus the usual `FLAT`/`INNS`/`LOOT`/`STOR`
+  chunks that are still unparsed.
+* a **perimeter wall ring** two cells thick (rows/cols 0–1 and `dim-2…dim-1`),
+  broken by **gate passages** two cells wide. `CITY1.MIF` has its gates at row 1
+  columns 18–19 and 58–59, and `MAP1` also carries an arch (`0x9`) pair in the
+  row-0 wall above the second gate.
+* **water as chasm floors**: `CITYW1.MIF`'s `FLOR` high byte is `0xD` (wet chasm)
+  along its coastal edge and *inside* its block grid, so a block slot that the
+  water covers must be left alone.
+* `startPoints` are the gates. `CITY1.MIF` = `(7616,192)` → world `(1.5, 59.5)`, which
+  is the north gate passage, and it is where the player starts.
+* the interior of the wall ring is **bare ground**: `CITY1.MIF` holds nothing there
+  but ten scattered entity flats (street furniture).
+
+### The blocks
+
+Every block is exactly **20×20 cells** and is named `<code>BD<variation><rotation>.MIF`:
+
+| Code | Type | Variations | Code | Type | Variations |
+|---|---|---:|---|---|---:|
+| `EQ` | equipment shop | 13 | `TV` | tavern | 15 |
+| `MG` | mages guild | 11 | `TS` | spacer (empty lot) | 11 |
+| `NB` | noble house | 10 (data has 12) | `BS` | houses / generic building | 20 |
+| `TP` | temple | 12 | | | |
+
+Rotations are `A`–`D`. `tests/unit/city.test.mjs` asserts, record by record, that
+**every name these tables can produce exists in `GLOBAL.BSA`**, which is the
+strongest available check on a table that lives in `A.EXE` (D5/D11).
+
+Three wrinkles in the shipped archive, all measured and all pinned by that test:
+
+* **Zero-padded aliases.** 52 records carry an extra leading zero — `EQBD09A`
+  beside `EQBD9A`, and `MGBD01..09` beside `MGBD1..9`. The generator emits `%d`
+  (unpadded), so the padded ones are aliases, not a second naming scheme.
+* **`NBBD11`/`NBBD12`** exist (8 records with rotations) although the variation
+  count is 10, so two noble-house variants are never drawn. Six of the seven codes
+  agree with the archive exactly, so the count is kept as the original's.
+* **`BSBD1E.MIF`** (a stray rotation letter) and **`BSBD20.MIF`** (no rotation) exist
+  and are not producible names.
+
+### The plan
+
+`blocksPerSide²` slots, row-major, drawn from one `ArenaRandom(citySeed)`:
+
+1. reserved slots are marked first (the original reads their indices from `A.EXE`);
+2. then six guaranteed placements, **in this order**: equipment, mages guild, noble
+   house, temple, tavern, spacer;
+3. then every remaining slot from `randomBlockType`: houses 45%, tavern 20%,
+   equipment 15%, temple 10%, noble house 10% (thresholds `0x7333`, `0xA666`,
+   `0xCCCC`, `0xE666` on a 16-bit draw);
+4. then, in slot order, each non-reserved block's name is drawn as it is stamped:
+   **rotation first, then variation**, with variation 0 promoted to 1.
+
+Draw order is the format. A slot that is already taken still consumes a draw
+(rejection sampling), and a block name consumes two more, so any deviation shifts
+every later slot: a city with the right blocks in the wrong places, rather than an
+error. Grid sizes: **city-state 6×6 (120×120 cells), town 5×5, village 4×4.**
+
+Measured on `CITY1.MIF`, seed 20232: 36 of 36 slots stamped, 12 400 cells written,
+22 847 quads, 6 560 wall cells, 58 menu edges, 463 entities, 4 176 roofed cells of
+16 129 (so 12 124 are open to the sky).
+
+### The INF — from the location, not the map
+
+`<climate><location><weather>.INF`, where climate is `T`emperate / `D`esert /
+`M`ountain, location is `C`ity or `W`ilderness, and weather is `N` (clear), `R`
+(overcast), `W` (rain), `S` (snow). Wilderness has no rain template, so overcast
+and rain both give `R`; a desert has no snow, so snow falls back to `N`.
+
+All eleven city INFs (`DCN DCR DCW`, `MCN MCR MCS MCW`, `TCN TCR TCS TCW`) and all
+eight wilderness ones (`DWN DWR`, `MWN MWR MWS`, `TWN TWR TWS`) are in the archive,
+which is what fixes the letter set. `TCN.INF` holds 59 textures, 57 flats and 16
+menus; its first textures are `T_NROAD`, `T_NSDWLK`, `T_NGRASS`, `T_NGRATE`,
+`T_NBRIDG`, `T_DEQ` — roads, sidewalks, grass, grates, bridges, then shop doors.
+The desert INF's equivalents are the same art without the `T_` prefix.
+
+Climate comes from the **world map terrain image**, sampled at the location's
+global pixel (`ArenaLocationUtils::getClimateType`) — a pixel is classified
+Temperate / Mountain / Desert / Sea. Reproducing a *specific* location therefore
+needs that image, its province rectangles and the terrain classes; this milestone
+takes the climate as a parameter (`?climate=`).
+
+### What a city's entrances look like (**VERIFIED, and not what you would guess**)
+
+A city has **no `0xB` door voxels at all.** `TCN.INF` declares no `*DOOR`
+directive, and a built city decodes to `door: 0`. What marks a building entrance is
+an **`0xA` edge voxel** whose texture index selects the shop's sign —
+`T_DEQ.IMG` for the equipment shop, for instance — which is what the game tests
+when you look at a building and press the interaction key. A city's `MAP2` still
+puts roofs over the buildings (4 176 cells on the seed above) while the streets
+stay `MAP2 == 0`, which is how "outdoors" is decided.
+
+### Reconstructed, not extracted
+
+`A.EXE` holds the block grid's start position and the reserved-slot lists per
+skeleton. Both are derived here instead (`blockStartPosition`, `detectReservedBlocks`)
+and labelled `RECONSTRUCTED` in `SOURCE`: the grid is centred inside the wall ring,
+and a slot is reserved when its skeleton cells already hold *geometry* (a wall,
+platform, door, edge, arch, diagonal, or a chasm floor). Entity flats are
+deliberately excluded — counting them reserved five of `CITY1`'s thirty-six blocks
+for two street decorations each. `tests/unit/city.test.mjs` asserts the rule in
+both directions, including that `CITY2.MIF` (74 structural voxels inside its grid)
+does reserve slots and `CITYW1.MIF` reserves exactly the slots its water sits in.
+
 ## 9. Fonts (**TENTATIVE**)
 
 `TEENYFNT.DAT` (1 695 B), `ARENAFNT.DAT` (1 895 B), `FONT4.DAT`, `FONT_A/B/C/D.DAT`,

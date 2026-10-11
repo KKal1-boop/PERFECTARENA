@@ -8,7 +8,7 @@ Arena's own maps, textures and — soon — its text and rules, read at runtime 
 renderer, player motor and collider. Nothing is bundled: the repository contains
 no Arena data, and neither does the build output.
 
-**Status: Milestone 3 of 6 complete.** You can walk real Arena interiors — the
+**Status: Milestone 4 in progress.** You can walk real Arena interiors, **and you can generate and walk a whole Arena city** — the
 Imperial Dungeons, any of the main-quest dungeons, any city or wilderness `.MIF`
 in the archive — with correct decompressed geometry, correct textures from each
 map's `.INF`, working collision and multi-level dungeons. See
@@ -48,6 +48,10 @@ The one requirement is that the page is served over HTTP rather than opened as a
 | `[` `]` | previous / next level of a dungeon |
 | mouse | look (click the canvas to capture the pointer) |
 
+`?city` generates a city-state and drops you at its north gate: `?city=town&seed=99`,
+`?city=village`, `?city&climate=desert`, `?city&mif=CITYW1.MIF`. A city is assembled
+by Arena's own algorithm from the seed, so the same seed is always the same city.
+
 `?interior=<NAME.MIF>` opens a specific map, e.g.
 `http://localhost:8080/?interior=IMPPAL.MIF&level=1`. `?test` opens the
 hand-made courtyard from Milestone 2, which needs no game data.
@@ -64,6 +68,13 @@ hand-made courtyard from Milestone 2, which needs no game data.
   table (with `.SET #n` expansion), the `*BOXCAP`/`*BOXSIDE`/`*MENU` slot arrays,
   the ceiling, and the decryption Arena applies to `.INF` files inside
   `GLOBAL.BSA`.
+* **Cities** — a settlement is *generated*, because Arena has no city map to load:
+  a skeleton `.MIF` supplies the ground, wall ring, gates and water, and a seeded
+  grid of 20×20 block `.MIF`s (equipment shops, mages guilds, noble houses,
+  temples, taverns, houses) is stamped into it with Arena's own random number
+  generator. Streets, roofs, shop signs, water and the block layout all come out of
+  real data, and the grid size follows the settlement kind — 6×6 blocks for a
+  city-state, 5×5 for a town, 4×4 for a village.
 * **Textures** — `.IMG` (raw 64×64 walls and the compressed headered form) and
   `.SET` sheets, palettized through `PAL.COL` or an image's own embedded palette.
 * **Geometry** — a level meshed into the engine's `MeshBundle`, one sub-mesh per
@@ -74,8 +85,8 @@ hand-made courtyard from Milestone 2, which needs no game data.
 
 ## What it does not do yet
 
-Cities and wilderness, NPCs and dialog, combat, character creation, items, the
-quest and save/load arrive with Milestone 4; the world map, all provinces and the
+Wilderness, entering a building, NPCs and dialog, combat, character creation,
+items, the quest and save/load remain in Milestone 4; the world map, all provinces and the
 completable main quest with Milestone 5; magic, inventory, audio and a performance
 pass with Milestone 6. Chasms are currently walkable, doors are always shut and
 arches draw opaque — each is logged with its reason in
@@ -90,7 +101,7 @@ index.html                 the game
 src/main.js                router + boot
 src/engine/                the reused engine (154 modules, pruned — see ARCHITECTURE §2)
 src/arena/                 Arena's data layer: bytes and files → decoded structures
-src/game/                  the world model: voxel bitfields → levels → meshes
+src/game/                  the world model: city generation, voxel bitfields → levels → meshes
 src/scenes/                testmap.js, interior.js
 docs/                      ARCHITECTURE, DECISIONS, FORMATS, PROGRESS
 tools/                     offline inspectors, the mesh checks and the dev server
@@ -136,3 +147,4 @@ copy.
 | `npm run test:browser` | headless Chrome suites |
 | `npm run check` | both |
 | `npm run probe:mif` | parse and dump `.MIF`/`.INF` files |
+| `npm run probe:city` | generate a city and print its plan, stats and ASCII map |

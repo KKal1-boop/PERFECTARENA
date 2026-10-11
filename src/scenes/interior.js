@@ -1,4 +1,4 @@
-// MILESTONE 3 HOST — WALK A REAL ARENA INTERIOR.
+// MILESTONE 3–4 HOST — WALK A REAL ARENA INTERIOR, OR A WHOLE ASSEMBLED CITY.
 //
 // Everything on screen comes from the player's own Arena folder: the `.MIF` grid
 // is decompressed and decoded by `src/game/mifLevel.js`, meshed by
@@ -6,9 +6,18 @@
 // `src/arena/arenaData.js`. Nothing is bundled and nothing is hand-authored —
 // contrast `scenes/testmap.js`, which is the scaffolding this replaced.
 //
+// A **city** runs through the same three stages, but its level does not exist in
+// any file: `src/game/cityPlan.js` stamps a seeded grid of block `.MIF`s into a
+// skeleton, and the textures come from the *location's* INF (`TCN.INF`, …) because
+// a skeleton has no `INFO` chunk of its own. That is the whole difference, and it
+// is why a city needed no new renderer, mesher or collider.
+//
 // Usage:
 //   ?interior=START.MIF           the Imperial Dungeons
 //   ?interior=CAS.MIF&level=1     a specific level of the file
+//   ?city                          a generated city-state (temperate, clear)
+//   ?city=town&seed=7             a generated town
+//   ?city&mif=CITYW1.MIF          a specific skeleton
 //   ?arena=<folder>               serve Arena's data from the dev server
 //
 // Debug seam (see docs/ARCHITECTURE.md §6): `state()`, `teleport`, `look`,
@@ -27,6 +36,8 @@ import { lookScale, lookInvert } from '../engine/ui/lookSettings.js';
 import { ArenaData } from '../arena/arenaData.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
 import { decodeLevel } from '../game/mifLevel.js';
+import { buildCityLevel } from '../game/cityPlan.js';
+import { CITY_BLOCKS_PER_SIDE, cityInfName, cityTemplateName } from '../game/tables/cityBlocks.js';
 
 /**
  * Interior lighting.
@@ -46,6 +57,24 @@ const FOG_COLOR = new Float32Array([0.07, 0.07, 0.09]);
 /** Distance fog that reads as torchlight falloff without crushing the far end. */
 const FOG_DENSITY = 0.012;
 
+/**
+ * City lighting: daylight.
+ *
+ * A settlement is outdoors, so unlike an interior it gets a sun. The ambient term
+ * is still large — Arena's `PAL.COL` is dim (DECISIONS.md D13) and a city has to
+ * read as daytime without light tables — but the sun is what makes buildings cast
+ * sides differently from their roofs instead of the whole city being one flat
+ * colour. Fog is thinner and tinted toward the sky, because in a city you can see
+ * across it.
+ *
+ * Overridable like the interior's: `?ambient=0.8&fog=0.002&sun=1.2`.
+ */
+const CITY_AMBIENT = new Float32Array([0.60, 0.61, 0.64]);
+const CITY_SUN = new Float32Array([1.0, 0.96, 0.88]);
+const CITY_SUN_SCALE = 0.95;
+const CITY_FOG_COLOR = new Float32Array([0.60, 0.66, 0.76]);
+const CITY_FOG_DENSITY = 0.0045;
+
 /** DOM key code -> motor input field. */
 const KEYMAP = { KeyW: 'forward', KeyS: 'back', KeyA: 'strafeLeft', KeyD: 'strafeRight', Space: 'jump' };
 
@@ -64,7 +93,39 @@ function inputOf(keys) {
 }
 
 /**
- * Boot an Arena interior.
+ * Read the URL's city request, if the page asked for one.
+ *
+ * `?city` alone means a city-state at the default seed; `?city=town` and
+ * `?city=village` pick the smaller grids; `?blocks=` overrides the grid size;
+ * `?inf=` overrides the location INF for a skeleton whose climate is not the one
+ * you want to look at.
+ *
+ * @param {URLSearchParams} params
+ * @returns {{kind: 'city'|'town'|'village', climate: string, weather: string, coastal: boolean, blocksPerSide: number, seed: number, infName: string, template: string}|null}
+ */
+export function readCityRequest(params) {
+  if (!params.has('city')) return null;
+  const requested = (params.get('city') || '').toLowerCase();
+  const kind = requested === 'town' || requested === 'village' ? requested : 'city';
+  const climate = params.get('climate') || 'temperate';
+  const weather = params.get('weather') || 'clear';
+  const coastal = params.has('coastal') && params.get('coastal') !== '0';
+  return {
+    kind,
+    climate,
+    weather,
+    coastal,
+    blocksPerSide: params.has('blocks') ? Number(params.get('blocks')) : CITY_BLOCKS_PER_SIDE[kind],
+    seed: params.has('seed') ? Number(params.get('seed')) : 20232,
+    infName: (params.get('inf') || cityInfName({ climate, location: 'city', weather })).toUpperCase(),
+    // The settlement kind picks the skeleton template, the same way the game picks
+    // it for a location: towns do not use the city's map.
+    template: cityTemplateName({ type: kind, coastal }),
+  };
+}
+
+/**
+ * Boot an Arena interior — or, with `?city`, an assembled Arena settlement.
  *
  * @param {HTMLCanvasElement} canvas
  * @param {Renderer} renderer
@@ -77,7 +138,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   if (!source) throw new Error('bootInterior needs an Arena data source (a picked folder, or ?arena=…)');
 
   const data = new ArenaData(source, { onWarn: (m) => console.warn(`[arena] ${m}`) });
-  const mapName = (params.get('interior') || params.get('mif') || 'START.MIF').toUpperCase();
+  const cityRequest = readCityRequest(params);
+  const mapName = (params.get('interior') || params.get('mif')
+    || (cityRequest ? cityRequest.template : 'START.MIF')).toUpperCase();
 
   status(`reading ${mapName}`);
   const mif = await data.mif(mapName);
@@ -113,9 +176,29 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     status(`${mapName} level ${index + 1}/${mif.levelCount}`);
     if (mifLevel.warnings.length) for (const w of mifLevel.warnings) data.warn(`${mapName} level ${index}: ${w}`);
 
-    const infName = mifLevel.info.toUpperCase();
+    // A city is assembled here, from the same skeleton every time but a different
+    // draw of blocks: `?seed=` is what makes a city reproducible, which is also
+    // what lets the browser suite assert anything about it at all.
+    let voxels = mifLevel;
+    let infName = mifLevel.info.toUpperCase();
+    let city = null;
+    if (cityRequest) {
+      status(`building ${mapName} · ${cityRequest.kind} seed ${cityRequest.seed}`);
+      city = await buildCityLevel({
+        data,
+        mif,
+        blocksPerSide: cityRequest.blocksPerSide,
+        seed: cityRequest.seed,
+      });
+      voxels = city.level;
+      infName = cityRequest.infName;
+    }
     const inf = await data.inf(infName);
-    const level = decodeLevel(mifLevel, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+    const level = decodeLevel(voxels, inf, {
+      width: mif.width,
+      depth: mif.height,
+      mapType: cityRequest ? 'city' : 'interior',
+    });
     const built = buildLevelMesh(level, { cellSize: CELL_SIZE });
 
     // Textures first, under the archive/record pair each sub-mesh asks for: a
@@ -141,16 +224,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // Arena interiors are enclosed; the sky is only drawn when a level has cells
     // without a ceiling (outdoor streets, and dungeon courtyards).
     const openSky = level.stats.ceilinged < level.cells.length;
-    const ambient = params.has('ambient') ? Number(params.get('ambient')) : INTERIOR_AMBIENT[0];
-    const fogDensity = params.has('fog') ? Number(params.get('fog')) : FOG_DENSITY;
+    const outdoor = Boolean(cityRequest) || level.outdoors;
+    const base = cityRequest ? CITY_AMBIENT : INTERIOR_AMBIENT;
+    const ambient = params.has('ambient') ? Number(params.get('ambient')) : base[0];
+    const fogDensity = params.has('fog') ? Number(params.get('fog')) : (cityRequest ? CITY_FOG_DENSITY : FOG_DENSITY);
+    const sunScale = params.has('sun') ? Number(params.get('sun')) : (cityRequest ? CITY_SUN_SCALE : 0);
     renderer.setClearColor(openSky ? SKY_CLEAR : [0.02, 0.02, 0.03, 1]);
-    renderer.setLighting(new Float32Array([ambient, ambient * 0.965, ambient * 0.92]), 0, NO_SUN);
-    renderer.setFog('exp2', fogDensity, 0, 0, FOG_COLOR);
+    renderer.setLighting(
+      new Float32Array([ambient, ambient * (cityRequest ? 1.0 : 0.965), ambient * (cityRequest ? 1.02 : 0.92)]),
+      sunScale,
+      sunScale > 0 ? CITY_SUN : NO_SUN,
+    );
+    renderer.setFog('exp2', fogDensity, 0, 0, cityRequest ? CITY_FOG_COLOR : FOG_COLOR);
 
-    current = { index, level, built, mesh, collider, motor, inf, infName, uploaded, missing, openSky, spawn, cam };
+    current = { index, level, built, mesh, collider, motor, inf, infName, uploaded, missing, openSky, outdoor, spawn, cam, city };
     if (hud) {
+      const what = city
+        ? `${cityRequest.kind} · seed ${cityRequest.seed} · ${city.stats.stamped}/${city.slots.length} blocks`
+        : `level ${index + 1}/${mif.levelCount}`;
       hud.textContent =
-        `${mapName} · level ${index + 1}/${mif.levelCount} · ${infName}\n`
+        `${mapName} · ${what} · ${infName}\n`
         + `${mif.width}×${mif.height} cells · ${built.stats.quads} quads · ${built.materials.length} materials · ${uploaded} textures\n`
         + 'WASD move · Shift run · Space jump · click to look · [ ] change level';
     }
@@ -203,6 +296,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       quads: current.built.stats.quads,
       textures: current.uploaded,
       openSky: current.openSky,
+      outdoor: current.outdoor,
+      city: current.city
+        ? {
+          kind: cityRequest.kind,
+          seed: cityRequest.seed,
+          climate: cityRequest.climate,
+          weather: cityRequest.weather,
+          inf: current.infName,
+          blocksPerSide: cityRequest.blocksPerSide,
+          start: current.city.start,
+          reserved: current.city.reserved,
+          stamped: current.city.stats.stamped,
+          cells: current.city.stats.cells,
+          missing: current.city.missing,
+          blocks: current.city.slots.filter((s) => s.mif).map((s) => s.mif),
+        }
+        : null,
       stats: current.level.stats,
       warnings: mif.levels[current.index].warnings,
       missingTextures: current.built.model.subMeshes

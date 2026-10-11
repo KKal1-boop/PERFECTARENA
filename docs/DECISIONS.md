@@ -332,9 +332,54 @@ PERFECTARENA/
       mifMesh.js             level → MeshBundle + collider triangles
       tables/                rules tables, each with a `source`
     scenes/                  testmap.js interior.js … (city/wild/worldmap: M4–M5)
-  tools/                     inspect, mif-dump, copy-engine, serve, lib/ probes
-  tests/
-    unit/                    Node tests over the real Arena files
-    run-browser.mjs + cdp.mjs  suites: testmap, movement, interior
-    shots/                   what the machine saw
+  tools/                     inspect, mif-dump, copy-engine, serve, lib/ probes    tests/
+      unit/                    Node tests over the real Arena files
+      run-browser.mjs + cdp.mjs  suites: testmap, movement, city, interior
+      shots/                   what the machine saw
 ```
+
+---
+
+## D15 — Cities are assembled by Arena's own algorithm, not authored
+
+**Decision.** A city is generated in the browser at load time: the settlement kind
+picks a skeleton `.MIF`, `game/cityPlan.js` seeds `ArenaRandom` with the location's
+city seed and stamps a `blocksPerSide × blocksPerSide` grid of 20×20 block `.MIF`s
+into a copy of the skeleton's voxels, and the mesh is built from the result by the
+*same* `decodeLevel`/`buildLevelMesh` pair the dungeons use. The level's textures
+come from the location's INF (`TCN.INF`, …) because a skeleton has no `INFO` chunk.
+
+**Rationale.** There is no other option that is faithful. Arena has no city map to
+load: its cities are procedurally assembled at runtime from skeletons, blocks and a
+seeded RNG, so "load a city" is not a thing the data supports. Doing it Arena's way
+also gets the shape of every city for free, since the block distribution and the
+guaranteed services (equipment shop, mages guild, noble house, temple, tavern) are
+the original's.
+
+The RNG is ported exactly — `value = value * 7143469 mod 2³²`, draw
+`(value >> 16) & 0xFFFF` — rather than approximated with `Math.random`, because
+otherwise a seed is meaningless and the same city could not be revisited. Draw
+*order* matters as much as the generator, and both are documented in FORMATS.md §8b.
+
+**Rejected: authoring cities by hand or generating them with a general procedural
+city generator.** Both would produce a town that is not Arena's town and would make
+the block `.MIF`s — 368 real files of real Arena art — decorative at best. Also
+**rejected: implementing city generation but pointing it at `CITYDATA.64`'s city
+seed without the RNG**, which is a city-shaped thing in the right place and the
+wrong one.
+
+**Consequence, and the simplification that remains:** the block grid's *start
+position* and the *reserved-slot lists* live in `A.EXE` (D5/D11). The start is
+reconstructed by centring the grid inside the skeleton's wall ring, and the
+reserved list is measured from the skeleton (a slot already holding geometry is
+kept; entity flats do not count, or `CITY1` would lose five blocks to ten street
+decorations). Both are labelled `RECONSTRUCTED` in `tables/cityBlocks.js`'s
+`SOURCE`, and the falsifiable consequence is tested: a stamped grid may never touch
+the skeleton's wall ring or its water. Logged as S15 in PROGRESS.md.
+
+**What this does not yet give you:** a *specific* location's city. Climate comes
+from the world map terrain image plus province rectangles, and the city seed comes
+from `CITYDATA.64`'s per-location records — so `?city=town&seed=99` is a real Arena
+town, but not yet "Daggerfall, on the 3rd of Morning Star". That is Milestone 5's
+world-map work, and the pieces it needs (the terrain image's classes, the province
+rectangles, the per-location seeds) are listed in PROGRESS.md's risks.
