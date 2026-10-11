@@ -1,0 +1,14 @@
+# Local portable toolchain (see docs/DECISIONS.md D8) — never part of the project.
+.devtools/
+
+# Scratch space for format reconnaissance dumps.
+.scratch/
+
+# Dependencies and build output.
+node_modules/
+dist/
+
+# Local Arena data copies (game data is never committed — it is read at runtime
+# from the player's own Arena folder).
+arena-local/
+*.tmp
