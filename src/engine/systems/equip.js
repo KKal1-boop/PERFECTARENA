@@ -1,0 +1,550 @@
+// U8f: EQUIP MECHANICS - DFU ItemEquipTable's equip/unequip half
+// (MIT Daggerfall Workshop) over the EXISTING C5a/C5c foundation
+// (characters/paperdoll.js EQUIP_SLOTS + characters/equipTable.js's
+// verbatim GetEquipSlot/GetItemHands assignment layer, whose header
+// defers "equip/unequip mechanics (unequip lists, prohibitions)"
+// to this Systems module). Bag items carry STRING groups (the
+// shopStock/loot shape); C5c compares numeric ITEM_GROUPS - the
+// boundary translates and nothing is duplicated.
+//
+// EquipItem verbatim: arrows never equip; a worn stack splits ONE
+// off (SplitStack - the single joins the bag); equipping a 2H
+// unequips BOTH hands; equipping a shield unequips a held 2H; the
+// destination slot swaps its occupant out (alwaysEquip); returns
+// the unequipped list. Items STAY in the bag and carry equipSlot
+// when worn (FilterLocalItems hides them). E2: the enchantment
+// start/stop payloads fire through the onItemEquipped/onItemUnequipped
+// hooks below. ES2: the equip sound rings at EquipItem's own moment
+// (ItemEquipTable.cs:145-146) through the one sink the host mounts -
+// and NOT on restore, because rebuildEquipState refills the slots
+// directly, which is the port's shape of DFU's playEquipSounds=false
+// load arm.
+
+import { mintCondition, templateByIndex } from './itemTemplates.js';   // AUDIT 23
+import { EQUIP_SLOTS } from '../characters/paperdoll.js';
+import { ITEM_GROUPS, SLOT_RULES } from '../characters/equipRules.js';
+import { customItemClass, rriNativeMaterialValue, rriEquipSound } from './rriItems.js';
+import { SOUND } from './soundClips.js';   // AUDIT-RR F8: the class's equip sound, by name   // RRI1: a custom armor's slot, for the body part its value lands on; AUDIT-RR F7/F8: the class's two virtuals
+import { createEquipTable, getItemHands as handsOf, ITEM_HANDS } from '../characters/equipTable.js';
+import { BODY_PARTS, NUMBER_BODY_PARTS, materialArmorValue, itemArmorValue, SHIELD_VALUES, SHIELD_PARTS, isShieldTemplate } from './armorMaterials.js';
+import { weaponSkillUsed, WEAPONS } from '../characters/weapons.js';   // wave 29: GetWeaponSkillUsed keys on the TEMPLATE
+import { SKILLS, WEAPON_SKILL } from './skills.js';   // S23: the weapon partition, single-sourced
+import { EQUIP_DELAY_TIMES } from '../characters/weaponStates.js';   // CH3 (characters-13): the swap-pause table gains its consumer
+import { startingProvisions } from './survival/items.js';   // SURV2: the new character's kit
+import { survivalOn } from './survival/switch.js';   // SURV2: the one switch
+
+export { EQUIP_SLOTS, ITEM_HANDS };
+
+/** The bag speaks string groups; C5c speaks the numeric enum. */
+const numeric = (item) => (typeof item.group === 'string' ? { ...item, group: ITEM_GROUPS[item.group] ?? ITEM_GROUPS.None } : item);
+export const getItemHands = (item) => handsOf(numeric(item));
+
+/** The entity's live equip table (lazy; C5c's shape). */
+export const equipOf = (entity) => (entity.equip ??= createEquipTable());
+export const equipTableOf = (entity) => equipOf(entity).slots;
+
+export const getEquipSlot = (entity, item) => equipOf(entity).getEquipSlot(numeric(item));
+
+/** UnequipItem(slot): clears the slot + the item's mark. */
+/** CH3 (AUDIT 23 characters-13), REBUILT AT FX1 (F128): the SWAP
+ *  PAUSE is billed PER INVENTORY VISIT, not per transition. DFU
+ *  snapshots the hand items when the inventory window is PUSHED
+ *  (SetEquipDelayTime(false), DaggerfallInventoryWindow.cs:667) and
+ *  bills ONCE on pop, and only for a hand whose item actually
+ *  changed: delay(last) + delay(current) (:729, :1164-1199). CH3 put
+ *  the bill inside unequipSlot/equipItem - each TRANSITION - so
+ *  dagger-then-katana out of empty hands billed 500+500+3400 where
+ *  DFU bills 3400, and re-equipping the same weapon billed twice
+ *  what DFU bills nothing for. The window owns the clock now; the
+ *  equip table just moves items.
+ *
+ *  The table quirk carries verbatim: EquipDelayTimes indexes by the
+ *  item's index WITHIN ITS OWN GROUP, so a shield swap bills the low
+ *  armor indexes against the weapon delay table. The weapon rig
+ *  still blocks the attack while the countdown runs and drains it at
+ *  the classic 980 units per second. DFU keeps two countdowns (one
+ *  per hand); the port's single entity.equipCountdown sums them,
+ *  the CH3 collapse kept. */
+export function equipDelayFor(item) {
+  // AUDIT-RR2 G8: `EquipDelayTimes[item.GroupIndex]` (DaggerfallInventoryWindow.cs:1168-1182) - a custom class answers its
+  // own GroupIndex virtual (ItemArchersAxe.cs:28-31 -> 3, ItemLightFlail.cs:28-31 -> 6); 513 - 113 fell off the table
+  const gi = customItemClass(item?.templateIndex)?.groupIndex
+    ?? (item?.group === 'Weapons' ? item.templateIndex - 113
+      : item?.group === 'Armor' ? item.templateIndex - 102 : -1);
+  return (gi >= 0 && gi < EQUIP_DELAY_TIMES.length) ? EQUIP_DELAY_TIMES[gi] : 0;
+}
+
+/** SetEquipDelayTime(setTime: false) - the window-push snapshot of
+ *  both hand items (:1201-1214: null hands snapshot as null). */
+export function equipDelaySnapshot(entity) {
+  const slots = equipTableOf(entity);
+  return { right: slots[EQUIP_SLOTS.RightHand] ?? null, left: slots[EQUIP_SLOTS.LeftHand] ?? null };
+}
+
+/** SetEquipDelayTime(setTime: true) - the window-pop bill: each hand
+ *  whose item CHANGED (reference compare, as C#'s !=) adds the
+ *  leaver's delay plus the arriver's, and both hands' totals land on
+ *  the one countdown (+=, :1198-1199). `equipping` carries the
+ *  changed hands' CURRENT items for the "Equipping %s" cue the
+ *  window shows after billing (:731-756) - DFU gates each cue on
+ *  that hand's countdown being positive, which under the port's
+ *  single-countdown collapse reads as "that hand billed". */
+export function billEquipDelayOnClose(entity, snap) {
+  if (!snap) return { delay: 0, equipping: [] };
+  const slots = equipTableOf(entity);
+  const current = { right: slots[EQUIP_SLOTS.RightHand] ?? null, left: slots[EQUIP_SLOTS.LeftHand] ?? null };
+  let delay = 0;
+  const equipping = [];
+  for (const hand of ['right', 'left']) {
+    if (snap[hand] !== current[hand]) {
+      if (snap[hand]) delay += equipDelayFor(snap[hand]);
+      if (current[hand]) delay += equipDelayFor(current[hand]);
+      if (current[hand]) equipping.push(current[hand]);
+    }
+  }
+  if (delay > 0) entity.equipCountdown = (entity.equipCountdown ?? 0) + delay;
+  return { delay, equipping: delay > 0 ? equipping : [] };
+}
+
+export function unequipSlot(entity, slot) {
+  const slots = equipTableOf(entity);
+  const item = slots[slot];
+  if (!item) return null;
+  slots[slot] = null;
+  delete item.equipSlot;
+  updateEquippedArmorValues(entity, item, false);   // U8h: the armor table adds back
+  equipChanged(entity);   // E1: the fold follows the worn set (LR2: and every listener's)
+  _hooks.onItemUnequipped?.(entity, item);   // E2: StopEquippedItem - the Unequipped payloads (ItemEquipTable.cs:163/:202/:231)
+  return item;
+}
+
+/** DaggerfallUnityItem.UnequipItem(owner) (:1183-1196) - take THIS
+ *  item off whichever slot holds it, without the caller having to
+ *  know which. A null owner is a no-op (:1185-1186); DFU walks every
+ *  EquipSlots value and unequips each slot holding this item (the
+ *  armour give-back its UpdateEquippedArmorValues line makes explicit
+ *  is unequipSlot's own). */
+export function unequipItem(entity, item) {
+  if (!entity || !item) return;
+  const slots = equipTableOf(entity);
+  for (let slot = 0; slot < slots.length; slot++) {
+    if (slots[slot] === item) unequipSlot(entity, slot);
+  }
+}
+
+/** S23: THE CAREER EQUIP RESTRICTIONS
+ *  (DaggerfallInventoryWindow.EquipItem :1343-1381, verbatim).
+ *
+ *  17 of the 18 classic classes carry these and the port had never
+ *  enforced any of them - a Mage could wear plate, carry a tower shield
+ *  and swing an axe. AUDIT 17n found the fields with zero consumers;
+ *  U20b then made the same restrictions PURCHASABLE in the custom
+ *  builder, which is what forced the slice.
+ *
+ *  The port's ARMOR_MATERIAL values ARE DFU's raw nativeMaterialValue
+ *  (0x0000 leather / 0x0100 chain / 0x0200+ plate), so DFU's `>> 8` and
+ *  `& 0xFF` expressions carry over unchanged.
+ *
+ *  TWO verbatim quirks ride along. The armor MATERIAL test is gated on
+ *  `(nativeMaterialValue >> 8) == 2` - plate only - so a Barbarian
+ *  forbidden orcish and daedric may still wear daedric CHAIN. And
+ *  GetWeaponSkillUsed returns Skills.None = -1 for a template it does
+ *  not name (:938), and -1 masks against every bit, so ANY item in the
+ *  weapon group that is not one of the sixteen listed weapons reads as
+ *  forbidden to a career with any forbidden proficiency at all.
+ *
+ *  WHERE THIS LIVES IS THE LAW: DFU hangs it on the inventory WINDOW,
+ *  not on ItemEquipTable.EquipItem, so AssignStartingGear equips
+ *  straight past it. A restricted class really can START in gear it
+ *  could never put back on. Ported at the same seam, deliberately. */
+export function isForbiddenEquip(career, item) {
+  if (!career || !item) return false;
+  const forbiddenArmors = (career.weaponArmorShieldsBitfield >>> 6) & 0x07;
+  const forbiddenShields = (career.weaponArmorShieldsBitfield >>> 9) & 0x0f;
+  const forbiddenProficiencies = career.weaponArmorShieldsBitfield & 0x3f;
+  const forbiddenMaterials = career.forbiddenMaterialsFlags ?? 0;
+  if (item.group === 'Armor') {
+    // AUDIT 24 systems: DFU's armor branch is a THREE-arm chain
+    // (DaggerfallInventoryWindow.cs:1345-1359). Arms 1 and 2 split on
+    // IsShield - `if (item.IsShield && shield-bit)` then
+    // `else if (!item.IsShield && armor-type-bit)` - but arm 3, the
+    // plate-MATERIAL test, carries no shield guard at all. So a shield
+    // whose TYPE bit is clear falls through to it, and a career that
+    // forbids (say) Daedric refuses a Daedric tower shield. The port
+    // returned at the shield arm and never reached the material test.
+    const shield = isShieldTemplate(item.templateIndex);
+    if (shield && ((1 << (item.templateIndex - SHIELD_TEMPLATE_START)) & forbiddenShields) !== 0) return true;
+    if (!shield && ((1 << (rriNativeMaterialValue(item) >> 8)) & forbiddenArmors) !== 0) return true;   // AUDIT-RR F7: `item.NativeMaterialValue >> 8` (:1352) - the class's virtual: a mail hauberk is chain, a brigandine jerkin leather
+    // the plate-only gate on the material test - shields included
+    return (item.material >> 8) === 2 && ((1 << (item.material & 0xff)) & forbiddenMaterials) !== 0;
+  }
+  if (item.group === 'Weapons') {
+    if ((weaponProficiencyFlag(item) & forbiddenProficiencies) !== 0) return true;
+    return ((1 << item.material) & forbiddenMaterials) !== 0;
+  }
+  return false;
+}
+
+/** GetWeaponSkillUsed (:910-941) as a ProficiencyFlag. DFU switches on
+ *  the TEMPLATE INDEX, and its `default:` really does return
+ *  `(int)Skills.None`, which is -1 - so an unmatched template is all
+ *  bits set, and `-1 & ForbiddenProficiencies` is non-zero for any
+ *  career with any restriction at all. That quirk is kept.
+ *
+ *  AUDIT 24 (wave 29): this keyed on `item.name`, and a name is not the
+ *  template. itemTemplates.json spells 117 "Wakizashi" and 123
+ *  "Dai-katana" where the weapon table has Wakazashi / Dai_Katana, and
+ *  loot.createRegularMagicItem RENAMES an enchanted weapon to its
+ *  MAGIC.DEF name - so all three fell to the unmatched -1 and were
+ *  REFUSED by every restricted career. characters/weapons.js already
+ *  carried the correct template-index map, with a comment describing
+ *  this exact trap, and this was a second copy that had not been
+ *  fixed with it. */
+export function weaponProficiencyFlag(item) {
+  const flag = PROFICIENCY_OF_SKILL[weaponSkillUsed(item?.templateIndex)];
+  return flag ?? -1;
+}
+const PROFICIENCY_OF_SKILL = Object.freeze({
+  [SKILLS.ShortBlade]: 1, [SKILLS.LongBlade]: 2, [SKILLS.HandToHand]: 4,
+  [SKILLS.Axe]: 8, [SKILLS.BluntWeapon]: 16, [SKILLS.Archery]: 32,
+});
+/** Armor.Buckler - the shield block's base template index. */
+const SHIELD_TEMPLATE_START = 109;
+
+/** The message DFU pops on a refused equip (:1325, :1372-1379). */
+export const FORBIDDEN_EQUIPMENT_TEXT_ID = 1068;
+/** ...and on a BROKEN one (:1324, :1330-1341), which is checked FIRST. */
+export const ITEM_BROKEN_TEXT_ID = 29;
+/** `if (item.currentCondition < 1)` - strictly less than one, so a
+ *  condition of exactly 1 still equips. An item with no condition
+ *  recorded is not broken (the port mints many without one).
+ *
+ *  AUDIT 63 F23 / WHERE THIS LIVES IS THE LAW, the same rule the
+ *  prohibition chain above rides: the condition refusal is
+ *  DaggerfallInventoryWindow.EquipItem's (:1330-1341, one statement
+ *  ABOVE the prohibition chain), and ItemEquipTable.EquipItem
+ *  (ItemEquipTable.cs:94-154) has no condition test at any point.
+ *  This predicate is therefore for the two WINDOW callers
+ *  (ui/nativeInventory.js's _refuseForbidden and
+ *  ui/enhancedInventory.js's wear) and for nobody below them - the
+ *  port had it inside equipItem, at the table seam, and every caller
+ *  DFU lets equip past the window paid for it. The one that showed:
+ *  PlayerEntity.cs:959 imports a classic save's worn gear with
+ *  `equipTable.EquipItem(newItem, true, false)`, so a character who
+ *  saved wearing a 0-condition piece loaded with that slot empty. */
+export const isBrokenItem = (item) => item?.currentCondition != null && item.currentCondition < 1;
+
+/** EquipItem verbatim: the unequipped list, or null when the item
+ *  cannot equip. */
+export function equipItem(entity, item) {
+  const slots = equipTableOf(entity);
+  const slot = getEquipSlot(entity, item);   // computed ONCE up front (the DFU order)
+  if (slot === EQUIP_SLOTS.None) return null;
+  if (item.group === 'Weapons' && item.templateIndex === WEAPONS.Arrow) return null;   // cannot equip arrows
+  // AUDIT 63 F23: NO condition gate here. ItemEquipTable.cs:94-154
+  // has none; the refusal is the inventory WINDOW's (:1330-1341) and
+  // lives at the two window callers - see isBrokenItem above.
+  if ((item.stackCount ?? 1) > 1) {
+    // SplitStack(item, 1): the worn single is its own record
+    item.stackCount--;
+    item = { ...item, stackCount: 1 };
+    entity.items.push(item);
+  }
+  const unequipped = [];
+  // AUDIT 68 S27-ht-equip-midswap: the leavers and the arrival are ONE act, told once when the table has settled
+  oneEquipAct(() => {
+    const un = (s) => { const it = unequipSlot(entity, s); if (it) unequipped.push(it); };
+    if (item.group === 'Weapons' && getItemHands(item) === ITEM_HANDS.Both) {
+      un(EQUIP_SLOTS.LeftHand); un(EQUIP_SLOTS.RightHand);   // 2H clears both hands
+    }
+    if (getItemHands(item) === ITEM_HANDS.LeftOnly) {
+      const right = slots[EQUIP_SLOTS.RightHand];
+      if (right && getItemHands(right) === ITEM_HANDS.Both) un(EQUIP_SLOTS.RightHand);   // a shield bumps a held 2H
+    }
+    un(slot);   // swap the occupant out (alwaysEquip)
+    item.equipSlot = slot;
+    slots[slot] = item;
+    updateEquippedArmorValues(entity, item, true);   // U8h: the armor table subtracts
+    equipChanged(entity);   // E1: the fold follows the worn set (LR2: and every listener's)
+  });
+  // ES2: "Play equip sound" (ItemEquipTable.cs:144-146) - BEFORE
+  // StartEquippedItem, C#'s own order. SoundClips.None plays nothing.
+  { const clip = getEquipSound(item); if (clip != null) _equipSoundSink?.(clip); }
+  _hooks.onItemEquipped?.(entity, item);   // E2: StartEquippedItem - the Equipped|Held payloads (ItemEquipTable.cs:149)
+  return unequipped;
+}
+
+export const isEquipped = (item) => item.equipSlot != null;
+
+/** AUDIT 17e C1 - SerializablePlayer.RestoreItems verbatim
+ *  (SerializablePlayer.cs:301, :355-368): after items are restored,
+ *  the equip TABLE is rebuilt by re-linking each worn item into its
+ *  slot, then the armor values are wiped to 100 and re-applied from
+ *  the rebuilt table. DFU relinks by item UID; our items carry the
+ *  slot itself (item.equipSlot), which survives the JSON round trip,
+ *  so the slot IS the link.
+ *  Without this, a load left the table empty (every worn item
+ *  unreachable - filterByTab hides equipped items, so they vanished
+ *  from all four tabs AND the paperdoll, with no way to take them
+ *  off) while a same-session load left the table pointing at the
+ *  PRE-load item objects and kept the old armor bonus forever. */
+export function rebuildEquipState(entity) {
+  const slots = equipTableOf(entity);
+  slots.fill(null);
+  for (const it of entity.items ?? []) {
+    if (it.equipSlot == null) continue;
+    if (slots[it.equipSlot]) { delete it.equipSlot; continue; }   // two items claiming one slot: the first wins
+    slots[it.equipSlot] = it;
+  }
+  const av = armorValuesOf(entity);
+  av.fill(100);   // "Initialize body part armor values to 100 (no armor)"
+  for (const it of slots) if (it) updateEquippedArmorValues(entity, it, true);
+  // LR2: the listeners' folds follow the rebuilt set at once (the affix
+  // fold reads at liveStat before any magic round has run). The
+  // enchantment hook is NOT fired here - its restore is
+  // restartHeldEnchantments' and the first round's, as DFU's is.
+  for (const fn of _equipListeners) fn(entity);
+  return slots;
+}
+
+/** The pre-S3d starting seed: the C8 stopgap Iron Dagger moves INTO
+ *  the bag, equipped, so the worn-weapon FP-rig binding serves it
+ *  like any other item. Idempotent per entity.
+ *
+ *  SUPERSEDED, not pending. S3d shipped the real roll -
+ *  systems/startingGear.js:74 assignStartingGear (ItemHelper's
+ *  AssignStartingGear), run on both creation paths at
+ *  chargenSession.js:141 (?class= headless) and :233 (the wizard) -
+ *  and the guard below (`entity.equip || items.length`) makes this a
+ *  no-op for any character that went through either. What is left is
+ *  residue at the two host calls (world.js:3721, exterior.js:1284):
+ *  a chargenDone entity whose bag AND equip table are both empty
+ *  still takes a free dagger here. Deleting the calls is a behaviour
+ *  change, so it waits for a slice that owns one. */
+export function seedStartingEquipment(entity) {
+  if (entity.equip || (entity.items ?? []).length) return;
+  entity.items = entity.items ?? [];
+  const dagger = mintCondition({ group: 'Weapons', templateIndex: 113, name: 'Dagger', material: 0, flags: 0, minDamage: 1, maxDamage: 6 });   // AUDIT 23 (items-13/C13): no port site mints bit 0x10 (the claim is true again); items-5 condition
+  entity.items.push(dagger);
+  equipItem(entity, dagger);
+  // SURV2: a new character sets out with provisions - two sacks of
+  // rations, a full waterskin, worn camping gear and a fire kit with
+  // two lights left (survival/items.js startingProvisions; the mod's
+  // own OnStartGame kit, plus the port's fire). Casual and Hard alone, by decision (Mac, 2026-09-23: "No, not off.. theres no reason to have it in off" - SURV-KIT, withdrawn).
+  if (survivalOn()) for (const it of startingProvisions()) entity.items.push(it);
+}
+
+// ---- U8h: ARMOR VALUES (DaggerfallEntity.UpdateEquippedArmorValues
+// verbatim) ----
+// The 7-part table starts at 100 each (CharacterDocument: no armor);
+// equipping armor SUBTRACTS GetMaterialArmorValue()*5 on its body
+// part; shields subtract GetShieldArmorValue()*5 on their protected
+// parts MATERIAL-BLIND; unequip adds back. The to-hit law consumes
+// armorValues[struckBodyPart] directly (calculateSuccessfulHit), and
+// the paperdoll shows (100 - av)/5 per part (RefreshArmourValues;
+// the Increased/DecreasedArmorValueModifier channels pend their
+// effects). The clothing branch (shoes/boots group indices) runs as
+// a no-op in DFU - GetMaterialArmorValue returns 0 for clothing -
+// so it is omitted here.
+
+// AUDIT 17e F32: these tables lived here AND in ui/paperDoll.js with
+// divergent constants; they now have one home.
+export { BODY_PARTS, NUMBER_BODY_PARTS, materialArmorValue, itemArmorValue };
+
+/** GetBodyPartForEquipSlot (DaggerfallUnityItem.cs:1131-1153): only
+ *  these seven slots map to an armor body part. */
+/** RRI1: the slot rule for an armor template - a custom class's own slot (GetEquipSlot) ahead of the generated table. */
+const armorSlotRule = (templateIndex) => { const slot = customItemClass(templateIndex)?.equipSlot; return slot ? { slot } : SLOT_RULES.Armor[templateIndex]; };
+const SLOT_BODY_PART = new Map([
+  [EQUIP_SLOTS.Head, BODY_PARTS.Head], [EQUIP_SLOTS.RightArm, BODY_PARTS.RightArm],
+  [EQUIP_SLOTS.LeftArm, BODY_PARTS.LeftArm], [EQUIP_SLOTS.ChestArmor, BODY_PARTS.Chest],
+  [EQUIP_SLOTS.Gloves, BODY_PARTS.Hands], [EQUIP_SLOTS.LegsArmor, BODY_PARTS.Legs],
+  [EQUIP_SLOTS.Feet, BODY_PARTS.Feet],
+]);
+
+export const armorValuesOf = (entity) => (entity.armorValues ??= new Array(NUMBER_BODY_PARTS).fill(100));
+
+/** LR4 (the loot-rarity audit): THE BODY PARTS A PIECE OF ARMOUR
+ *  COVERS - a shield its SHIELD_PARTS, any other piece the one part
+ *  its template's slot maps to, anything else none. The armour affix
+ *  fold lands its points on these parts exactly as
+ *  updateEquippedArmorValues lands the material's, so a Rare cuirass
+ *  hardens the chest and not the feet. */
+export function armorBodyParts(item) {
+  if (!item || item.group !== 'Armor') return [];
+  if (isShieldTemplate(item.templateIndex)) return SHIELD_PARTS.get(item.templateIndex) ?? [];
+  const rule = armorSlotRule(item.templateIndex);
+  const part = rule ? SLOT_BODY_PART.get(EQUIP_SLOTS[rule.slot]) : null;
+  return part == null ? [] : [part];
+}
+
+export function updateEquippedArmorValues(entity, item, equipping) {
+  // AUDIT 17e F10 - UpdateEquippedArmorValues verbatim
+  // (DaggerfallEntity.cs:591-594): the branch admits Armor AND the
+  // FOOTWEAR window of each clothing group - MensClothing GroupIndex
+  // 6..8 = Shoes/Tall_Boots/Boots (141+6..8 = 147..149), WomensClothing
+  // 4..6 = Shoes/Tall_boots/Boots (182+4..6 = 186..188). Sandals
+  // (150/189) map to Feet but sit OUTSIDE the window and get nothing -
+  // preserved as DFU has it. Their material is Leather (3), so a pair
+  // of boots is worth 15 on the Feet part; the port granted 0.
+  const FOOTWEAR = item.group === 'MensClothing' ? [147, 148, 149]
+    : item.group === 'WomensClothing' ? [186, 187, 188] : null;
+  if (item.group !== 'Armor' && !(FOOTWEAR && FOOTWEAR.includes(item.templateIndex))) return;
+  const av = armorValuesOf(entity);
+  const sign = equipping ? -1 : 1;
+  if (!isShieldTemplate(item.templateIndex)) {
+    // a non-shield armor piece's slot is FIXED by template (the C5c
+    // rule table) - no equip-table state involved (DFU GetArmorSlot)
+    const rule = armorSlotRule(item.templateIndex);
+    const part = rule ? SLOT_BODY_PART.get(EQUIP_SLOTS[rule.slot])
+      : (FOOTWEAR ? BODY_PARTS.Feet : null);   // clothing footwear -> Feet
+    if (part == null) return;
+    // AUDIT 63 F18/F32: DaggerfallEntity.cs:608/:612 call
+    // `armor.GetMaterialArmorValue() * 5`, the WHOLE member - so the
+    // artifact halving (DaggerfallUnityItem.cs:1054-1056) rides this
+    // line. The port called the bare material ladder, and Lord's Mail
+    // and Ebony Mail granted double DFU's protection.
+    av[part] += sign * itemArmorValue(item) * 5;
+  } else {
+    const bonus = SHIELD_VALUES.get(item.templateIndex);
+    for (const part of SHIELD_PARTS.get(item.templateIndex)) av[part] += sign * bonus * 5;
+  }
+}
+
+/** GetEquipSlotForBodyPart (DaggerfallUnityItem.cs:1103-1125) - the
+ *  inverse of SLOT_BODY_PART's seven pairs; None for anything else. */
+const BODY_PART_SLOT = new Map([...SLOT_BODY_PART].map(([slot, part]) => [part, slot]));
+export const slotForBodyPart = (part) => BODY_PART_SLOT.get(part) ?? EQUIP_SLOTS.None;
+
+/** DaggerfallUnityItem.LowerCondition + ItemBreaks (:1170-1214).
+ *  C-slice (AUDIT 23 combat-1): breaking clamps at 0, speaks the
+ *  classic line - the plural variant for Gauntlets/Greaves/Boots
+ *  (itemHasBroken / itemHasBrokenPlural; the string table is not in
+ *  the source snapshot, so the prose is ours with the keys cited;
+ *  DFU notes classic said "is" where it says "has") - and unequips
+ *  from the owner, which restores the armor table through
+ *  unequipSlot. A broken MUNDANE item stays in the pack; DFU removes
+ *  only an ENCHANTED player item, and that arm rides the enchantment
+ *  arc with the rest of the payloads. Returns true on a break. */
+const PLURAL_BREAK_TEMPLATES = new Set([103, 104, 108]);   // Armor.Gauntlets, Greaves, Boots
+export function lowerCondition(item, amount, owner = null, say = null, removeFrom = null) {
+  mintCondition(item);
+  if ((item.maxCondition ?? 0) <= 0) return false;   // no condition to lower: the frozen stand-ins and 0-hitPoint templates cannot break
+  item.currentCondition -= amount;
+  if (item.currentCondition > 0) return false;
+  item.currentCondition = 0;
+  const name = item.name ?? templateByIndex(item.templateIndex)?.name ?? 'Item';
+  say?.(`${name} ${PLURAL_BREAK_TEMPLATES.has(item.templateIndex) ? 'have' : 'has'} broken.`);
+  // E2 corrected E1's order to ItemBreaks' own (DaggerfallUnityItem):
+  // the popup, THEN the unequip (which fires the Unequipped payloads
+  // and strips any held bundle), THEN the Breaks payload - both
+  // through hooks so this leaf stays below the enchantment module.
+  // SoulBound's break releases the soul.
+  // AUDIT 58: BY IDENTITY, not by the port's worn mark.
+  // DaggerfallUnityItem.ItemBreaks calls UnequipItem(owner), which
+  // walks the owner's table and takes off whichever slot holds THIS
+  // item (:1183-1196) - `unequipItem` above IS that walk. The mark
+  // is a port device the player's items carry; a FOE's worn gear is
+  // placed in its table without one (hostCombat.equipEnemy, so its
+  // own corpse's loot is not hidden from every inventory tab), and
+  // the mark-keyed call could never take a broken foe's shield off.
+  if (owner) unequipItem(owner, item);
+  // PCO1: LowerCondition's third parameter, `removeFromCollectionWhenBreaks`
+  // (DaggerfallUnityItem.cs) - ItemBreaks removes the item from that
+  // collection. The port's one caller is the mod's fading enchanted
+  // items module: the PLAYER's enchanted piece is destroyed on breaking.
+  if (removeFrom) { const i = removeFrom.indexOf(item); if (i >= 0) removeFrom.splice(i, 1); }
+  _hooks.onItemBroken?.(item, owner, say);
+  return true;
+}
+
+/** E1: the enchantment module's doors into this leaf (equip.js sits
+ *  BELOW enchantments.js in the import graph, so the coupling is a
+ *  registration, not an import). onEquipChange re-folds
+ *  entity._enchantMods the moment the worn set changes - DFU's
+ *  constant effects re-apply next frame (DoConstantEffects), and a
+ *  fold that waited for the next magic round would lag up to a
+ *  classic minute. onItemBroken is the Breaks payload edge above. */
+/** ES2 - GetEquipSound (DaggerfallUnityItem.cs:820-841), verbatim:
+ *  the SoundClips id the equip moment rings, or null for C#'s None.
+ *  Clothing 381, jewellery/gems 383; armor splits shield-or-Helm to
+ *  plate (419), then the EXACT material: Leather (0x0000) 417, Chain
+ *  (0x0100) 418 - Chain2 (0x0103) falls to plate on C#'s own `==` -
+ *  else plate; weapons by template, axes 415, long blades 378,
+ *  two-handed blades 379, short blades 377, flail 414, mace/hammer
+ *  413, staff 380, bows 416. */
+export function getEquipSound(item) {
+  switch (item?.group) {
+    case 'MensClothing':
+    case 'WomensClothing':
+      return 381;   // EquipClothing
+    case 'Jewellery':
+    case 'Gems':
+      return 383;   // EquipJewellery
+    case 'Armor': {
+      const own = rriEquipSound(item);   // AUDIT-RR F8: the class's GetEquipSound override comes first
+      if (own != null && SOUND[own] != null) return SOUND[own];
+      if (isShieldTemplate(item.templateIndex) || item.templateIndex === 107) return 419;   // GetIsShield() || Helm
+      if (item.material === 0x0000) return 417;   // ArmorMaterialTypes.Leather
+      if (item.material === 0x0100) return 418;   // ArmorMaterialTypes.Chain, exactly
+      return 419;   // EquipPlate
+    }
+    case 'Weapons':
+      switch (item.templateIndex) {
+        case 127: case 128: return 415;              // Battle_Axe, War_Axe
+        case 118: case 120: case 119: case 121: return 378;   // Broadsword, Longsword, Saber, Katana
+        case 122: case 123: return 379;              // Claymore, Dai_Katana
+        case 113: case 114: case 117: case 116: return 377;   // Dagger, Tanto, Wakazashi, Shortsword
+        case 125: return 414;                        // Flail
+        case 124: case 126: return 413;              // Mace, Warhammer
+        case 115: return 380;                        // Staff
+        case 129: case 130: return 416;              // Short_Bow, Long_Bow
+        default: return null;
+      }
+    default:
+      return null;
+  }
+}
+
+/** ES2: the host's one audio door for the equip moment. */
+let _equipSoundSink = null;
+export function setEquipSoundSink(fn) { _equipSoundSink = fn; }
+
+const _hooks = { onEquipChange: null, onItemBroken: null, onItemEquipped: null, onItemUnequipped: null };
+export function setEnchantmentHooks({ onEquipChange = null, onItemBroken = null, onItemEquipped = null, onItemUnequipped = null } = {}) {
+  _hooks.onEquipChange = onEquipChange;
+  _hooks.onItemBroken = onItemBroken;
+  _hooks.onItemEquipped = onItemEquipped;
+  _hooks.onItemUnequipped = onItemUnequipped;
+}
+/** LR2: OTHER folds that follow the worn set (the loot-rarity affix
+ *  fold), beside the enchantment hook - a listener list, so a second
+ *  fold never has to overwrite the first's door. */
+const _equipListeners = [];
+export function addEquipChangeListener(fn) { if (typeof fn === 'function' && !_equipListeners.includes(fn)) _equipListeners.push(fn); }
+function fireEquipChange(entity) {
+  _hooks.onEquipChange?.(entity);
+  for (const fn of _equipListeners) fn(entity);
+}
+/** AUDIT 68 S27-ht-equip-midswap: ONE ACT, ONE TELLING. A swap is
+ *  several table moves - the occupant out, a two-hander's other hand,
+ *  the arrival in - and a listener told between them read a table no
+ *  finished act leaves: Handheld Torches' hand law lit the stowed light
+ *  in the half-emptied hand, then stowed it again (or, under Drop, put
+ *  it on the floor) a statement later. Inside an act the tellings wait,
+ *  and each entity whose table moved is told once, settled, when the
+ *  outermost act ends. */
+let _heldTellings = null;
+function equipChanged(entity) {
+  if (_heldTellings) _heldTellings.add(entity);
+  else fireEquipChange(entity);
+}
+export function oneEquipAct(fn) {
+  if (_heldTellings) return fn();
+  const held = _heldTellings = new Set();
+  try { return fn(); } finally {
+    _heldTellings = null;
+    for (const entity of held) fireEquipChange(entity);
+  }
+}
+export const notifyEquipChange = (entity) => fireEquipChange(entity);

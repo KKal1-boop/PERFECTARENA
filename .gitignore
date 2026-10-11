@@ -4,6 +4,9 @@
 # Scratch space for format reconnaissance dumps.
 .scratch/
 
+# Browser-test artifacts (regenerated on every run).
+tests/shots/
+
 # Dependencies and build output.
 node_modules/
 dist/

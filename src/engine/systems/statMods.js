@@ -1,0 +1,188 @@
+// Attribute stat-mod layer (S14; drains joined in S15). Standalone
+// (no imports) so both the effect system and the combat formulas can
+// read a live stat without forming an import cycle (formulas <-
+// spellcast <- effects would close one if liveStat lived in
+// effects.js).
+//
+// DFCareer.Stats order: 0 Strength .. 7 Luck - STAT_KEYS_ORDER's one
+// home (chargen.js re-exports it). Fortify effects (classic type 9, subType =
+// the stat index) push a TEMPORARY additive modifier onto
+// entity.activeEffects for a duration (DFU ChangeStatMod:
+// statMods[stat] += magnitude); Drain/Transfer effects (types 7/11)
+// push a PERMANENT-until-healed negative one (DFU SetStatMod(stat,
+// -magnitude)). The live value any consumer reads is base + the sum
+// of active mods on that stat, so expiry/heal restores the base
+// cleanly and the raw (permanent) stat is never mutated.
+
+export const STAT_KEYS_ORDER = Object.freeze([
+  'strength', 'intelligence', 'willpower', 'agility',
+  'endurance', 'personality', 'speed', 'luck',
+]);
+
+/** FormulaHelper.MaxStatValue(), verbatim. DaggerfallStats' maxMods
+ *  layer (the only writer is the unported Mace of Molag Bal effect)
+ *  stays at 0, so the live ceiling is this flat 100. */
+export const MAX_STAT_VALUE = 100;
+
+/** The live value of a stat: base + every active mod on it (fortify
+ *  adds, drain/transfer subtracts, disease entries carry an
+ *  accumulated NEGATIVE per-stat statMods map - S18), CLAMPED to
+ *  0..MaxStatValue exactly as DaggerfallStats.GetLiveStatValue does
+ *  (:157-163 - `value = Mathf.Clamp(permanent + mods, 0, maxValue)`).
+ *  The clamp is on the READ only: the producers (poison/disease
+ *  per-minute and per-day damage, fortify magnitudes) accumulate
+ *  unbounded, as DFU's do. Combat and advancement read THIS, never
+ *  the raw base. */
+export function liveStat(entity, statName, skipKind = null) {   // AUDIT SURV-TIERS: `skipKind` leaves one entry kind out - the survival law caps its own entry against the stat WITHOUT it
+  const base = entity.stats?.[statName] ?? 0;
+  let mod = 0;
+  let survival = 0;   // AUDIT SURV-TIERS: the needs' entry, capped below against everything else
+  const list = entity.activeEffects;
+  if (list) {
+    for (const a of list) {
+      if (skipKind != null && a?.kind === skipKind) continue;
+      // disease/poison entries carry a signed per-stat statMods map
+      // (poison drugs push POSITIVE mods - S19b)
+      if (a.kind === 'disease' || a.kind === 'poison') { mod += a.statMods?.[statName] ?? 0; continue; }
+      // V2a: the racial override's SetStatMod channel - the curse
+      // entry's map, re-applied every round by lycanthropyMagicRound
+      // exactly as RacialOverrideEffect's constant pass does
+      if (a.kind === 'racialOverride') { if (!a.ended) mod += a.statMods?.[statName] ?? 0; continue; }
+      // V3: the artifact channel - the Mace of Molag Bal's strength
+      // gain (the WIELDER's; AUDIT 39 moved the target's drain onto the
+      // ordinary drainAttribute channel, where DFU's own DrainStrength
+      // incumbent puts it) rides an entry of this kind,
+      // reset by the effect's own 12-minute decay rather than a
+      // duration. RECORDED: DFU also moves the MAX (ChangeStatMaxMod);
+      // the port's clamp holds at MAX_STAT_VALUE.
+      if (a.kind === 'artifact') { if (!a.ended) mod += a.statMods?.[statName] ?? 0; continue; }
+      // SURV1: the needs' one entry - hunger, thirst, sleep, exposure and
+      // drink as a signed map rewritten every world minute
+      // (survival/needs.js applySurvivalMods), never a duration
+      if (a.kind === 'survival') { survival += a.statMods?.[statName] ?? 0; continue; }
+      if (a.stat !== statName) continue;
+      if (a.kind === 'fortifyAttribute') mod += a.magnitude;
+      else if (a.kind === 'drainAttribute' || a.kind === 'transferAttribute') mod -= a.magnitude;
+    }
+  }
+  // RF1: the entity's modifier channels (systems/entityMods.js -
+  // computeEntityMods sums every registered fold onto entity._mods at
+  // every equip change and every magic round) - a field read, so this
+  // leaf stays import-free; empty with every switch off.
+  mod += entity._mods?.stats?.[statName] ?? 0;
+  // AUDIT SURV-TIERS (the second pass): THE NEEDS' DRAIN IS CAPPED WHERE THE STAT IS READ. The minute law caps its
+  // entry five above the stat as it stands (survival/needs.js applySurvivalMods) - but only once a minute, and the
+  // zero-stat kill below reads every 0.2 real seconds: an ale's -2 on a live 7, then a Drain of 5 between two
+  // minutes, made a live 0 and killed. So the entry's drain is held here too, against the stat WITHOUT it (and never
+  // past the permanent stat's five), whatever lands between the minutes.
+  if (survival < 0) survival = -Math.min(-survival, Math.max(0, Math.min(base, Math.min(Math.max(base + mod, 0), MAX_STAT_VALUE)) - 5));
+  mod += survival;
+  return Math.min(Math.max(base + mod, 0), MAX_STAT_VALUE);
+}
+
+/** DrainEffect.IncreaseMagnitude, verbatim: the drain never reduces
+ *  the stat below 1 relative to its PERMANENT value ("no invisible
+ *  healing debt" - drain alone cannot zero a stat). One home (AUDIT 68
+ *  S24-drain-clamp-duplicate): effects.js's Drain/Transfer and the Mace
+ *  of Molag Bal's DrainTargetStrength both raise a drain through it. */
+export function increaseDrainMagnitude(target, entry, amount) {
+  const permanentValue = target.stats?.[entry.stat] ?? 0;
+  if (permanentValue - (entry.magnitude + amount) < 1) entry.magnitude = permanentValue - 1;
+  else entry.magnitude += amount;
+}
+
+/** EntityEffectManager.refreshModsDelay (:79) - UpdateEntityMods runs
+ *  on a REAL-TIME timer out of Update(), "more frequently than magic
+ *  rounds, but not too frequently", and the reset is to zero rather
+ *  than a subtract (:213-217). */
+export const REFRESH_MODS_DELAY = 0.2;
+
+/** The tail of EntityEffectManager.UpdateEntityMods (:1855-1866):
+ *
+ *      // Kill host if any stat is reduced to 0 live total
+ *      for (int i = 0; i < DaggerfallStats.Count; i++)
+ *          if (entityBehaviour.Entity.Stats.GetLiveStatValue(i) == 0)
+ *          { entityBehaviour.Entity.CurrentHealth = 0; return; }
+ *
+ *  AUDIT 24 (wave 31): unported. A stat drained to zero was merely a
+ *  stat at zero - Drain Strength held long enough, a Transfer, or a
+ *  disease with a heavy per-day stat cost left the character alive at
+ *  Strength 0 (and, because the fatigue ceiling is
+ *  (LiveStrength + LiveEndurance) x 64, at a max fatigue of zero and
+ *  therefore permanently collapsing). DFU kills outright.
+ *
+ *  The port has no AssignMods moment - liveStat is computed on read -
+ *  so the check rides the same real-time cadence DFU gives it, off the
+ *  host tick's dt. The accumulator lives on the entity so it survives a
+ *  host swap, exactly like the Running tally's.
+ *
+ *  @param {object} entity
+ *  @param {object} sinks   the entity's own doors - the kill goes through
+ *                          `hurt`, which is the one damage door, so the
+ *                          death presenter runs (DFU's CurrentHealth
+ *                          setter raises OnDeath the same way)
+ *  @param {number} dt      real seconds since the last host tick
+ *  @returns {boolean} true if the host was killed this call
+ */
+export function killIfAnyLiveStatZero(entity, sinks, dt = 0) {
+  if (!entity) return false;
+  entity._refreshModsTimer = (entity._refreshModsTimer ?? 0) + (Number(dt) || 0);
+  if (!(entity._refreshModsTimer > REFRESH_MODS_DELAY)) return false;
+  entity._refreshModsTimer = 0;
+  if ((entity.health ?? 0) <= 0) return false;   // already dead: DecreaseHealth has nothing to take
+  for (const stat of STAT_KEYS_ORDER) {
+    // A stat the port has never recorded is not a stat at zero. DFU's
+    // DaggerfallStats always carries all eight permanent values, so
+    // GetLiveStatValue is never answering about a stat that does not
+    // exist; here foes and fixtures routinely carry a partial block, and
+    // reading the ?? 0 default as "drained to death" would kill every one
+    // of them on their first frame.
+    if (entity.stats?.[stat] == null) continue;
+    if (liveStat(entity, stat) !== 0) continue;
+    sinks?.hurt?.(entity.health, { whole: true });   // AUDIT PSCALE1 DOORS-1: DFU's CurrentHealth = 0 - a kill, never divided by a party's toughness
+    return true;
+  }
+  return false;
+}
+
+// ---- The fatigue stat (S15), DaggerfallEntity verbatim ----
+// Classic fatigue is stored x64: FatigueMultiplier = 64,
+// MaxFatigue = (LiveStrength + LiveEndurance) * 64. Spell effects
+// that heal/damage fatigue pass assignMultiplier=true, i.e. their
+// magnitude lands x64. Current fatigue is a stored entity field
+// (entity.fatigue); the max is always derived live, so a fortified
+// or drained strength moves the ceiling exactly as DFU's getter does.
+export const FATIGUE_MULTIPLIER = 64;
+
+/** DaggerfallEntity.MaxFatigue, verbatim (live stats). */
+export function maxFatigue(entity) {
+  return (liveStat(entity, 'strength') + liveStat(entity, 'endurance')) * FATIGUE_MULTIPLIER;
+}
+
+/** DaggerfallEntity.FillVitalSigns (:442-447), verbatim: all three
+ *  pools to their maxima. AUDIT 26 F038 gave it one home - DFU calls
+ *  it on the court's acquittal and Thieves-Guild rescue
+ *  (DaggerfallCourtWindow.cs:191, :213), on level-up and on an
+ *  enemy's mint. It is NOT a floor and it is NOT on the prison
+ *  release (ReleaseFromPrison :482-490 never touches health). */
+export function fillVitalSigns(entity) {
+  if (!entity) return;
+  entity.health = entity.maxHealth ?? entity.health;
+  entity.fatigue = maxFatigue(entity);
+  entity.magicka = entity.maxMagicka ?? entity.magicka;
+}
+
+/** DaggerfallEntity.MaxBreath, verbatim: LiveEndurance / 2 (C# int
+ *  division). Current breath is a stored field (entity.currentBreath,
+ *  P12); 0 whenever the head is above water. */
+export function maxBreath(entity) {
+  return Math.trunc(liveStat(entity, 'endurance') / 2);
+}
+
+/** PlayerEntity per-minute/per-jump fatigue losses, verbatim (RAW
+ *  fatigue units - the x64 belongs to spell magnitudes only). The
+ *  swimming loss applies on a FAILED Dice100 roll vs the live
+ *  Swimming skill; success costs the default. */
+export const FATIGUE_LOSS = Object.freeze({
+  Default: 11, Climbing: 22, Running: 88, Swimming: 44, Jumping: 11,
+});

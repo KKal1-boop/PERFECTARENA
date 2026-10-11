@@ -1,0 +1,191 @@
+// Terrain height sampling: a 129x129 heightmap per world map pixel.
+// 1:1 translation of Daggerfall Unity's DefaultTerrainSampler.cs
+// GenerateSamplesJob and TerrainHelper.CubicInterpolator / GetNoise (MIT,
+// Daggerfall Workshop) - DFU's default sampler, run sequentially instead
+// of the Unity jobs system. Verbatim:
+//   - Base elevation: bicubic over a 4x4 small-heightmap window read at
+//     (mx - 2, my - 2), rows sampled in INVERTED Y order (3, 2, 1, 0),
+//     scaled by baseHeightScale 8.
+//   - Feature noise: bicubic over the 9x9 large-heightmap window read at
+//     (mx - 1, my), cell-local fractions, scaled by noiseMapScale 4.
+//   - Extra ground noise: GetNoise(nx, ny, 0.3, 0.5, 0.5, 1) *
+//     GetNoise(nx, ny, 0.9, 0.5, 0.5, 1) * 10 with nx = mx*(dim-1)+x and
+//     ny = (MaxMapPixelY(500) - my)*(dim-1)+y. The Perlin source is our
+//     documented departure (see perlin.js).
+//   - Floor at scaledOceanElevation 27.2; sample = clamp01(h / 1539).
+//   - Sample layout matches DFU's job indexing: sample(x, y) sits at
+//     data[x * dim + y].
+// World scale (StreamingWorld/DaggerfallTerrain, verbatim): one map pixel
+// spans WorldMapTerrainDim(32768) * GlobalScale = 819.2 world units;
+// world height = sample * MaxTerrainHeight * TerrainScale (1.25, the game
+// scene's - STREAMING_TERRAIN_SCALE below; TERRAIN-SCALE1); pixel
+// (X, Y) sits at (xdif * 819.2, 0, -ydif * 819.2) - map Y runs south.
+
+import { perlinNoise } from './perlin.js';
+import { GLOBAL_SCALE } from './meshReader.js';
+
+export const HEIGHTMAP_DIMENSION = 129; // TerrainSampler.defaultHeightmapDimension
+export const MAX_TERRAIN_HEIGHT = 1539;
+export const DEFAULT_TERRAIN_SCALE = 1.5; // TerrainHelper.defaultTerrainScale - the StreamingWorld PREFAB's own value
+/** TERRAIN-SCALE1 (2026-09-23): THE SCALE THE GAME STREAMS AT. DaggerfallUnityGame.unity overrides the
+ *  StreamingWorld prefab instance's TerrainScale to 1.25 - the scene's one StreamingWorld, the one
+ *  GameManager.StreamingWorld names, at v0.11.0-beta, v1.0.0, v1.1.1 and master - and no script writes it at run
+ *  time. StreamingWorld hands it to every terrain it streams (StreamingWorld.cs:1209, :1243 ->
+ *  terrainData.size.y = MaxTerrainHeight * TerrainScale, DaggerfallTerrain.cs:307) and to the nature layout (:1271),
+ *  and a location stands on the terrain it samples (:1185). The port read the prefab's 1.5 until World of
+ *  Daggerfall's AUDIT BRANCH found the override (the mod reads StreamingWorld.TerrainScale, and its author's
+ *  commented-out constant is 1539 * 1.25 = 1923.75): every hill stood a fifth taller than DFU's. Every height the
+ *  streamed world draws, collides with or stands things on reads THIS. */
+export const STREAMING_TERRAIN_SCALE = 1.25;
+export const WORLD_MAP_TERRAIN_DIM = 32768; // MapsFile.WorldMapTerrainDim
+export const TERRAIN_SIZE = WORLD_MAP_TERRAIN_DIM * GLOBAL_SCALE; // 819.2
+const MAX_MAP_PIXEL_Y = 500; // MapsFile.MaxMapPixelY
+
+// AUDIT EV F-DOC7: exported - the overworld relief and the far ring
+// build their macro heights on this exact term, and each carrying a
+// private copy of the 8 is how the ring would silently diverge from
+// the streamed law it claims to share.
+export const BASE_HEIGHT_SCALE = 8;
+const NOISE_MAP_SCALE = 4;
+const EXTRA_NOISE_SCALE = 10;
+// WATER-AUDIT (2026-09-08): THE REFERENCE'S FLOATS. `3.4f * baseHeightScale`
+// is 27.200000762939453 in C#, not the double 27.2 - and the tile job's
+// ocean compare is float32's (terrainTiles.js generateTileData), so the
+// one constant every reader shares is the float, or the port carries
+// two values of "the ocean elevation". The beach's 40 is exact either way.
+export const SCALED_OCEAN_ELEVATION = Math.fround(3.4 * BASE_HEIGHT_SCALE);
+export const SCALED_BEACH_ELEVATION = Math.fround(5.0 * BASE_HEIGHT_SCALE);
+
+/** Verbatim TerrainHelper.CubicInterpolator. */
+export function cubicInterpolator(v0, v1, v2, v3, frac) {
+  const A = (v3 - v2) - (v0 - v1);
+  const B = (v0 - v1) - A;
+  const C = v2 - v0;
+  const D = v1;
+  return A * (frac * frac * frac) + B * (frac * frac) + C * frac + D;
+}
+
+/** Verbatim TerrainHelper.GetNoise over our Perlin. */
+export function getNoise(x, y, frequency, amplitude, persistance, octaves, seed = 0) {
+  let finalValue = 0;
+  for (let i = 0; i < octaves; i++) {
+    finalValue += perlinNoise(seed + x * frequency, seed + y * frequency) * amplitude;
+    frequency *= 2.0;
+    amplitude *= persistance;
+  }
+  return Math.min(1, Math.max(0, finalValue));
+}
+
+/**
+ * EV4: the per-sample kernel for one world map pixel, factored from
+ * generateSamples so a NEIGHBOR pixel's edge rows can be computed
+ * without generating its whole 129x129 grid (the ghost rows that make
+ * chunk-edge normals true central differences). The window reads
+ * happen once here; the returned closure is the loop body of
+ * generateSamples verbatim - same reads, same arithmetic, same order,
+ * so the sampler's numeric pins hold through the refactor.
+ * @returns {(x: number, y: number) => number} normalized sample.
+ */
+export function sampleKernel(woods, mapPixelX, mapPixelY, hDim = HEIGHTMAP_DIMENSION) {
+  // Divisor ensures continuous 0-1 range of height samples.
+  const div = (hDim - 1) / 3;
+  const sd = 4;
+  const shm = woods.getHeightMapValuesRange1Dim(mapPixelX - 2, mapPixelY - 2, sd);
+  const lhm = woods.getLargeHeightMapValuesRange(mapPixelX - 1, mapPixelY, 3);
+  const ld = 9;
+  const shmAt = (r, c) => shm[r + c * sd]; // JobA.Idx
+  const lhmAt = (r, c) => lhm[r + c * ld];
+
+  return (x, y) => {
+    {
+      const rx = x / div;
+      const ry = y / div;
+      const ix = Math.floor(rx);
+      const iy = Math.floor(ry);
+      const sfracx = x / (hDim - 1);
+      const sfracy = y / (hDim - 1);
+      const fracx = (x - ix * div) / div;
+      const fracy = (y - iy * div) / div;
+      let scaledHeight = 0;
+
+      // Bicubic sample small height map for base terrain elevation.
+      let x1 = cubicInterpolator(shmAt(0, 3), shmAt(1, 3), shmAt(2, 3), shmAt(3, 3), sfracx);
+      let x2 = cubicInterpolator(shmAt(0, 2), shmAt(1, 2), shmAt(2, 2), shmAt(3, 2), sfracx);
+      let x3 = cubicInterpolator(shmAt(0, 1), shmAt(1, 1), shmAt(2, 1), shmAt(3, 1), sfracx);
+      let x4 = cubicInterpolator(shmAt(0, 0), shmAt(1, 0), shmAt(2, 0), shmAt(3, 0), sfracx);
+      const baseHeight = cubicInterpolator(x1, x2, x3, x4, sfracy);
+      scaledHeight += baseHeight * BASE_HEIGHT_SCALE;
+
+      // Bicubic sample large height map for noise mask over terrain features.
+      x1 = cubicInterpolator(lhmAt(ix, iy + 0), lhmAt(ix + 1, iy + 0), lhmAt(ix + 2, iy + 0), lhmAt(ix + 3, iy + 0), fracx);
+      x2 = cubicInterpolator(lhmAt(ix, iy + 1), lhmAt(ix + 1, iy + 1), lhmAt(ix + 2, iy + 1), lhmAt(ix + 3, iy + 1), fracx);
+      x3 = cubicInterpolator(lhmAt(ix, iy + 2), lhmAt(ix + 1, iy + 2), lhmAt(ix + 2, iy + 2), lhmAt(ix + 3, iy + 2), fracx);
+      x4 = cubicInterpolator(lhmAt(ix, iy + 3), lhmAt(ix + 1, iy + 3), lhmAt(ix + 2, iy + 3), lhmAt(ix + 3, iy + 3), fracx);
+      const noiseHeight = cubicInterpolator(x1, x2, x3, x4, fracy);
+      scaledHeight += noiseHeight * NOISE_MAP_SCALE;
+
+      // Additional noise mask for small terrain features at ground level.
+      const noisex = mapPixelX * (hDim - 1) + x;
+      const noisey = (MAX_MAP_PIXEL_Y - mapPixelY) * (hDim - 1) + y;
+      const lowFreq = getNoise(noisex, noisey, 0.3, 0.5, 0.5, 1);
+      const highFreq = getNoise(noisex, noisey, 0.9, 0.5, 0.5, 1);
+      scaledHeight += (lowFreq * highFreq) * EXTRA_NOISE_SCALE;
+
+      // Clamp lower values to ocean elevation.
+      if (scaledHeight < SCALED_OCEAN_ELEVATION) scaledHeight = SCALED_OCEAN_ELEVATION;
+
+      return Math.min(1, Math.max(0, scaledHeight / MAX_TERRAIN_HEIGHT));
+    }
+  };
+}
+
+/**
+ * Generate the height samples for one world map pixel.
+ * @param {object} woods - loaded WoodsFile.
+ * @param {number} mapPixelX
+ * @param {number} mapPixelY
+ * @param {number} hDim - heightmap dimension (default 129).
+ * @returns {Float32Array} normalized samples; sample(x, y) = out[x * hDim + y].
+ */
+export function generateSamples(woods, mapPixelX, mapPixelY, hDim = HEIGHTMAP_DIMENSION) {
+  const kernel = sampleKernel(woods, mapPixelX, mapPixelY, hDim);
+  const data = new Float32Array(hDim * hDim);
+  for (let x = 0; x < hDim; x++) {
+    for (let y = 0; y < hDim; y++) {
+      data[x * hDim + y] = kernel(x, y);
+    }
+  }
+  return data;
+}
+
+/**
+ * EV4: a sampler that answers OUT-OF-RANGE coordinates from the
+ * correct NEIGHBOR pixel's kernel, for the ghost rows that make
+ * chunk-edge normals central differences. The mapping is the
+ * continuity law the sampler already guarantees (shared edges:
+ * x=0 of pixel px equals x=128 of px-1; y=0 of py equals y=128 of
+ * py+1 - map Y runs south), so x=-1 reads the west pixel's x=127
+ * and x=129 reads the east pixel's x=1, and likewise for y. Neighbor
+ * kernels build lazily - a pixel build pays only for the edges it
+ * actually asks about. RAW samples: a neighbor's location blending is
+ * not reflected here, so a normal at the seam of a blended pixel can
+ * differ slightly from the neighbor's own - strictly better than the
+ * one-sided difference it replaces, and recorded in the EV arc.
+ * @returns {(x: number, y: number) => number} normalized sample.
+ */
+export function ghostSampler(woods, mapPixelX, mapPixelY, hDim = HEIGHTMAP_DIMENSION) {
+  const span = hDim - 1;
+  const kernels = new Map();
+  const kernelAt = (dx, dy) => {
+    const key = `${dx},${dy}`;
+    let k = kernels.get(key);
+    if (!k) kernels.set(key, k = sampleKernel(woods, mapPixelX + dx, mapPixelY + dy, hDim));
+    return k;
+  };
+  return (x, y) => {
+    let dx = 0, dy = 0;
+    if (x < 0) { dx = -1; x += span; } else if (x > span) { dx = 1; x -= span; }
+    if (y < 0) { dy = 1; y += span; } else if (y > span) { dy = -1; y -= span; }
+    return kernelAt(dx, dy)(x, y);
+  };
+}

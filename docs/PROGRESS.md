@@ -2,8 +2,8 @@
 
 *Re-read this file first after any context reset.*
 
-**Current milestone: 1 (survey and decisions) — COMPLETE.**
-Next: Milestone 2 (scaffold + hand-made test map).
+**Current milestone: 2 (scaffold + hand-made test map) — COMPLETE.**
+Next: Milestone 3 (MIF pipeline: decompress, parse, mesh, walk a real Arena interior).
 
 ---
 
@@ -12,8 +12,8 @@ Next: Milestone 2 (scaffold + hand-made test map).
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Survey and decisions (docs) | ✅ done — this document, ARCHITECTURE, DECISIONS, FORMATS |
-| 2 | Scaffold + hand-made test map | ⬜ not started |
-| 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ⬜ not started |
+| 2 | Scaffold + hand-made test map | ✅ done — renderer, loop, movement, collision, sky, lighting; 21/21 browser checks |
+| 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ⬜ in progress |
 | 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | ⬜ not started |
 | 5 | Full content (all provinces, all staff pieces, main quest completable) | ⬜ not started |
 | 6 | Systems and polish (magic, inventory, audio, performance) | ⬜ not started |
@@ -81,6 +81,58 @@ DECISIONS.md D8. `.devtools/` and `.scratch/` are git-ignored.)
 
 ---
 
+## Milestone 2 — what was done
+
+### Verifiable commands run
+
+| Command | Result |
+|---|---|
+| `node tools/copy-engine.mjs` | 154 engine modules copied into `src/engine/`, preserving paths; provenance recorded |
+| `node tests/run-browser.mjs` | **21/21 checks passed** against headless Chrome with WebGL2; screenshot in `tests/shots/m2-testmap.png` |
+| `node tools/serve.mjs` + browser | the one-command run, exercised by every browser test |
+
+### Verified (all by running it, in headless Chrome)
+
+* The engine's WebGL2 `Renderer` boots inside PERFECTARENA and draws a mesh built
+  by hand: **3 draw calls, 164 triangles, 3 sub-meshes, 3 textures**.
+* The **sky** renders above the horizon and **the ground below it** (measured on
+  the captured PNG: top band `rgb(138,151,176)`, bottom band `rgb(110,109,99)`).
+* The frame is a **picture, not a gradient**: 451 distinct colours, 2.0% dominant
+  colour, 97 hard colour edges along the best scanline.
+* **Movement**: holding `W` moves the player 3.9 units in 0.9 s (real key events
+  through CDP `Input.dispatchKeyEvent`).
+* **Collision**: walking into the west wall stops the capsule at
+  `x = -23.65` with the wall face at `-24.00` and a capsule radius of `0.35` — the
+  exact engine contact distance. The player does not fall through the floor.
+* **Lighting and fog** apply (surfaces are shaded, not flat albedo; distance the
+  same).
+* **No console errors, no uncaught page errors, and no WebGL misuse warnings.**
+* The `__debug` seam works from the page: `state()`, `teleport()`, `look()`,
+  `input()`, `advance()`, `shotPose()`.
+
+### Two real bugs the tests caught (both fixed, both worth recording)
+
+1. **A foreign pass leaves the renderer's state shadows stale.** `SkyRenderer.draw`
+   binds its own program and VAO. The engine expects the host to call
+   `renderer.markForeignPass()` afterwards; without it the mesh drew with the sky's
+   program still bound — silently, with three `INVALID_OPERATION` warnings a frame
+   and the courtyard rendered *as sky*. The screenshot check is what found it:
+   dominant colour went from 50.6% → 2.0% once the mesh actually drew.
+2. **A sub-mesh whose texture is missing draws untextured, not black.** Three
+   textures were uploaded under records 1/2/3 while the mesh asked for 0/1/2, so
+   the floor was lit but featureless — 0 hard edges on any scanline. `state()` now
+   reports `missingTextures`, and the suite asserts it is empty for every
+   sub-mesh. **The lesson: "3 textures uploaded" is not "the textures the mesh
+   asked for were uploaded".**
+
+### Environment finding
+
+* The machine has no Node/npm/Python on `PATH`. A portable Node 22 lives in
+  `.devtools/` (git-ignored) for the tools and tests; `package.json` still declares
+  normal `npm` scripts for anyone with a toolchain. Details in DECISIONS.md D8.
+
+---
+
 ## Simplifications logged
 
 | # | Simplification | Where / why |
@@ -90,8 +142,16 @@ DECISIONS.md D8. `.devtools/` and `.scratch/` are git-ignored.)
 | S3 | `.DEVTOOLS/` holds a portable Node 22 because the machine has no Node | Environment constraint (D8). Git-ignored; not part of the deliverable. |
 | S4 | Browser tests will drive system Chrome/Edge over raw CDP rather than Playwright | No Node/npm toolchain on the machine; documented in D8. |
 | S5 | Arena UI text may fall back to a built-in bitmap face | Arena font format only partly decoded (FORMATS.md §9); the fallback will be logged again if taken up. |
+| S6 | Milestone 2's HUD is a **DOM** overlay, not the engine's GL text pass | The GL text path needs an FNT font; Arena's font format is still only partly decoded (§9). The Arena windows (character sheet, inventory, quest log, dialog, map) will use the engine's GL UI once `arena/font.js` exists. |
+| S7 | Both triangle windings are emitted by the test map | Proves visibility without knowing the engine's winding law yet. `game/mifMesh.js` (M3) emits ONE winding, and the walk-through test is what proves it is the right one. |
+| S8 | No audio yet | `.VOC`/`.XFM` decoding is Milestone 6; the engine's WebAudio layer is copied and unused. |
 
 ## Known risks
+
+* **Milestone 4 is where the DOM HUD has to go** — the Arena windows are meant to
+  draw through the engine's GL UI pass, so `arena/font.js` (or the built-in face
+  fallback, S5/S6) is on the critical path for the character sheet, inventory and
+  quest log.
 
 * **Type08 is the single largest unknown.** If it cannot be reproduced from the
   documented descriptions, Milestone 3 stalls and the fallback is to render

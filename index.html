@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PERFECTARENA</title>
+  <link rel="icon" href="data:," />
+  <style>
+    html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; overscroll-behavior: none; }
+    #c { display: block; width: 100vw; height: 100vh; touch-action: none; -webkit-user-select: none; user-select: none; }
+    /* The HUD is a DOM layer for Milestone 2 only; the Arena windows
+       (character sheet, inventory, quest log, dialog, world map) draw
+       through the engine's GL UI pass instead. See docs/PROGRESS.md. */
+    #hud {
+      position: fixed; left: 10px; bottom: 10px; z-index: 5;
+      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      color: #e8e0c8; text-shadow: 0 0 3px #000; pointer-events: none; white-space: pre;
+    }
+    #hud .k { color: #d8b45a; }
+    #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #d8b45a;
+            font: 14px/1.6 ui-monospace, monospace; text-align: center; background: #06070a; z-index: 6; }
+    #boot.hidden { display: none; }
+    #boot button { font: inherit; padding: 8px 14px; margin-top: 12px; background: #1b1d24; color: #e8e0c8;
+                   border: 1px solid #4a4436; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <pre id="hud"></pre>
+  <div id="boot">PERFECTARENA<br />starting…</div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
