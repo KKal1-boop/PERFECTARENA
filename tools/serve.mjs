@@ -41,6 +41,27 @@ const server = http.createServer((req, res) => {
 
   // The test door: /arena-local/<NAME> maps onto ?arena=<root> if given, else
   // onto the ARENA_PATH environment variable. Never enabled for a plain visit.
+  if (url.pathname === '/arena-local' || url.pathname === '/arena-local/') {
+    // An index, so the client can tell "this file is not here" from "this file
+    // failed to load" without paying for a 404 per lookup — Arena resolves most
+    // names out of GLOBAL.BSA, so the loose-file misses are the common case and
+    // a 404 per miss fills the browser console with misleading network errors.
+    const root = url.searchParams.get('arena') || process.env.ARENA_PATH;
+    if (!root) { res.writeHead(404).end('no arena root'); return; }
+    /** @type {string[]} */
+    const names = [];
+    for (const base of [root, path.join(root, 'ARENA')]) {
+      try {
+        for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+          if (entry.isFile()) names.push(entry.name.toUpperCase());
+        }
+      } catch { /* a missing base is not an error; the other one may exist */ }
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({ names: Array.from(new Set(names)).sort() }));
+    return;
+  }
+
   if (url.pathname.startsWith('/arena-local/')) {
     const root = url.searchParams.get('arena') || process.env.ARENA_PATH;
     if (!root) { res.writeHead(404).end('no arena root'); return; }

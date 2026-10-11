@@ -81,7 +81,7 @@ async function startServer() {
 
 /** Suite: the Milestone 2 test map boots, draws, moves and collides. */
 async function suiteTestMap(page) {
-  await page.goto(`http://localhost:${PORT}/?shot`);
+  await page.goto(`http://localhost:${PORT}/?test&shot`);
   try {
     await page.waitFor('window.__shotReady === true || !!window.__bootError', { label: 'the first frames' });
   } catch (e) {
@@ -174,7 +174,131 @@ async function suiteMovement(page) {
   check('movement produced no console errors', errs.length === 0, errs.map((e) => e.text).join(' | ').slice(0, 300));
 }
 
-const SUITES = { testmap: suiteTestMap, movement: suiteMovement };
+/**
+ * Suite: Milestone 3 — boot a *real* Arena interior out of the player's own
+ * data, walk it, and stop at its walls.
+ *
+ * This is the suite that proves the whole MIF/INF pipeline: if the voxel
+ * decoding, the texture table or the winding were wrong, the screenshot checks
+ * below fail (blank frame, no edges, or a frame of untextured grey).
+ */
+async function suiteArenaInterior(page) {
+  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
+  const url = `http://localhost:${PORT}/?interior=START.MIF&arena=${encodeURIComponent(arena)}`;
+  await page.goto(url);
+  try {
+    await page.waitFor('window.__ready === true || !!window.__bootError', { label: 'boot', timeoutMs: 30000 });
+  } catch (e) {
+    const diag = await page.evalJs('JSON.stringify({ href: location.href, boot: window.__bootError || null, errs: window.__debug?.pageErrors, dbg: window.__debug?.scene })');
+    throw new Error(`${e.message}; page state ${diag}`);
+  }
+  const bootError = await page.evalJs('window.__bootError || null');
+  check('the interior scene boots without a boot error', !bootError, bootError ? String(bootError).slice(0, 400) : '');
+
+  await page.waitFor('window.__debug.state().painted > 3', { label: 'frames' });
+  const st = await page.evalJs('window.__debug.state()');
+  check('the scene reports itself as a real Arena interior', st?.scene === 'interior' && st?.map === 'START.MIF',
+    `${st?.scene} ${st?.map} inf=${st?.inf}`);
+  check('the INF was resolved from the MIF\'s own INFO chunk', /^START\.INF$/i.test(st?.inf ?? ''), `inf=${st?.inf}`);
+  check('the voxel grid decoded into real geometry', (st?.quads ?? 0) > 500, `${st?.quads} quads, ${st?.tris} triangles`);
+  check('walls were found in the level', (st?.stats?.wall ?? 0) > 100, JSON.stringify(st?.stats));
+  check('a collider was registered from the same triangles', (st?.colliderTris ?? 0) > 500, `${st?.colliderTris} collider triangles`);
+  check('every sub-mesh has its texture (no untextured surface)', (st?.missingTextures ?? ['?']).length === 0,
+    `missing: ${(st?.missingTextures ?? []).join(', ')}`);
+  check('the materials resolved to real Arena textures', (st?.textures ?? 0) >= 5, `${st?.textures} textures uploaded`);
+  check('the frame drew geometry', (st?.draws ?? 0) > 0, `draws=${st?.draws}`);
+  check('the player is standing on the level floor', st?.grounded === true, `grounded=${st?.grounded} y=${st?.feet?.[1]}`);
+  check('the map did not need the oversized-layer warning', (st?.warnings ?? []).length === 0, (st?.warnings ?? []).join('; '));
+
+  const shot = path.join(SHOTS, 'm3-start.png');
+  const png = await page.screenshot(shot);
+  const decoded = decodePng(png);
+  const stats = imageStats(decoded);
+  check('the screenshot is not blank', stats.distinctColors > 30 && stats.dominantShare < 0.95,
+    `${stats.distinctColors} colours, dominant ${(stats.dominantShare * 100).toFixed(1)}%`);
+  const edges = Math.max(...[0.35, 0.5, 0.65].map((f) => scanlineEdges(decoded, Math.floor(decoded.height * f))));
+  check('the frame has hard colour edges (real textured geometry, not a gradient)', edges > 12,
+    `${edges} edges along the best scanline`);
+  // An interior with no ceiling of its own must NOT be all sky.
+  const bands = bandMeans(decoded);
+  check('the frame is a dungeon, not an all-sky frame', bands.bottom.b < 200, `bottom rgb ${fmt(bands.bottom)}`);
+
+  // ── walking, and stopping at a wall ──────────────────────────────────────
+  // Find a floor cell with a solid neighbour along +Z (world Z = MIF column).
+  const target = await page.evalJs(`(() => {
+    const d = window.__debug;
+    const s = d.state();
+    const [cols, rows] = s.size;             // size is [width, height]
+    for (let row = 1; row < rows - 1; row++) {
+      for (let col = 1; col < cols - 1; col++) {
+        const here = d.cellAt(row, col);
+        const ahead = d.cellAt(row, col + 1);
+        if (here && !here.solid && !here.chasm && ahead && ahead.solid && ahead.kind === 'wall') {
+          return { row, col };
+        }
+      }
+    }
+    return null;
+  })()`);
+  check('the level contains a wall to walk into', !!target, JSON.stringify(target));
+
+  if (target) {
+    await page.evalJs(`window.__debug.teleportCell(${target.row}, ${target.col}); window.__debug.look(0, 0)`);
+    await new Promise((r) => setTimeout(r, 120));
+    const before = await page.evalJs('window.__debug.state()');
+    await page.pressKey('KeyW', true);
+    await new Promise((r) => setTimeout(r, 1800));
+    await page.pressKey('KeyW', false);
+    const after = await page.evalJs('window.__debug.state()');
+    const dz = after.feet[2] - before.feet[2];
+    check('holding W moves the player through the dungeon', dz > 0.4, `Δz=${dz.toFixed(2)}`);
+    // The wall's near face is one cell ahead of the starting cell; the capsule
+    // radius is 0.35, so the feet must stop short of it and not pass through.
+    const radius = 0.35;
+    const cellSize = 2.5;
+    const wallFace = (target.col + 1) * cellSize;
+    check('the wall stops the player', after.feet[2] < wallFace - radius + 0.1 && after.feet[2] > wallFace - cellSize,
+      `z=${after.feet[2].toFixed(2)}, wall face at ${wallFace.toFixed(2)}`);
+    check('the player did not fall through the dungeon floor', after.feet[1] > 1.5 && after.feet[1] < 3.5, `y=${after.feet[1].toFixed(2)}`);
+  }
+
+  // ── a second, larger dungeon, and its multi-level structure ──────────────
+  await page.goto(`http://localhost:${PORT}/?interior=39300577.MIF&arena=${encodeURIComponent(arena)}`);
+  await page.waitFor('window.__ready === true || !!window.__bootError', { label: 'boot 2', timeoutMs: 30000 });
+  await page.waitFor('window.__debug.state().painted > 3', { label: 'frames 2' });
+  const big = await page.evalJs('window.__debug.state()');
+  const levels = await page.evalJs('window.__debug.levels()');
+  check('a 100x100 main-quest dungeon loads', big?.size?.[0] === 100 && (big?.quads ?? 0) > 5000,
+    `${big?.size?.join('×')} ${big?.quads} quads, ${big?.levelCount} levels`);
+  check('its levels are reported with their .INF files', Array.isArray(levels) && levels.length === 3 && /^HALLS\d\.INF$/.test(levels[0].inf),
+    JSON.stringify(levels.map((l) => l.inf)));
+  check('level names come from the physical order, not a sort', levels[0].name === 'level 1' && levels[2].name === 'level 3',
+    JSON.stringify(levels.map((l) => l.name)));
+  check('doors were decoded from the voxel bitfield', (big?.stats?.door ?? 0) > 5, `doors=${big?.stats?.door}`);
+  check('raised platforms were decoded', (big?.stats?.raised ?? 0) > 50, `raised=${big?.stats?.raised}`);
+  check('chasms were decoded', (big?.stats?.chasm ?? 0) > 10, `chasms=${big?.stats?.chasm}`);
+
+  await page.screenshot(path.join(SHOTS, 'm3-dungeon.png'));
+
+  // Level switching must rebuild the mesh and the collider, not just relabel.
+  await page.evalJs('window.__debug.loadLevelAndSettle(1)');
+  await page.waitFor('window.__debug.state().grounded === true', { label: 'the player settles on level 2', timeoutMs: 5000 })
+    .catch(() => {});
+  const second = await page.evalJs('window.__debug.state()');
+  check('switching level rebuilds the geometry', second?.level === 1 && (second?.quads ?? 0) > 1000 && second?.missingTextures.length === 0,
+    `level ${second?.level} ${second?.quads} quads, inf ${second?.inf}`);
+  check('switching level puts the player on the new floor', second?.grounded === true,
+    `grounded=${second?.grounded} y=${second?.feet?.[1]?.toFixed?.(2)} spawn=${JSON.stringify(second?.spawn)}`);
+
+  const glWarnings = page.consoleMessages().filter((m) => /INVALID_OPERATION|INVALID_VALUE|GL_INVALID|GL_OUT_OF_MEMORY/.test(m.text));
+  check('no WebGL misuse warnings', glWarnings.length === 0, glWarnings.length ? `${glWarnings.length}× ${glWarnings[0].text}` : '');
+  const errs = realErrors(page.consoleErrors());
+  check('no console errors', errs.length === 0, errs.map((e) => e.text).join(' | ').slice(0, 400));
+  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
+  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
+}
+
+const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior };
 
 async function main() {
   if (!findBrowser()) {

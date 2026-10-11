@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node tools/serve.mjs 8080",
     "serve": "node tools/serve.mjs",
-    "test": "node --test tests/unit/",
+    "test": "node --test tests/unit/*.test.mjs",
     "test:browser": "node tests/run-browser.mjs",
     "probe:mif": "node tools/mif-dump.mjs",
     "check": "npm run test && npm run test:browser"

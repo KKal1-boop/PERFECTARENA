@@ -210,6 +210,102 @@ Adding Vite would mean the player needs Node to *play*, which contradicts
 thing must be openable from a static server. `npm run build` is offered only as an
 optional optimisation pass for Milestone 6.
 
+## D11 — `A.EXE` is PKLITE-packed, and is left packed (**DEVIATION, amended**)
+
+**Brief said:** "Some game rules (class/monster/item tables) may live in A.EXE
+rather than data files: extract them or use documented tables, and record which."
+
+**Verified after D5:** the folder has no `A.EXE` but does have **`ACD.EXE`**
+(174 429 B), which is the only plausible candidate for the game executable. It is
+**PKLITE**-compressed (the string `PKLITE Copr. 1990-` sits at offset 30 in its MZ
+stub) and contains **no readable game strings**, so it cannot be identified from
+its contents. Earlier recon notes that called it "LZEXE-packed" were wrong —
+`src/arena/lzexe.js` was written on that assumption and **proved it false** (all
+three executables fail the LZEXE signature test), so it was deleted rather than
+left in the tree as dead code.
+
+**Decision.** Use documented community tables (D5), and reconstruct only the one
+table the *geometry* cannot do without — the raised-platform heights and
+thicknesses — in `src/game/tables/raisedPlatforms.js`, marked `RECONSTRUCTED` in
+its own `SOURCE` constant and in FORMATS.md §13.
+
+**Rejected: writing a PKLITE decompressor.** It is a bounded but real reverse-
+engineering task (bit-tree duplication modes; OpenTESArena carries a ~1 100-line
+`ExeUnpacker` for it plus an offsets file), it would still leave the offsets
+version-dependent — OpenTESArena's are for a *decompressed* A.EXE v1.06 and
+`ACD.EXE` is a different build — and its entire payoff is a handful of numbers of
+which the data only ever exercises one index. That is a poor trade against
+Milestones 4–6, and the brief explicitly permits documented tables.
+
+**Consequence:** step and platform heights are approximate; everything structural
+in a level is exact. Logged as S9 in PROGRESS.md.
+
+## D12 — World scale: one cell = 2.5 units, one layer = 2.5 units
+
+**Decision.** `mifLevel.js` reports geometry in **cell units** (1 = one grid cell)
+and `mifMesh.js` multiplies by `CELL_SIZE = 2.5` world units. One layer is 2.5
+units tall, so the playable corridor is 2.5 units of headroom.
+
+**Rationale.** The reused engine is metric: `player/motor.js` has
+`CAPSULE_HEIGHT = 1.8`, `CAPSULE_RADIUS = 0.35` and `EYE_HEIGHT = 1.7`. Arena's own
+scale is `layer = *CEILING height / 128`, which for a real interior (135, 150, 200)
+is **1.05–1.56** — a room too short for a 1.8-unit capsule, so the player would be
+permanently stuck. Scaling a layer to 2.5 gives a 2.5-unit-wide cell and a
+2.5-unit-tall room, which fits the capsule with room to look up, and keeps the
+grid cubic so raised platforms, doors and edges all scale consistently.
+
+**Rejected: squashing the layer to `ceiling/128` and shrinking the capsule.**
+Faithful to the original's units, but it means retuning the engine's motor, eye
+height, step and jump constants for a scale nothing else in the engine uses, and
+it makes every movement constant Arena-specific. **Also rejected: scaling
+horizontally too** (a cell as 1 unit and the room as 2.5) — that would make a
+cell narrower than the player is tall and put the capsule within reach of two
+walls at once in a 1-cell corridor.
+
+**Consequence:** `*CEILING` height no longer affects geometry, only appearance
+(and the raised-platform scale, which is applied in cell units). Logged as S10.
+
+## D13 — Interiors are lit by one ambient term, not Arena's light tables
+
+**Decision.** `scenes/interior.js` lights a level with
+`renderer.setLighting(ambient, 0, [0,0,0])` and no sun, at `ambient ≈ 0.86`,
+overridable for tuning with `?ambient=` and `?fog=`.
+
+**Rationale.** Arena renders the world by *brightening `PAL.COL`* through
+per-map light tables. `PAL.COL` is genuinely dim (mean component 81.5 of 255), so
+using it raw plus a low ambient produced a frame with a peak luminance of 66 of
+255 and 13 hard edges — legible only because it is a dungeon. Raising the ambient
+is a one-line stand-in that keeps the engine's own lighting lane working
+(measured: 0.26 → 13 edges, 0.5 → 63, 0.7 → 76, 0.86 → 103, 1.0 → 107).
+
+**Rejected: porting Arena's light tables now.** They need `LIGHT*.DAT`-equivalent
+handling and a second texture slot per surface, which is Milestone 6 polish; doing
+it in Milestone 3 would delay the milestone the brief calls the minimum
+acceptable deliverable.
+
+## D14 — Level geometry is emitted per-texture, and the collider is the same soup
+
+**Decision.** `game/mifMesh.js` buckets quads by INF texture reference and emits
+one renderer sub-mesh per texture (that renderer takes one texture per sub-mesh).
+Collision reuses the same quad corners, so the drawn mesh and the collider can
+never disagree; faces of non-colliding decor are simply omitted from the soup.
+
+**Rationale.** A 100×100 dungeon is ~20 800 quads over ~60 materials — 60 draw
+calls and no texture atlas needed, which is well inside budget and needs no new
+renderer work. Reusing the corners removes a whole class of "I can see through it
+but I can't walk through it" bugs, which is exactly the sort of defect that is
+invisible in a screenshot.
+
+**Winding is derived, not assumed.** Every quad passes through a helper that
+reads the intended face normal and reverses the corner order when the geometric
+normal disagrees, so the winding cannot silently be backwards under the engine's
+mirrored projection (`gl.frontFace(gl.CW)` + `mat4.mirrorProjectionX`).
+`tests/unit/mif.test.mjs` asserts per triangle that the geometric normal agrees
+with the vertex normal, on a real 20 800-quad level.
+
+**Rejected: a texture atlas.** It would cut draw calls but needs careful 1-pixel
+bleeding to avoid seam artifacts, and the budget does not require it.
+
 ## D10 — File structure
 
 ```
@@ -224,11 +320,21 @@ PERFECTARENA/
     engine/                  ← copied from daggerfall/src, pruned (see ARCHITECTURE §2)
       render/ player/ ui/ systems/ formats/ world/mat4.js ...
     arena/                   Arena data layer (bytes → structs/images)
-    game/                    rules, world model, scenes
-      tables/                documented class/monster/item tables
-    scenes/                  city.js wild.js dungeon.js worldmap.js interiors.js
-  tools/                     inspect.mjs, mif-dump.mjs, extract-rules.mjs, serve.mjs
+      arenaData.js           names → decoded + cached; loose file then GLOBAL.BSA
+      bsaArchive.js          GLOBAL.BSA index and record extraction
+      browserSource.js       folder picker + the `?arena=` dev/test door
+      decompress.js          Arena's four codecs (Type08/Type04/RLE/RLE-words)
+      image.js palette.js set + img decoding
+      infFile.js             .INF grammar, texture table, archive decryption
+      mifFile.js             .MIF header, LEVL sections, tagged chunks
+    game/                    the world model
+      mifLevel.js            voxel bitfields → a walkable level
+      mifMesh.js             level → MeshBundle + collider triangles
+      tables/                rules tables, each with a `source`
+    scenes/                  testmap.js interior.js … (city/wild/worldmap: M4–M5)
+  tools/                     inspect, mif-dump, copy-engine, serve, lib/ probes
   tests/
     unit/                    Node tests over the real Arena files
-    browser/                 harness.html + run-browser.mjs (headless Chrome)
+    run-browser.mjs + cdp.mjs  suites: testmap, movement, interior
+    shots/                   what the machine saw
 ```

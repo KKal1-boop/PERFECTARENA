@@ -2,8 +2,8 @@
 
 *Re-read this file first after any context reset.*
 
-**Current milestone: 2 (scaffold + hand-made test map) — COMPLETE.**
-Next: Milestone 3 (MIF pipeline: decompress, parse, mesh, walk a real Arena interior).
+**Current milestone: 3 (MIF pipeline) — COMPLETE.**
+Next: Milestone 4 (the vertical slice: chargen → city → dungeon → staff piece → save/load).
 
 ---
 
@@ -11,125 +11,137 @@ Next: Milestone 3 (MIF pipeline: decompress, parse, mesh, walk a real Arena inte
 
 | # | Milestone | Status |
 |---|---|---|
-| 1 | Survey and decisions (docs) | ✅ done — this document, ARCHITECTURE, DECISIONS, FORMATS |
-| 2 | Scaffold + hand-made test map | ✅ done — renderer, loop, movement, collision, sky, lighting; 21/21 browser checks |
-| 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ⬜ in progress |
+| 1 | Survey and decisions (docs) | ✅ done — ARCHITECTURE, DECISIONS, FORMATS |
+| 2 | Scaffold + hand-made test map | ✅ done — 17/17 browser checks |
+| 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ✅ done — 13/13 unit + 29/29 browser checks |
 | 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | ⬜ not started |
 | 5 | Full content (all provinces, all staff pieces, main quest completable) | ⬜ not started |
 | 6 | Systems and polish (magic, inventory, audio, performance) | ⬜ not started |
 
+### Verifiable commands
+
+```
+npm run test          # node --test tests/unit/*.test.mjs          → 13/13
+npm run test:browser  # node tests/run-browser.mjs                → 50/50
+npm run dev           # node tools/serve.mjs 8080                 → the game
+npm run probe:mif     # node tools/mif-dump.mjs                   → format evidence
+```
+
+The browser suite needs `ARENA_PATH` (or `?arena=<folder>` on the URL) so it can
+read a real Arena installation. Without it the `interior` suite is the only one
+that cannot run; `testmap` and `movement` need no game data.
+
 ---
 
-## Milestone 1 — what was done
+## Milestone 3 — what was done
 
-### Verifiable commands run
+**A real Arena dungeon now loads from the player's own data and can be walked.**
 
-| Command | Result |
+### Verified (all by running it)
+
+| Evidence | Result |
 |---|---|
-| `node tools/inspect.mjs GLOBAL.BSA START.MIF IMPPAL.MIF RANDOM1.MIF` | BSA directory decoded; MIF headers and chunk tags listed |
-| `node tools/probe2.mjs` | loose file headers, BSA record extraction, entry census by extension |
-| Node one-liners over `CITYDATA.64`, `SPELLSG.65`, `SPELLS.65`, `STATES.65` | province layout and record sizes confirmed by arithmetic |
+| `node --test tests/unit/*.test.mjs` | **13/13** — every assertion runs against the real files in `c:/arenaproject/arena/ARENA` |
+| `node tests/run-browser.mjs interior` | **29/29** in headless Chrome with WebGL2 |
+| `node tests/run-browser.mjs` (all suites) | **50/50**, no console errors, no WebGL misuse warnings |
+| `node tools/mif-dump.mjs` | all 21 loose `.MIF` files parse; parsed level counts match the declared counts; every level names its `.INF` |
+| `node tools/lib/mapascii.mjs 39300577.MIF 0 60` | a recognisable dungeon: rooms, corridors, doors, staircases, chasms |
+| `node tools/lib/voxhist.mjs 39300577.MIF 0` | raw-ID histograms with their bitfields (`0x3434` = wall texture 51, `0x703E` = a raised platform, `0xB010` = a swinging door) |
+| `node tools/lib/textures.mjs START.MIF 8` | every INF texture decodes; stone `rgb(57,59,67)`, a door `rgb(57,30,30)` |
 
-(The Node used was the portable v22.11.0 installed into `.devtools/` — see
-DECISIONS.md D8. `.devtools/` and `.scratch/` are git-ignored.)
+### Concrete numbers from the real data
 
-### Verified
+* `GLOBAL.BSA`: **2 441 records**, payload `16 758 198` B and directory start
+  `16 758 198` B — the directory begins exactly where the last payload ends.
+* `START.MIF` (the Imperial Dungeons, 50×50, 1 level, `START.INF`): 2 242 quads,
+  4 484 triangles, 1 631 wall cells, 140 entities, 264 chasm cells, 13 textures.
+* `39300577.MIF` (a 100×100 main-quest dungeon, 3 levels, `HALLS1–3.INF`):
+  20 821 quads / 41 642 triangles on level 1, 4 857 walls, 585 raised platforms,
+  87 doors, 833 chasm cells, 271 entities.
+* **Collision is exact:** walking into a wall from a cell centre stops the capsule
+  at `z = 9.65` with the wall face at `z = 10.00` and a capsule radius of `0.35`
+  — the contact distance, to the centimetre.
+* **Level switching rebuilds geometry, textures and collision** (level 2 of
+  `39300577.MIF`: 13 448 quads, `HALLS2.INF`, all sub-mesh textures present,
+  player lands on the new floor).
+* **Lighting was tuned by measurement**, not taste: peak luminance and hard-edge
+  count on a fixed vantage across ambient 0.26 → 1.0 (13 → 107 edges). See
+  DECISIONS.md D13.
 
-* **Arena BSA layout** — `uint16 count` at 0, payloads from offset 2 **with no
-  directory-type field**, 18-byte directory (14-byte name + `int32` size) at the
-  end. Confirmed by the size sum: Σ sizes = 16 758 196, directory at 16 758 198.
-  2 441 records enumerated by extension.
-* **MIF header** — `MHDR` + 61-byte payload; `startX/startY[4]`, `startingLevel`,
-  `levelCount`, `width`, `height`. Read on four real files (`START.MIF` 50×50,
-  `IMPPAL.MIF` 50×50 ×4 levels, `RANDOM1.MIF` 32×32 ×32 levels).
-* **MIF chunk framing** — `FLOR`/`MAP1` compressed size *includes* the
-  uncompressed-size field; `uncompressed == width × height × 2` exactly (5 000 for
-  50×50).
-* **INF is text**; **INF inside `GLOBAL.BSA` is encrypted** while loose INF files
-  are plaintext (verified by the first bytes of the archive's `CAS.INF` vs the
-  folder's `IMPPAL1.INF`), and the INF section/directive/filename grammar
-  (`@FLOORS`, `*BOXCAP n`, `file.set  #n`, `*CEILING`).
-* **`CITYDATA.64` = 9 provinces × 1 228 bytes**, with the province name, 8
-  city-states, 8 towns + 16 villages, and 16 dungeon entries at fixed offsets,
-  confirmed by the name positions of `High Rock`, `Hammerfell` … `Imperial
-  Province`.
-* **Record sizes:** `SPELLSG.65` = `SPELLS.LST` = 10 880 = 128 × 85;
-  `SPELLS.65` = 2 720 = 32 × 85; `STATES.65` = 28 800 = 64 × 450;
-  `WILD001.RMD` = 24 576 = 64 × 64 × 6; `.COL` = 776 = 8 + 256×3.
-* **`A.EXE` is absent** from the provided data (recon finding; consequences in
-  DECISIONS.md D5).
-* The engine survey: entry point, renderer, hosts, input, UI stack, and the
-  minimum renderer call sequence for a host (from `scenes/interior.js`).
+### What the tests caught (each was a real defect, each is now fixed)
+
+1. **`.MIF` voxel layers can be larger than the map.** `VILPAL3.MIF`'s second
+   level declares 25×25 and ships a 100×100 grid (20 000 B). The original reads
+   the first `width × height` voxels; throwing instead broke every file that has
+   such a stub. Now read the same way, with a warning on the level.
+2. **A cell has a floor *and* a structure.** The first decoder put both in one
+   `kind` field, so every wall erased the floor beneath it — the chasm count came
+   out 644 instead of the true 833 and the floor statistics were meaningless.
+3. **A missing loose file is not an error.** Arena resolves most names out of
+   `GLOBAL.BSA`, so probing the folder first produced a 404 in the console for
+   every one of them. The dev server now exposes a loose-file index and the client
+   requests only names that exist, so "no console errors" stays a real signal.
+4. **Winding had to be derived, not guessed.** The engine runs
+   `gl.frontFace(gl.CW)` through its mirrored projection; a unit test now asserts
+   per triangle, on a 20 800-quad real level, that each triangle's geometric normal
+   agrees with its vertex normal.
 
 ### Broken / not yet established (UNVERIFIED)
 
-* **The Type08 decompressor is not written yet.** Only the container framing is
-  known. Without it no MIF voxel layer can be read — this is the first task of
-  Milestone 3. Known-good vectors recorded in FORMATS.md §5.
-* **Voxel-ID bitfield semantics** (which field is the texture index, which is the
-  wall class, how `MAP1`/`MAP2` combine) — scheme known, meaning not yet proven.
-* **MIF `FLAT` / `INNS` / `LOOT` / `STOR` chunk internals** — opaque; NPC and
-  flat placement is therefore unread for now.
-* **`.IMG` / `.CIF` / `.SET` / `.DFA` pixel layouts** — sizes and first headers
-  known, slicing not confirmed.
-* **Arena font glyph packing** — first byte is the max width, width table follows;
-  count/height/bitmap packing unknown.
-* **`CLASSES.DAT` / `GUARD.DAT` / `RAND.DAT` / `JAGTEMP.DAT` structure** — unknown.
-* **`.64` vs `.65` file roles** — unknown.
-* Nothing has been *rendered* yet; every engine claim above is read from source,
-  not from a running frame.
+* **Raised-platform heights and thicknesses are reconstructed, not extracted** —
+  `A.EXE` is absent and `ACD.EXE` is PKLITE-packed. Only height index 0 is ever
+  used by the real data (measured), so only the thickness ladder's absolute scale
+  is uncertain. See DECISIONS.md D11 and simplification S9.
+* **`FLAT` / `INNS` / `LOOT` / `STOR` chunk internals** — still opaque. Flats are
+  *placed* (their indices come from `FLOR`'s low byte and `MAP1` `0x8` voxels) but
+  not drawn: billboards arrive with Milestone 4 NPCs.
+* **Doors are solid.** The `0xB` bitfield decodes (kind and texture are known and
+  reported by `state()`), but nothing opens them yet — Milestone 4.
+* **Chasms are rendered as a lower floor with the chasm texture**, not as pits
+  with swimming, falling and drowning. They are walkable for now.
+* **Edges (fences/gates/signs) and transparent walls (arches)** decode and mesh,
+  but the transparent ones are drawn opaque; alpha test is Milestone 6.
+* **Diagonals** are drawn as a thin two-sided slab across the cell, which is the
+  right shape and the right collision, not the original's exact quad split.
+* **`.CIF` / `.RCI` / `.DFA` pixel layouts** — sizes and headers known, slicing
+  not confirmed. `.CIF` is on the Milestone 4 path (UI art); `.RCI` is Milestone 6.
+* **Arena fonts** — still only partly decoded (FORMATS.md §9). Milestone 4 either
+  finishes it or takes the built-in bitmap face fallback (S5/S6).
+* **Cities and wilderness are untouched.** `RMD` sizing is verified but nothing
+  reads a city `.MIF` yet — that is Milestone 4/5.
+* **No audio.** `.VOC`/`.XFM` decoding is Milestone 6.
+* **Performance is untuned.** ~21 000 quads at 60 materials is fine on this
+  machine in headless SwiftShader; no frame-time budget has been measured on a GPU.
 
 ---
 
-## Milestone 2 — what was done
+## Milestones 1–2 — what was done (kept for the record)
 
-### Verifiable commands run
+### Milestone 2
 
-| Command | Result |
-|---|---|
-| `node tools/copy-engine.mjs` | 154 engine modules copied into `src/engine/`, preserving paths; provenance recorded |
-| `node tests/run-browser.mjs` | **21/21 checks passed** against headless Chrome with WebGL2; screenshot in `tests/shots/m2-testmap.png` |
-| `node tools/serve.mjs` + browser | the one-command run, exercised by every browser test |
-
-### Verified (all by running it, in headless Chrome)
-
+* `node tools/copy-engine.mjs` copied **154 engine modules** into `src/engine/`.
 * The engine's WebGL2 `Renderer` boots inside PERFECTARENA and draws a mesh built
-  by hand: **3 draw calls, 164 triangles, 3 sub-meshes, 3 textures**.
-* The **sky** renders above the horizon and **the ground below it** (measured on
-  the captured PNG: top band `rgb(138,151,176)`, bottom band `rgb(110,109,99)`).
-* The frame is a **picture, not a gradient**: 451 distinct colours, 2.0% dominant
-  colour, 97 hard colour edges along the best scanline.
-* **Movement**: holding `W` moves the player 3.9 units in 0.9 s (real key events
-  through CDP `Input.dispatchKeyEvent`).
-* **Collision**: walking into the west wall stops the capsule at
-  `x = -23.65` with the wall face at `-24.00` and a capsule radius of `0.35` — the
-  exact engine contact distance. The player does not fall through the floor.
-* **Lighting and fog** apply (surfaces are shaded, not flat albedo; distance the
-  same).
-* **No console errors, no uncaught page errors, and no WebGL misuse warnings.**
-* The `__debug` seam works from the page: `state()`, `teleport()`, `look()`,
-  `input()`, `advance()`, `shotPose()`.
+  by hand: 3 draw calls, 164 triangles, 3 sub-meshes, 3 textures.
+* Sky, ground, distance fog and lighting all verified by measuring the captured
+  PNG, not by eye: 451 distinct colours, 2.0% dominant colour, 97 hard colour
+  edges along the best scanline.
+* Movement and collision verified with real key events through CDP:
+  `W` moves 3.9 units in 0.9 s; a wall stops the capsule at exactly the contact
+  distance; the player does not fall through the floor.
+* **Two real bugs the tests caught:** a foreign pass (the sky) leaves the
+  renderer's state shadows stale unless the host calls `markForeignPass()` — the
+  courtyard rendered *as sky*, silently, with three `INVALID_OPERATION` warnings a
+  frame — and a sub-mesh whose texture is missing draws **untextured, not black**,
+  so "3 textures uploaded" was not "the textures the mesh asked for were
+  uploaded". Both lessons are now assertions.
 
-### Two real bugs the tests caught (both fixed, both worth recording)
+### Milestone 1
 
-1. **A foreign pass leaves the renderer's state shadows stale.** `SkyRenderer.draw`
-   binds its own program and VAO. The engine expects the host to call
-   `renderer.markForeignPass()` afterwards; without it the mesh drew with the sky's
-   program still bound — silently, with three `INVALID_OPERATION` warnings a frame
-   and the courtyard rendered *as sky*. The screenshot check is what found it:
-   dominant colour went from 50.6% → 2.0% once the mesh actually drew.
-2. **A sub-mesh whose texture is missing draws untextured, not black.** Three
-   textures were uploaded under records 1/2/3 while the mesh asked for 0/1/2, so
-   the floor was lit but featureless — 0 hard edges on any scanline. `state()` now
-   reports `missingTextures`, and the suite asserts it is empty for every
-   sub-mesh. **The lesson: "3 textures uploaded" is not "the textures the mesh
-   asked for were uploaded".**
-
-### Environment finding
-
-* The machine has no Node/npm/Python on `PATH`. A portable Node 22 lives in
-  `.devtools/` (git-ignored) for the tools and tests; `package.json` still declares
-  normal `npm` scripts for anyone with a toolchain. Details in DECISIONS.md D8.
+* The BSA, MIF header and chunk framing, INF grammar, `CITYDATA.64` layout,
+  palette and text-file structures were established by inspecting the real bytes
+  (see FORMATS.md §1–§4, §8, §10).
+* `A.EXE` was found to be absent; `CITYDATA.64` was confirmed as 9 provinces ×
+  1 228 bytes by the province names landing at exactly `0`, `1228`, `2456`, ….
 
 ---
 
@@ -140,25 +152,30 @@ DECISIONS.md D8. `.devtools/` and `.scratch/` are git-ignored.)
 | S1 | Rules tables come from documented community tables, not extracted `A.EXE` | `A.EXE` is absent from the provided data (D5). Each table file records its `source`. |
 | S2 | No continuous overworld; per-location scenes | Arena's own model, and the engine's streaming world is unfeedable (D2). |
 | S3 | `.DEVTOOLS/` holds a portable Node 22 because the machine has no Node | Environment constraint (D8). Git-ignored; not part of the deliverable. |
-| S4 | Browser tests will drive system Chrome/Edge over raw CDP rather than Playwright | No Node/npm toolchain on the machine; documented in D8. |
-| S5 | Arena UI text may fall back to a built-in bitmap face | Arena font format only partly decoded (FORMATS.md §9); the fallback will be logged again if taken up. |
-| S6 | Milestone 2's HUD is a **DOM** overlay, not the engine's GL text pass | The GL text path needs an FNT font; Arena's font format is still only partly decoded (§9). The Arena windows (character sheet, inventory, quest log, dialog, map) will use the engine's GL UI once `arena/font.js` exists. |
-| S7 | Both triangle windings are emitted by the test map | Proves visibility without knowing the engine's winding law yet. `game/mifMesh.js` (M3) emits ONE winding, and the walk-through test is what proves it is the right one. |
+| S4 | Browser tests drive system Chrome/Edge over raw CDP rather than Playwright | No Node/npm toolchain on the machine; documented in D8. |
+| S5 | Arena UI text may fall back to a built-in bitmap face | Arena font format only partly decoded (FORMATS.md §9). |
+| S6 | HUD text is a **DOM** overlay, not the engine's GL text pass | The GL text path needs an FNT font; Arena's is still only partly decoded (§9). Arena's windows (character sheet, inventory, quest log, dialog, map) move to the engine's GL UI in Milestone 4. |
+| S7 | Superseded: the test map emitted both windings; `mifMesh.js` emits one | Resolved in Milestone 3 — winding is derived from the face normal and asserted per triangle (D14). |
 | S8 | No audio yet | `.VOC`/`.XFM` decoding is Milestone 6; the engine's WebAudio layer is copied and unused. |
+| S9 | **Raised-platform heights and thicknesses are reconstructed** | `A.EXE` absent, `ACD.EXE` PKLITE-packed (D11). Only height index 0 is exercised by the real data, so in practice only the thickness ladder's scale is approximate. |
+| S10 | **One voxel layer = 2.5 world units**, so `*CEILING` affects appearance only | The engine's metric capsule (1.8) does not fit a `ceiling/128` layer (D12). |
+| S11 | Interiors use one raised ambient term instead of Arena's light tables | `PAL.COL` is raw-dim; light tables are Milestone 6 polish (D13). |
+| S12 | Chasms are a lower textured floor, walkable | Falling, swimming and drowning are gameplay, not format work; Milestone 6. |
+| S13 | Transparent walls and edges draw opaque | Alpha test is Milestone 6; the geometry and the collision bits are already exact. |
+| S14 | `MIF` `FLAT`/`INNS`/`LOOT`/`STOR` bodies are captured but unparsed | Their placement is known; their contents are not needed until Milestone 4/5 NPCs and loot. |
 
 ## Known risks
 
-* **Milestone 4 is where the DOM HUD has to go** — the Arena windows are meant to
-  draw through the engine's GL UI pass, so `arena/font.js` (or the built-in face
-  fallback, S5/S6) is on the critical path for the character sheet, inventory and
-  quest log.
-
-* **Type08 is the single largest unknown.** If it cannot be reproduced from the
-  documented descriptions, Milestone 3 stalls and the fallback is to render
-  hand-authored test grids (Milestone 2's deliverable) plus whatever MIF layers
-  can be read (a scanner that finds uncompressed-looking layers may still yield
-  a real map).
-* **The INF↔MIF pairing is on the critical path**, so an undecryptable INF inside
-  the archive would block city/dungeon rendering even with a working Type08.
-* The engine copy may pull in more of the Daggerfall import graph than the survey
-  suggests; pruning is a Milestone 2 task with its own risk of scope creep.
+* **Milestone 4 needs the INF `.INF`-driven *interiors* as well as dungeons** —
+  a city is a different `MAP1` population (menu voxels with `*MENU` ids, `0xA`
+  edges for shop signs) plus the building `.MIF`s those menu voxels point at.
+  The `*MENU` slot array already parses (`inf.menus`), so the seam exists.
+* **Arena's font is on the Milestone 4 critical path** for the character sheet,
+  inventory, quest log and dialog. Either finish §9 or take the S5/S6 fallback;
+  the decision should be recorded either way.
+* **Draw-call count scales with the number of distinct textures**, not with map
+  size (60 for a dungeon). A city with many building types will be higher; if it
+  becomes a problem the atlas in D14 is the answer, not a change of mesher.
+* **The dev-server door is a dev door.** A player runs the game with a picked
+  folder; the `?arena=` path exists so the headless tests do not need a file
+  picker, and it is not part of the shipping flow.

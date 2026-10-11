@@ -100,18 +100,17 @@ and replaced by Arena-native code.
 
 | Module | Responsibility |
 |---|---|
-| `arenaSource.js` | Folder pick, IndexedDB persistence, `getBytes(name)` (case-insensitive 8.3 lookup), dev `?arena=` door. |
-| `bsaArchive.js` | `GLOBAL.BSA` index + record extraction (2 441 records: IMG 946, MIF 533, CFA 340, SET 180, INF 93, DFA 79, VOC 76, RMD 70, CIF 58, XFM/XMI 33 each). |
-| `palette.js` | `.COL` (8-byte header + 256 RGB). Arena has several palettes; the map's INF picks textures, not palettes, so a single global palette + per-image overrides is the working assumption. |
-| `image.js` / `cif.js` / `set.js` | Palettized images: IMG, CIF/RCI, and SET (128×128 8-bit wall sheets that INF slices by row). |
-| `font.js` | Arena font → FNT-shaped glyph table for `engine/ui/text.js`. |
-| `infFile.js` | `.INF` text parser: `@FLOORS/@WALLS/@FLATS/@SOUND/@TEXT` sections, `*directive` setting of box-cap/box-side/door/flat IDs, ordered texture list with `.SET #n` expansion, `*CEILING`. Includes the **BSA-encrypted INF** decryptor. |
-| `mifFile.js` | `MHDR` header + `LEVL` sections + tagged chunks (`FLOR/MAP1/MAP2` compressed voxel layers, `TARG/TRIG/LOCK`, `NAME/INFO`), block index derivation, height derivation. |
-| `type08.js` | The Type08 ("Delta Mode") decompressor used by MIF voxel layers. |
-| `rmdFile.js` | 64×64×6-byte wilderness block records. |
-| `cityData.js` | `CITYDATA.64` world-location table: 9 provinces × 1 228 bytes (name, 8 city-states, 8 towns, 16 villages, 2 named quest dungeons + 14 anonymous entries, province rectangle). |
-| `text.js` | Arena text sources: `TEMPLATE.DAT` (numbered records with `%` macros), `CITYTXT`/`CITYINTR`, merchant `.DAT` files, `ARTFACT*.DAT`, `QUESTION.TXT`, `NAMES.*`. |
-| `tables.js` | Arena **rules** tables. The provided data has **no `A.EXE`** (verified), so classes/attributes/monsters/items come from documented community tables (UESP) transcribed into data files, each marked with its source. |
+| `arenaData.js` | **The facade.** Every name the game asks for comes back decoded and cached: `mif()`, `inf()`, `img()`, `setFrames()`, `palette()`, `texture(ref)`. Lookup order is loose file then `GLOBAL.BSA`. Owns the cache and the warning sink. |
+| `browserSource.js` | The two ways the browser finds Arena: the player's picked folder (`fileListSource`, `pickArenaFolder`) and the dev/test door (`localServerSource`, which fetches a loose-file index so a miss is not a 404). |
+| `bsaArchive.js` | `GLOBAL.BSA` index + record extraction. **Not** the engine's reader — Arena's header has no directory-type field (D6). Verified: 2 441 records, Σ sizes = directory start. |
+| `decompress.js` | Arena's four codecs: `decodeType08` (adaptive Huffman + 4 KiB history), `decodeType04`, `decodeRle`, `decodeRleWords`. Pure, so the same code runs in Node and the browser. |
+| `palette.js` | `.COL` (8-byte header + 256 RGB), embedded 6-bit palettes, and palettized → RGBA with index 0 transparent. |
+| `image.js` | `.IMG`: the raw 4096-byte wall form, the 12-byte headered form, all three compressions, the by-name headerless cases. |
+| `infFile.js` | `.INF` grammar: `@FLOORS/@WALLS/@FLATS/@SOUND/@TEXT`, `*`-directives into the `*BOXCAP`/`*BOXSIDE`/`*MENU` slot arrays, the ordered texture table with `.SET #n` expansion, `*CEILING`, chasm/stair/level textures, plus the **archive decryption**. |
+| `mifFile.js` | `MHDR` header, `LEVL` sections, tagged chunks (`FLOR/MAP1/MAP2` compressed layers, `TARG/TRIG/LOCK/NAME/INFO/NUMF`), and the two quirks of the shipped data (oversized layers, physical level order). |
+| `font.js` | *Milestone 4* — Arena font → FNT-shaped glyph table for `engine/ui/text.js`. |
+| `rmdFile.js`, `cityData.js`, `text.js` | *Milestones 4–5* — wilderness blocks, the `CITYDATA.64` location table, and the `.DAT`/`TXT` text sources. |
+| `tables.js` | *Milestone 4* — Arena **rules** tables. The provided data has **no `A.EXE`** and `ACD.EXE` is PKLITE-packed (D11), so classes/attributes/monsters/items come from documented community tables (UESP) transcribed into data files, each marked with its source. |
 
 ## 4. Game layer (`src/game/`) — the world model
 
@@ -126,9 +125,13 @@ world map (continental)  ──pick province──▶  province map  ──pick 
 ```
 
 * **Location scenes** are loaded one at a time; each is a self-contained MIF grid
-  turned into a mesh bundle by `game/meshBuild.js`. No continuous overworld, no
-  streaming terrain, no floating origin needed for a 64×64 grid (≈ 4 096 cells at
-  1 unit/cell = 64 units across).
+  turned into a mesh bundle by `game/mifMesh.js`. No continuous overworld, no
+  streaming terrain, no floating origin needed for a 100×100 grid.
+* **`game/mifLevel.js` is where Arena's voxel bitfields become a model** and
+  `game/mifMesh.js` is where that model becomes geometry and collision. Splitting
+  them means the decoding can be tested (and printed as ASCII) on its own, and it
+  is: `tools/lib/mapascii.mjs` prints a decoded level, which is how the bitfields
+  were established.
 * **Wilderness** is assembled from RMD blocks around the settlement using the
   settlement seed, matching Arena's 64×64-block area with the town in the middle
   128×128 cells. Only a window of blocks around the player is built (Milestone 5).
@@ -159,17 +162,24 @@ renderer.resolveFrame();
 | Spells | `SPELLSG.65` / `SPELLS.LST` (128 × 85 bytes, verified) | Milestone 6. |
 | Quest | `game/questState.js` — a 10-stage machine modelled on Arena's `MQDATA` save block (`NextStep`, `DungeonLocationKnown`, `HasStaffPiece`, `HasKeyItem`) | DECISIONS.md D3. |
 | Combat | `game/combat.js` — Arena's to-hit / damage / monster attack model | Milestone 4. |
+| Raised-platform geometry | `game/tables/raisedPlatforms.js` — **reconstructed**, because the arrays live in `A.EXE` which this data set does not have | DECISIONS.md D11, FORMATS.md §13. |
 
 ## 6. Tests (`tests/`)
 
-* `tests/unit/*.test.mjs` — Node tests over the real Arena files (BSA, MIF,
-  Type08, INF, CITYDATA). `ARENA_PATH` selects the folder.
-* `tests/browser/harness.html` — a headless page that imports the game modules,
-  drives `window.__debug`, records every console error, and writes a JSON result
-  block into the DOM. Run with the installed Chrome/Edge in headless mode.
-* `tests/run-browser.mjs` — launches the browser, captures screenshots, fails on
-  console errors, and checks the screenshot is non-blank.
+* `tests/unit/*.test.mjs` — Node tests (`node --test`) over the **real** Arena
+  files: the BSA directory identity, MIF framing and level counts, every loose
+  `.MIF` parsing and decoding, oversized layers, physical level order, Type08
+  output sizes, INF decryption and grammar, every referenced texture decoding, and
+  winding on a 20 800-quad level. `ARENA_PATH` selects the folder.
+* `tests/run-browser.mjs` + `tests/cdp.mjs` — launches the installed Chrome/Edge
+  headless over raw CDP, drives real key events, captures screenshots into
+  `tests/shots/`, fails on console errors, and measures the frame (colour count,
+  dominant share, hard-edge count, band brightness) rather than trusting an exit
+  code. Suites: `testmap`, `movement`, `interior`.
+* `tools/lib/shotascii.mjs` — prints a screenshot as ASCII so a human can read the
+  shape of a frame in a terminal.
 
-`window.__debug` is the one test seam: `state()`, `teleport(x, y, z, yaw)`,
-`giveItem(id)`, `setQuestFlag(name, value)`, `questLog()`, `save()`, `load()`,
-`input(key, down)`, `advance(frames)`.
+`window.__debug` is the one test seam. The interior scene exposes `state()`,
+`levels()`, `loadLevel(i)`, `loadLevelAndSettle(i)`, `teleportCell(row, col)`,
+`cellAt(row, col)`, `teleport`, `look`, `input`, `advance`, `spawnPoint`,
+`shotPose`. Milestone 4 adds `giveItem`, `setQuestFlag`, `questLog`, `save`, `load`.

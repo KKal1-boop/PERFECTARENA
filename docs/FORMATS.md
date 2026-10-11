@@ -120,21 +120,89 @@ Verified on `START.MIF` (50×50): `FLOR` compressed 525, uncompressed 5 000 ✔;
 `MAP1` compressed 1 496, uncompressed 5 000 ✔. Uncompressed output is a
 row-major `uint16[width × height]`, X varying fastest.
 
-### Voxel ID bitfield (**VERIFIED as a scheme, UNVERIFIED in every bit**)
+### Voxel ID bitfields (**VERIFIED**)
 
-The ID is not a flat texture index. Documented decoding reads two fields,
-`(id & 0x7F00) >> 8` and `id & 0x007F`, and the `MAP2` height class from bits
-`0x80` / `0x8000`. Values such as `0x002E`, `0x7F00`-family and `0x0080` occur in
-the real `START.MIF` header region. Exact semantics of each field (which one is
-the texture index, which the wall class, how the two layers combine) are being
-established in Milestone 3 against a walkable city.
+The ID is not a flat texture index, and `FLOR`, `MAP1` and `MAP2` each decode
+differently. All three were confirmed by decoding real levels and printing them as
+ASCII (`tools/lib/mapascii.mjs`) and as raw-ID histograms
+(`tools/lib/voxhist.mjs`) — the results are recognisably dungeons, with walls,
+rooms, corridors, doors, staircases and chasms.
 
-### Level geometry (**TENTATIVE**)
+**`FLOR` — the floor layer**
 
-Level height is derived from `MAP2` when present (`2 + max(MAP2 height class)`),
-otherwise from the INF `*CEILING`. Distances are in "centimetre-like" units with
-128 units per voxel — corroborated independently by the MIF header's start
-coordinates, which divide by 128 to give voxel positions.
+```
+textureIndex = (id & 0xFF00) >> 8        index into the INF's texture table
+flatIndex    = (id & 0x00FF) - 1         a flat lying on the floor, or -1
+texture 0xC / 0xD / 0xE = dry / wet / lava chasm (the INF supplies the texture)
+id == 0                                 still a floor: texture index 0
+```
+
+**`MAP1` — the one geometry layer.** The most-significant nibble selects the kind:
+
+| Nibble | Kind | Decoding |
+|---|---|---|
+| `0x8` | entity | `flatIndex = id & 0xFF`; no geometry (flats/NPCs/door triggers) |
+| `0x9` | transparent wall | `texture = (id & 0xFF) - 1`; collides when bit `0x100` is **clear** |
+| `0xA` | edge (fence, gate, sign) | `texture = (id & 0x3F) - 1`, face `= (id & 0xC0) >> 4`, height index `= (id & 0xE00) >> 9`; collides when bit `0x100` is **set** |
+| `0xB` | door | `texture = (id & 0x3F) - 1`, kind `= (id & 0xC0) >> 4` → swinging/sliding/raising/splitting |
+| `0xC` | undocumented | treated as air |
+| `0xD` | diagonal wall | `texture = (id & 0xFF) - 1`; right diagonal when bit `0x100` is clear |
+| other, bit `0x8000` clear | wall **or** raised platform | see below |
+
+For the last row: `most = (id & 0x7F00) >> 8` and `least = id & 0x7F`.
+
+* `most == least` → **solid wall**, texture index `most - 1`.
+* otherwise → **raised platform**. Its most-significant byte is `0x0tttthhh`, so
+  height index `= most & 7` and thickness index `= (most & 0x78) >> 3` index the
+  `A.EXE` tables (§13). The low byte selects texture slots: `*BOXSIDE` slot
+  `= id & 0xF` and `*BOXCAP` slot `= (id & 0xF0) >> 4`.
+
+Worked examples from `39300577.MIF` level 0: `0x3434` wall texture 51;
+`0x703E` raised platform, side slot 14, cap slot 3, height 0, thickness 14;
+`0xB010` a swinging door; `0x8000`/`0x8019` entities with flat indices 0 and 25.
+
+**`MAP2` — the ceiling layer**
+
+```
+id == 0        no ceiling here: OPEN SKY above
+otherwise      ceilingTexture = (id & 0x7F) - 1
+height class   0x80 -> 2, 0x8000 -> 3, either -> 4, else 1 (0x80 tested first)
+```
+
+The height class only widens the solid mass above the ceiling; the visible
+surface is always the *bottom* of the `MAP2` layer.
+
+### Level geometry (**VERIFIED**)
+
+* Level height in layers: `2 + max(MAP2 height class)` when `MAP2` is present,
+  otherwise 3 with a ceiling and 2 without.
+* Layer 0 is the floor slab, layer 1 is the playable layer, layers 2+ are the
+  ceiling. **The playable volume is one layer tall**, which is why Arena is a
+  first-person grid game rather than a 3D one.
+* One layer is `*CEILING height / 128` world units tall in the original, and
+  **128 units is one cell** (`MIFUtils::ARENA_UNITS`) — an interpretation
+  independently confirmed by the MIF header's start coordinates, which divide by
+  128 to give cell positions.
+* `world X = MIF row index`, `world Z = MIF column index`. The transposition is
+  OpenTESArena's (`VoxelUtils::originalVoxelToWorldVoxel`) and is what makes the
+  `0xA` face codes order the same way as the original's compass.
+* PERFECTARENA re-scales one layer to 2.5 world units so the reused engine's
+  1.8 m player capsule fits (DECISIONS.md D12); the ceiling height therefore
+  affects appearance only.
+
+### Quirks of the shipped data (**VERIFIED**)
+
+* **Oversized voxel layers.** A layer's `uncompressedSize` may exceed
+  `width × height × 2`. `VILPAL3.MIF`'s second level (named `test2`, INF
+  `sd1.inf`) declares a 25×25 map and ships a 100×100 grid (20 000 bytes). The
+  original reads the first `width × height` voxels; PERFECTARENA does the same and
+  records a warning on the level.
+* **Level order is physical.** `BS5.MIF` lists `level3`, `level2`, `level1` in
+  that order, and its `startingLevelIndex` is 2 — an index into the physical
+  array, not a level *number*. Never sort by the `NAME` chunk.
+* **The `.INF` name comes from `INFO`,** not from the `.MIF` filename. `CAS.MIF`
+  and `CAS.INF` happen to pair, but `39300577.MIF` uses `HALLS1.INF` and
+  `IMPPAL.MIF`'s levels use `IMPPAL1..4.INF`.
 
 ## 4. `.INF` — map definitions (**VERIFIED**)
 
@@ -171,15 +239,22 @@ Real example (`IMPPAL1.INF`, verbatim): `@FLOORS` → `*CEILING 200` →
 Consequence for the pipeline: **an INF must be parsed before its MIF can be
 drawn**, because the MIF's voxel IDs are indices into the INF's ordered list.
 
-## 5. Type08 compression (**UNVERIFIED — the algorithm**)
+## 5. Arena's four compression schemes (**VERIFIED**)
 
-The MIF voxel layers (and some IMG payloads) are compressed with a "Type08" /
-"Delta Mode" scheme. Only the *container* framing is verified here (§3); the
-decoder itself is being established in Milestone 3 and will be documented in this
-file when it round-trips a real layer to exactly `width × height × 2` bytes.
-**Known-good test vectors** are recorded from the real files:
-`START.MIF` `FLOR` 525 → 5 000, `MAP1` 1 496 → 5 000; `IMPPAL.MIF` four levels;
-`RANDOM1.MIF` 32 levels of 32×32.
+`src/arena/decompress.js` implements all four. Round-trip evidence: every voxel
+layer in every loose `.MIF` in the game folder decodes to exactly its stated
+`uncompressedSize`, checked by `tests/unit/mif.test.mjs`.
+
+| Codec | Used by | Shape |
+|---|---|---|
+| `decodeType08` | MIF voxel layers, type-8 IMG/CIF | adaptive Huffman with a 4096-byte sliding history: a codeword below 256 is a literal, at or above 256 a back-reference whose length comes from the codeword and whose offset is read through two 256-entry tables. The tree re-weights after every symbol. |
+| `decodeType04` | type-4 IMG/CIF | 1-bit mask per 8 symbols, alternating literal bytes and LZ back-references |
+| `decodeRle` | remaining IMG/CIF payloads | byte RLE: bit 7 set introduces a run, else a literal count |
+| `decodeRleWords` | `.RMD` wilderness blocks | signed 16-bit count: positive = literals follow, negative = repeat the next word |
+
+Known-good vectors: `START.MIF` `FLOR` 525 → 5 000, `MAP1` 1 496 → 5 000;
+`IMPPAL.MIF` four levels (255/629/753 → 5 000 each); `RANDOM1.MIF` 32 levels of
+32×32; `BS5.MIF` three levels of 20×20 (31/40/45 → 800 each).
 
 ## 6. Palettes and images
 
@@ -192,18 +267,58 @@ total 776 bytes
 ```
 Verified on `PAL.COL`, `CHARSHT.COL`, `DAYTIME.COL`, `DREARY.COL` (all 776 bytes).
 
-### `.IMG` / `.CIF` / `.RCI` / `.SET` (**TENTATIVE**)
+### `.IMG` (**VERIFIED**)
 
-* `.SET` — 16 384 bytes (verified on `CASA.SET`): 128×128 8-bit pixels = four
-  64×64 or sixteen 32×32 tiles; INF's `#n` expansion implies a **row-per-texture**
-  slicing. Exact tiling being confirmed in Milestone 3.
-* `.CIF` — header `uint16 width, uint16 height, uint16 …`, then run/bit-packed
-  pixel data (verified `ARROWS.CIF` = 1 083 bytes, header `7f 00 2f 00 0c 00 09 00`).
-* `.IMG` — header + palettized data (`0EQUIP.IMG`, `AUTOMAP.IMG`, 946 of them).
+Two shapes share the extension, and both are common:
+
+```
+raw wall       exactly 4096 bytes: no header at all, 64×64 8-bit pixels
+headered       12-byte header, then pixel data
+                  +0 uint16 xOffset      +2 uint16 yOffset
+                  +4 uint16 width        +6 uint16 height
+                  +8 uint16 flags       +10 uint16 payloadLength
+```
+
+The low byte of `flags` is the compression: `0` flat, `4` Type-04, `8` Type-08
+(with a 2-byte decompressed length before the stream) — see §5. Bit `0x0100` of
+`flags` means a **built-in palette** follows the payload: 768 bytes in the VGA
+6-bit range 0..63, so each component must be scaled by `255/63`. A handful of
+filenames are headerless with dimensions the original hardcodes by name
+(`ARENARW`, `CITY`, `DITHER`, `DUNGEON`, `TOWN`, `VILLAGE`, …); they are listed in
+`src/arena/image.js`.
+
+**Verified:** the raw-wall and headered paths, all three compressions, and the
+embedded palette. Decoded correctly, the level textures are clearly stone,
+wood and doors — `FLOORA.SET#0` averages `rgb(57,59,67)` with 77 distinct colours,
+`FLOORC.IMG` `rgb(53,23,26)`, `DOOR_1.IMG` `rgb(57,30,30)`; see
+`tools/lib/textures.mjs`, which prints ASCII thumbnails.
+
+### `.SET` (**VERIFIED**)
+
+A plain sequence of **64×64 8-bit chunks** with no header: `size / 4096` textures.
+`CASA.SET` is 16 384 bytes = four frames. The INF's `name.set  #n` binds `n`
+consecutive texture-table entries, all the same filename, with `setIndex` 0…n−1 —
+so the `#n` value must equal the sheet's frame count.
+
+### `.CIF` / `.RCI` / `.DFA` (**TENTATIVE**)
+
+* `.CIF` — header `uint16 xOffset, yOffset, width, height, flags` then compressed
+  data (verified `ARROWS.CIF` = 1 083 bytes, header `7f 00 2f 00 0c 00 09 00`).
+  Needed for UI art in Milestone 4, not for maps.
 * `.DFA` — animated flat: header then frame data (verified `CHAOS1.DFA` 4 980 bytes).
+* `.RCI` — animated wall textures (`LAVAANI.RCI`, `WATERANI.RCI`). Milestone 6.
 
 All are 8-bit palettized with index 0 as the transparent cutout, matching the
 engine's `ui/bitmapCanvas.js` convention.
+
+### Palette selection (**VERIFIED**)
+
+`PAL.COL` is the world palette: OpenTESArena names it `ArenaPaletteName::Default`
+and uses it for the game world (`SceneManager::gameWorldPaletteID`), with
+`CHARSHT.COL` for character-sheet art and `DAYTIME.COL`/`DREARY.COL` for weather
+skies. `PAL.COL` is a *dim* palette (mean component 81.5 of 255); the original
+brightens it per map with light tables, which PERFECTARENA does not reproduce, so
+interiors are lit by a single raised ambient term instead (DECISIONS.md D13).
 
 ## 7. `.RMD` — wilderness blocks (**VERIFIED size, TENTATIVE layout**)
 
@@ -294,6 +409,33 @@ Milestone 4 will either finish this or fall back to a built-in bitmap face
 
 ---
 
+## 13. Rules that live in `A.EXE` (**NOT AVAILABLE — reconstructed**)
+
+The provided Arena folder contains **no `A.EXE`**. It has `ACD.EXE` (174 429 B),
+`INSTALL.EXE` and `ULTRAMID.EXE`, and `ACD.EXE` is **PKLITE-packed** — its MZ stub
+carries the string `PKLITE Copr. 1990-` at offset 30, and no game string survives
+in it. OpenTESArena reads its rule tables from a *decompressed* `A.EXE` by byte
+offset, so with this data set those tables are simply out of reach (see
+DECISIONS.md D11 for why unpacking was not attempted, and D5 for the general
+fallback).
+
+The one place this changes what the player sees is raised-platform geometry. A
+raised-platform `MAP1` voxel indexes two arrays:
+
+```
+boxArrays[56] = heightsInterior[8], heightsCity[8], heightsWild[8],
+                thicknessesInterior[16], thicknessesCity[16] (= wilderness), spare[8]
+box3a[8], box3b[8], box4[8]  texture-mapping values
+```
+
+`src/game/tables/raisedPlatforms.js` holds a **reconstruction**, not an
+extraction: index 0 is flat ground, the sequences are monotonically increasing,
+and the values are chosen so a step is shin-high, a crate chest-high and a dais
+waist-high in a 100–200-unit room. Because height index 0 is the only one the
+game's data actually uses (measured — `tools/lib/voxhist.mjs`), only the
+*thickness* ladder is observable at all, and its absolute scale is approximate.
+Walls, doors, floors, ceilings, chasms and edges are all exact.
+
 ## Credits
 
 Format knowledge was first learned from, and is credited to:
@@ -314,6 +456,13 @@ Format knowledge was first learned from, and is credited to:
   text `.DAT` files. <https://www.imperial-library.info/out-of-game/game-data>
 * **ArenaToolBox (Dysperia)** — the Arena BSA directory layout and the `IMG`
   compression-flag observation. <https://github.com/Dysperia/ArenaToolBox-BSATool>
+
+Beyond reading the sources above, the decoding in this project was checked by
+printing it: `tools/mif-dump.mjs` (headers, chunk sizes, decoded-level statistics),
+`tools/lib/mapascii.mjs` (a level as ASCII), `tools/lib/voxhist.mjs` (raw voxel-ID
+histograms with their bitfields) and `tools/lib/textures.mjs` (ASCII texture
+thumbnails with mean colours). Every number quoted in this file came out of one of
+them or out of `tests/unit/mif.test.mjs`.
 
 Every claim above was re-checked against the actual files in
 `c:/arenaproject/arena/ARENA`; where the sources disagreed with the bytes, the
