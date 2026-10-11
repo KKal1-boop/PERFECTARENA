@@ -13,6 +13,8 @@
 // is why a city needed no new renderer, mesher or collider.
 //
 // Usage:
+//   ?location=Daggerfall          a *named* location, with the game's own seed
+//   ?dungeon=Fang%20Lair          a named dungeon, loaded by its seed's .MIF
 //   ?interior=START.MIF           the Imperial Dungeons
 //   ?interior=CAS.MIF&level=1     a specific level of the file
 //   ?city                          a generated city-state (temperate, clear)
@@ -20,6 +22,12 @@
 //   ?city&mif=CITYW1.MIF          a specific skeleton
 //   ?arena=<folder>               serve Arena's data from the dev server
 //
+// `?location=` is the one that matters: it resolves the name against
+// `CITYDATA.64`, and everything else follows from the data — the settlement kind,
+// whether it is coastal, which skeleton template it uses, the climate that picks
+// its INF, and above all its **city seed**, which is the location's own
+// coordinates. That is what makes `?location=Daggerfall` Daggerfall.
+
 // Debug seam (see docs/ARCHITECTURE.md §6): `state()`, `teleport`, `look`,
 // `input`, `advance`, `levels()`, `loadLevel(i)`, `spawnPoint()`, `shotPose()`.
 
@@ -38,6 +46,14 @@ import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMes
 import { decodeLevel } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
 import { CITY_BLOCKS_PER_SIDE, cityInfName, cityTemplateName } from '../game/tables/cityBlocks.js';
+import { cityTypeOf } from '../arena/cityDataFile.js';
+import { cityTemplateVariant } from '../arena/cityDataSeeds.js';
+import { loadWorldMap } from '../game/worldMap.js';
+import { LAST_LOCATION_KEY, loadQuestState, saveQuestState, loadRadiantState, saveRadiantState } from '../game/save.js';
+import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
+import { buildQuestChain, stageMif } from '../game/questData.js';
+import { applyQuestEvent, currentObjective } from '../game/questState.js';
+import { applyRadiantEvent, radiantObjective } from '../game/radiantQuests.js';
 
 /**
  * Interior lighting.
@@ -135,6 +151,46 @@ export function openYaw(level, row, col, reach = 12) {
 }
 
 /**
+ * Resolve `?location=` / `?dungeon=` against the world data.
+ *
+ * Returns the location, the world it came from, the `.MIF` to load and — for a
+ * settlement — the city request the generator needs, built entirely from the
+ * game's own records. This is the seam that turns a *name* into a *place*: the
+ * seed, the template, the climate and the coast all come from `CITYDATA.64` and
+ * `TERRAIN.IMG`, so travelling to a location is reproducible and correct rather
+ * than a random town with a familiar label.
+ *
+ * @param {import('../arena/arenaData.js').ArenaData} data
+ * @param {URLSearchParams} params
+ * @returns {Promise<{world: object, place: object, mapName: string, cityRequest: object|null}|null>}
+ */
+async function readWorldRequest(data, params) {
+  const wanted = params.get('location') ?? params.get('dungeon');
+  if (!wanted) return null;
+  const world = await loadWorldMap(data);
+  const place = world.locations.find((l) => l.name.toLowerCase() === wanted.toLowerCase());
+  if (!place) throw new Error(`no Arena location is called "${wanted}"`);
+
+  if (place.kind === 'dungeon') {
+    return { world, place, mapName: place.mif, cityRequest: null };
+  }
+
+  const kind = cityTypeOf(place.index);
+  const weather = 'clear';
+  const request = {
+    kind,
+    climate: place.climate,
+    weather,
+    coastal: place.coastal,
+    blocksPerSide: CITY_BLOCKS_PER_SIDE[kind],
+    seed: place.citySeed,
+    infName: cityInfName({ climate: place.climate, location: 'city', weather }),
+    template: cityTemplateName({ type: kind, coastal: place.coastal, variant: cityTemplateVariant(place, place.coastal) }),
+  };
+  return { world, place, mapName: request.template, cityRequest: request };
+}
+
+/**
  * Read the URL's city request, if the page asked for one.
  *
  * `?city` alone means a city-state at the default seed; `?city=town` and
@@ -180,9 +236,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   if (!source) throw new Error('bootInterior needs an Arena data source (a picked folder, or ?arena=…)');
 
   const data = new ArenaData(source, { onWarn: (m) => console.warn(`[arena] ${m}`) });
-  const cityRequest = readCityRequest(params);
-  const mapName = (params.get('interior') || params.get('mif')
+  const worldRequest = await readWorldRequest(data, params);
+  const cityRequest = worldRequest?.cityRequest ?? readCityRequest(params);
+  const place = worldRequest?.place ?? null;
+  // The world is loaded even when the page named a bare map file. A scene without
+  // it cannot tell whether the dungeon it is standing in is the one the quest sent
+  // the player to — and the opening dungeon, `START.MIF`, is exactly that case.
+  const world = worldRequest?.world ?? await loadWorldMap(data);
+  const mapName = (params.get('interior') || params.get('mif') || worldRequest?.mapName
     || (cityRequest ? cityRequest.template : 'START.MIF')).toUpperCase();
+  // Tell the world map where the player is, so its travel times are measured from
+  // here rather than from the middle of the continent.
+  if (place) {
+    try {
+      localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({ name: place.name, dungeon: place.kind === 'dungeon' }));
+    } catch { /* storage can be refused; it is only a convenience */ }
+  }
 
   status(`reading ${mapName}`);
   const mif = await data.mif(mapName);
@@ -206,7 +275,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /** Everything about the currently-loaded level. */
   let current = null;
-  const dbg = { frame: 0, painted: 0, seconds: 0, shotReady: false, reloaded: 0 };
+  const dbg = { frame: 0, painted: 0, seconds: 0, shotReady: false, reloaded: 0, notice: null };
+
+  /** How far the player is from a cell, in world units. */
+  function motorCell(level, objective) {
+    if (!level) return { x: 0, z: 0 };
+    return {
+      x: level.motor.pos[0] - (objective.cellX + 0.5) * CELL_SIZE,
+      z: level.motor.pos[2] - (objective.cellZ + 0.5) * CELL_SIZE,
+    };
+  }
 
   /**
    * Load one level of the map: decode, mesh, upload textures, rebuild collision.
@@ -287,7 +365,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       hud.textContent =
         `${mapName} · ${what} · ${infName}\n`
         + `${mif.width}×${mif.height} cells · ${built.stats.quads} quads · ${built.materials.length} materials · ${uploaded} textures\n`
-        + 'WASD move · Shift run · Space jump · click to look · [ ] change level';
+        + 'WASD move · Shift run · Space jump · E take · M world map · [ ] change level';
+      // The objective line: where the thing you came for is, in paces.
+      const objective = current.objective;
+      if (objective && !objective.done) {
+        const dx = motorCell(current, objective).x;
+        const dz = motorCell(current, objective).z;
+        const paces = Math.round(Math.hypot(dx, dz));
+        hud.textContent += `\nThe ${objective.what} lies ${paces} paces from here — find the deepest chamber, then press E.`;
+      } else if (objective?.done) {
+        hud.textContent += '\nTaken. Nothing else waits here.';
+      }
     }
     return current;
   }
@@ -299,14 +387,235 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     cam.yaw = openYaw(current.level, current.spawn.x, current.spawn.z);
   }
 
+  // ── Arena's own prose, and the work to be done here ───────────────────────
+  //
+  // Two things happen on arrival that make this a game rather than a walkthrough:
+  // the place *says something* — Arena's own gate greeting for a city-state, its
+  // own arrival text for a quest dungeon — and, when the player has come here for a
+  // reason, there is something to find.
+  const library = await loadArenaText(data);
+  const chain = buildQuestChain(world);
+  let quest = loadQuestState();
+  let radiant = loadRadiantState();
+
+  /**
+   * What this place says when you arrive.
+   *
+   * A city-state gets the greeting `citytxt` files under its own index
+   * (`arenaText.cityTextKey`); a dungeon gets `dungeon.txt`'s entry for its name.
+   * Nothing is shown when the data has no words for a place — an invented greeting
+   * would be worse than none.
+   */
+  function arrivalText() {
+    if (!place || !world) return null;
+    if (place.kind !== 'dungeon') {
+      const cities = world.locations.filter((l) => l.provinceID === place.provinceID && l.kind === 'city');
+      const cityIndex = cities.findIndex((c) => c.name === place.name);
+      const greeting = cityIndex >= 0 ? library.cityGreetings.get(cityTextKey(place.provinceID, cityIndex)) : null;
+      if (!greeting) return null;
+      return { title: place.name, text: greeting.text, source: 'Arena: citytxt' };
+    }
+    const intro = library.dungeonIntros.get(place.name.toLowerCase());
+    if (!intro) return null;
+    return { title: intro.name, text: intro.text, source: 'Arena: dungeon.txt' };
+  }
+
+  /**
+   * The deepest reachable cell of a level: where a Staff piece would be kept.
+   *
+   * Arena puts a piece in a particular room that `A.EXE` names, which is not in the
+   * data this project has (D11). The deepest chamber is derived instead from the
+   * level the player is actually standing in: a breadth-first walk from the spawn
+   * over the walkable cells, taking the last one reached. It is the same answer a
+   * player would give if asked where the heart of a dungeon is, and it is the only
+   * place a pickup can go that is guaranteed to be *reachable* — a piece walled off
+   * behind an undecoded door would make the quest unfinishable. Logged as S22 in
+   * PROGRESS.md.
+   *
+   * @param {object} level a decoded level
+   * @returns {{x: number, z: number, depth: number, cells: number}|null} in cells
+   */
+  function deepestCell(level) {
+    // The grid's own convention, taken from the mesh builder: `row` is world **x**
+    // and `col` is world **z**, so a cell is `cells[x * width + z]`, x runs over
+    // `depth` and z over `width`. Getting this backwards is not visible on a square,
+    // centred level (`START.MIF`, and every dungeon's first floor) — it only shows on
+    // the off-centre ones, which is how it was caught.
+    const { width, depth } = level;
+    const at = (x, z) => (x < 0 || z < 0 || x >= depth || z >= width ? null : level.cells[x * width + z]);
+    // A wall is the only thing a player cannot cross. Doors open, chasms are jumped
+    // (`Space`), raised platforms are stepped onto, entity flats are decorations. A
+    // flood that stopped at a door would leave most of a dungeon "unreachable" and
+    // could put the objective behind one.
+    const walkable = (cell) => Boolean(cell) && cell.kind !== 'wall';
+    const start = {
+      x: Math.min(depth - 1, Math.max(0, Math.floor(level.spawn.x))),
+      z: Math.min(width - 1, Math.max(0, Math.floor(level.spawn.z))),
+    };
+    if (!walkable(at(start.x, start.z))) return null;
+    const seen = new Uint8Array(width * depth);
+    const queue = [{ ...start, depth: 0 }];
+    seen[start.x * width + start.z] = 1;
+    let best = { ...start, depth: 0 };
+    let visited = 1;
+    for (let head = 0; head < queue.length; head++) {
+      const here = queue[head];
+      if (here.depth > best.depth) best = { x: here.x, z: here.z, depth: here.depth };
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = here.x + dx;
+        const nz = here.z + dz;
+        if (nx < 0 || nz < 0 || nx >= depth || nz >= width) continue;
+        const index = nx * width + nz;
+        if (seen[index] || !walkable(at(nx, nz))) continue;
+        seen[index] = 1;
+        visited++;
+        queue.push({ x: nx, z: nz, depth: here.depth + 1 });
+      }
+    }
+    return { ...best, cells: visited };
+  }
+
+  /**
+   * What the player is here to do, if anything.
+   *
+   * The main quest and the side work are asked the same question — "is the thing I
+   * want in the place you are standing in?" — and the answer is one event, at one
+   * cell. The event names are the state machines' own, so nothing here can invent a
+   * transition the machines would refuse.
+   */
+  function objectiveHere() {
+    const stage = chain.stages[quest.step] ?? null;
+    const here = place ? place.name.toLowerCase() : null;
+    const same = (name) => typeof name === 'string' && here !== null && name.toLowerCase() === here;
+
+    // The opening dungeon is a bare map file, not a `CITYDATA` location — Arena
+    // ships it as `START.MIF` beside the game rather than among its provinces — so
+    // it is recognised by its *filename* while every other stage is recognised by
+    // the name the player travelled to.
+    if (stage?.kind === 'escape' && mapName.toUpperCase() === stage.mif.toUpperCase()) {
+      return { owner: 'main', event: 'escaped', what: 'the way out of the Imperial Dungeons' };
+    }
+    if (!place) return null;
+
+    if (stage?.kind === 'piece') {
+      if (!quest.mapKnown && same(stage.clue?.title)) {
+        return { owner: 'main', event: 'foundClue', what: `the map to ${stage.title}` };
+      }
+      if (quest.mapKnown && same(stage.title)) {
+        return { owner: 'main', event: 'foundPiece', what: `piece ${stage.piece} of the Staff of Chaos` };
+      }
+    }
+
+    const active = radiant.active;
+    if (active && !active.completed && same(active.target)) {
+      const event = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
+      return event ? { owner: 'side', event, what: active.subject } : null;
+    }
+    return null;
+  }
+
+  /** The arrival panel and the objective, rebuilt for the level now loaded. */
+  function refreshObjective() {
+    const wanted = objectiveHere();
+    const deep = current.level ? deepestCell(current.level) : null;
+    current.objective = wanted && deep
+      ? { ...wanted, cellX: deep.x, cellZ: deep.z, depth: deep.depth, cells: deep.cells, done: false }
+      : null;
+    return current.objective;
+  }
+
+  /**
+   * `E` — take whatever is here, or say that nothing is.
+   *
+   * A pickup is only allowed within a couple of cells of the objective, so the
+   * journey has to actually be made; and the state machines get the final word on
+   * whether the event was legitimate.
+   */
+  async function interact() {
+    const objective = current.objective ?? refreshObjective();
+    if (!objective || objective.done) {
+      showNotice('There is nothing here to take.', 1400);
+      return false;
+    }
+    const dx = current.motor.pos[0] / CELL_SIZE - 0.5 - objective.cellX;
+    const dz = current.motor.pos[2] / CELL_SIZE - 0.5 - objective.cellZ;
+    const distance = Math.hypot(dx * CELL_SIZE, dz * CELL_SIZE);
+    if (distance > 3) {
+      showNotice(`You are not there yet — ${Math.round(distance)} paces from ${objective.what}.`, 1400);
+      return false;
+    }
+    if (objective.owner === 'main') {
+      const result = applyQuestEvent(quest, objective.event, { chain });
+      if (!result.ok) { showNotice(result.reason, 2000); return false; }
+      quest = result.state;
+      saveQuestState(quest);
+      showNotice(`Taken: ${objective.what}.\n\n${currentObjective(quest, chain)}`, 6000);
+    } else {
+      const result = applyRadiantEvent(radiant, objective.event, { where: place?.name });
+      if (!result.ok) { showNotice(result.reason, 2000); return false; }
+      radiant = result.state;
+      saveRadiantState(radiant);
+      showNotice(`Done: ${radiant.active?.title ?? 'the job'}.\n\n${radiantObjective(radiant) ?? ''}`, 6000);
+    }
+    objective.done = true;
+    return true;
+  }
+
+  /** A short line on the HUD, in the game's voice. */
+  function showNotice(text, ms) {
+    const el = document.getElementById('notice');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.add('on');
+    clearTimeout(showNotice.timer);
+    showNotice.timer = setTimeout(() => el.classList.remove('on'), ms ?? 3000);
+    dbg.notice = text;
+  }
+
+  /** Put the arrival text up, and let it sit until the player moves on. */
+  function showArrival() {
+    const arrival = arrivalText();
+    const el = document.getElementById('arrival');
+    if (!el || !arrival) return null;
+    el.innerHTML = `<h2>${arrival.title}</h2>`
+      + wrapText(arrival.text, 58).map((line) => `<p>${line}</p>`).join('')
+      + `<p class="src">${arrival.source}</p>`;
+    el.classList.add('on');
+    return arrival;
+  }
+
+  const arrival = showArrival();
+  refreshObjective();
+
   // ── input ──────────────────────────────────────────────────────────────────
+  /**
+   * Open the world map on `M`, remembering where the player is so its travel
+   * times are measured from here. The map is a separate scene, so this is a page
+   * change — which is honest about what fast travel is.
+   */
+  function openWorldMap() {
+    try {
+      localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
+        name: place?.name ?? mapName,
+        dungeon: place?.kind === 'dungeon',
+      }));
+    } catch { /* ignoring storage is fine; the map falls back to the continent's centre */ }
+    const arena = source.arenaPath ? `&arena=${encodeURIComponent(source.arenaPath)}` : '';
+    location.href = `?map${arena}`;
+  }
+
   addEventListener('keydown', (e) => {
     keys.add(e.code);
     if (e.code === 'Space') e.preventDefault();
-    if (e.code === 'BracketRight') void loadLevel(Math.min(mif.levelCount - 1, current.index + 1));
-    if (e.code === 'BracketLeft') void loadLevel(Math.max(0, current.index - 1));
+    if (e.code === 'BracketRight') void loadLevel(Math.min(mif.levelCount - 1, current.index + 1)).then(refreshObjective);
+    if (e.code === 'BracketLeft') void loadLevel(Math.max(0, current.index - 1)).then(refreshObjective);
+    if (e.code === 'KeyM') openWorldMap();
+    if (e.code === 'KeyE') void interact();
+    if (e.code === 'Escape') document.getElementById('arrival')?.classList.remove('on');
     if (document.pointerLockElement !== canvas) requestLook(canvas);
   });
+  // The arrival panel is a page, not a wall: the first move dismisses it.
+  addEventListener('keydown', () => document.getElementById('arrival')?.classList.remove('on'), { once: false });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', () => keys.clear());
   canvas.addEventListener('pointerdown', () => requestLook(canvas));
@@ -319,6 +628,35 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   Object.assign(window.__debug, {
     scene: 'interior',
     map: mapName,
+    /** The place's own words, or null when Arena's data has none. */
+    arrival: () => (arrival ? { title: arrival.title, text: arrival.text, source: arrival.source, shown: document.getElementById('arrival')?.classList.contains('on') ?? false } : null),
+    /** What is here to be taken, where it is, and how far away it is. */
+    objective: () => (current.objective
+      ? {
+        ...current.objective,
+        paces: Math.round(Math.hypot(motorCell(current, current.objective).x, motorCell(current, current.objective).z)),
+      }
+      : null),
+    /** Take it, exactly as `E` does. */
+    interact: () => interact(),
+    /** The main quest, as this scene sees it. */
+    quest: () => ({
+      step: quest.step,
+      stage: chain.stages[quest.step]?.title ?? null,
+      objective: currentObjective(quest, chain),
+      pieces: quest.pieces,
+      mapKnown: quest.mapKnown,
+      entries: quest.log,
+    }),
+    /** The side work, as this scene sees it. */
+    side: () => ({ active: radiant.active?.title ?? null, target: radiant.active?.target ?? null, objective: radiantObjective(radiant), day: radiant.day }),
+    /** Put the camera at the objective cell, for a test that must not walk there. */
+    teleportToObjective: () => {
+      const objective = current.objective ?? refreshObjective();
+      if (!objective) return null;
+      current.motor.spawn((objective.cellX + 0.5) * CELL_SIZE, current.level.floorY * CELL_SIZE, (objective.cellZ + 0.5) * CELL_SIZE);
+      return { x: objective.cellX, z: objective.cellZ };
+    },
     state: () => ({
       scene: 'interior',
       map: mapName,
@@ -344,6 +682,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       textures: current.uploaded,
       openSky: current.openSky,
       outdoor: current.outdoor,
+      // ── the story this scene is taking part in ──
+      questStage: chain.stages[quest.step]?.title ?? null,
+      arrivalShown: document.getElementById('arrival')?.classList.contains('on') ?? false,
+      objective: current.objective ? { what: current.objective.what, event: current.objective.event, done: current.objective.done, depth: current.objective.depth } : null,
+      notice: dbg.notice,
+      // Who this place is, when the player arrived by name rather than by URL file.
+      location: place
+        ? {
+          name: place.name,
+          kind: place.kind,
+          province: place.province,
+          climate: place.climate,
+          coastal: place.coastal,
+          citySeed: place.citySeed ?? null,
+          dungeonSeed: place.dungeonSeed ?? null,
+          mif: place.mif ?? mapName,
+        }
+        : null,
       city: current.city
         ? {
           kind: cityRequest.kind,

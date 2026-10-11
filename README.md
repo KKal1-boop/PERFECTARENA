@@ -45,8 +45,33 @@ The one requirement is that the page is served over HTTP rather than opened as a
 | `W A S D` | walk |
 | `Shift` | run |
 | `Space` | jump |
+| `E` | take what you came for (a Staff piece, a map, a job's subject) |
+| `M` | the world map of Tamriel — travel, and the town's job board |
+| `B` | (on the map) the job board |
 | `[` `]` | previous / next level of a dungeon |
 | mouse | look (click the canvas to capture the pointer) |
+
+### The world map, and work that never runs out
+
+Press `M` and you are looking at **all of Tamriel**, drawn from your own copy of
+Arena: `TAMRIEL.IMG` for the art, `CITYDATA.64` for the nine provinces and every one
+of their 432 locations, and `TERRAIN.IMG` for each location's climate and coast.
+Click a marker to travel there; `?location=Daggerfall` goes straight to a city.
+
+Each town posts **three jobs** on its board (`B`). They are generated from the
+world, not scripted: the target is a dungeon or settlement that really exists, the
+deadline and the pay are measured in the map's own days and distance, and where
+Arena wrote the words — the 372 artifact recruiting speeches in `artfact1.dat` and
+`artfact2.dat` — the offer is Arena's own prose, credited on the card. Take one, walk
+to the place, find the deepest chamber, press `E`, and come back to be paid. Travel
+costs days, and days are what a deadline is made of.
+
+The main quest runs through the same map: learn where piece 1 lies from a parchment
+in Stonekeep, then take it from the deepest chamber of Fang Lair. Arriving anywhere
+puts Arena's own text on screen — the gate greeting `citytxt` files for that
+city-state, or the arrival prose `dungeon.txt` gives that dungeon. Your quest, your
+journal, your pending job and the calendar all survive the page loads that travelling
+is made of.
 
 `?city` generates a city-state and drops you at its north gate: `?city=town&seed=99`,
 `?city=village`, `?city&climate=desert`, `?city&mif=CITYW1.MIF`. A city is assembled
@@ -82,15 +107,29 @@ hand-made courtyard from Milestone 2, which needs no game data.
   can see and what you can walk into can never disagree.
 * **Walking** — the engine's fixed-step player motor, capsule collider, mouse
   look and distance fog, on maps up to 128×128 cells and 32 levels deep.
+* **The world of Tamriel** — `CITYDATA.64`'s nine province rectangles and 432
+  locations, `TERRAIN.IMG`'s climate per pixel, and `TAMRIEL.IMG` drawn as the world
+  map. Fast travel takes a location's *name* and brings back its own city, climate
+  and coast.
+* **Arena's prose** — 64 city-state greetings, 9 dungeon arrival texts, 372 artifact
+  quest speeches, 811 talk templates and 539 shopkeeper lines, parsed out of the
+  loose data files and shown where the game shows them.
+* **The main quest, playable** — the eight Staff pieces derived from the data, with
+the map dungeon that reveals each; escape the Imperial Dungeons, find the parchment
+in Stonekeep, take piece 1 from Fang Lair's deepest chamber with `E`, and reload to
+find it still taken.
+* **Side work that does not run out** — a town posts three generated jobs on its
+  board (`B` on the map), each pointing at a place the install can really open, with
+  a deadline in the map's own days and Arena's own words where it has them.
 
 ## What it does not do yet
 
-Wilderness, entering a building, NPCs and dialog, combat, character creation,
-items, the quest and save/load remain in Milestone 4; the world map, all provinces and the
-completable main quest with Milestone 5; magic, inventory, audio and a performance
-pass with Milestone 6. Chasms are currently walkable, doors are always shut and
-arches draw opaque — each is logged with its reason in
-[docs/PROGRESS.md](docs/PROGRESS.md).
+Character creation, NPCs you can hold a conversation with, combat, items and the UI
+windows (character sheet, inventory, quest log) remain; so do the other seven Staff
+pieces, the Imperial Palace finale and the ending, which is Milestone 5's remaining
+work. Magic, audio and a performance pass are Milestone 6. Only the level you arrive
+on is searched for a piece; chasms are walkable; doors are always shut and arches
+draw opaque — each is logged with its reason in [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ---
 

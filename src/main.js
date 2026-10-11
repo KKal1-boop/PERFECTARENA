@@ -3,11 +3,14 @@
 // Hand-rolled WebGL2, no framework — the same doctrine as the engine this is built
 // on. Scenes are dynamic imports, so boot only pays for what it enters:
 //
+//   ?map                  the world map of all Tamriel, and fast travel
+//   ?location=<name>      travel to a named Arena settlement, e.g. ?location=Daggerfall
+//   ?dungeon=<name>       travel to a named Arena dungeon, e.g. ?dungeon=Fang Lair
 //   ?interior=START.MIF   walk a real Arena interior            (Milestone 3)
 //   ?interior=CAS.MIF&level=1   a specific level of that file
+//   ?city / ?city=town    a generated Arena settlement           (Milestone 4)
 //   ?arena=<folder>       read Arena's data from the dev server  (tests, dev)
 //   ?test                 the hand-made courtyard from Milestone 2
-//   ?city / ?wild / ?world   Arena cities, wilderness, world map (Milestones 4–5)
 //   ?shot                 a fixed vantage, for the screenshot tests
 //
 // Arena's data is read at runtime from a folder the *player* picks; nothing is
@@ -86,6 +89,14 @@ async function bootFromPickedFolder(canvas, renderer, params, status) {
  * @param {import('./arena/arenaData.js').ArenaSource} source
  */
 async function run(canvas, renderer, params, status, source) {
+  // The world map is its own scene: it is a UI, not a first-person view, and it
+  // owns the whole screen while it is up.
+  if (params.has('map') || params.has('worldmap')) {
+    const { bootWorldMap } = await import('./scenes/worldmap.js');
+    await bootWorldMap(canvas, renderer, params, status, source);
+    document.getElementById('boot')?.classList.add('hidden');
+    return;
+  }
   const { bootInterior } = await import('./scenes/interior.js');
   await bootInterior(canvas, renderer, params, status, source);
   document.getElementById('boot')?.classList.add('hidden');

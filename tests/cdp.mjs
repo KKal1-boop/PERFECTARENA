@@ -137,9 +137,38 @@ async function attach(wsUrl, { width, height } = {}) {
   };
   page.consoleMessages = () => page.__console.slice();
   page.consoleErrors = () => page.__console.filter((m) => m.type === 'error');
+  /**
+   * Click at a viewport point with real mouse events, so the page sees a pointer
+   * press and release exactly as it would from a person. A synthetic
+   * `element.click()` would prove only that the handler runs, not that anything is
+   * hittable — and the board's buttons sit under a canvas.
+   */
+  page.clickAt = async (x, y, { button = 'left', clickCount = 1 } = {}) => {
+    const base = { x: Math.round(x), y: Math.round(y), button, clickCount, buttons: button === 'left' ? 1 : 2 };
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...base, buttons: 0 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+  };
+  /** Click the centre of the first element matching a selector, if it is visible. */
+  page.clickSelector = async (selector) => {
+    const rect = await page.evalJs(`(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return null;
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    if (!rect) throw new Error(`nothing clickable at ${selector}`);
+    await page.clickAt(rect.x, rect.y);
+    return rect;
+  };
   /** Send a real key event for a DOM code (e.g. 'KeyW', 'Space'). */
   page.pressKey = async (code, down = true) => {
-    const map = { KeyW: ['w', 87], KeyA: ['a', 65], KeyS: ['s', 83], KeyD: ['d', 68], Space: [' ', 32], ShiftLeft: ['Shift', 16] };
+    const map = {
+      KeyW: ['w', 87], KeyA: ['a', 65], KeyS: ['s', 83], KeyD: ['d', 68],
+      KeyB: ['b', 66], KeyE: ['e', 69], KeyM: ['m', 77], KeyP: ['p', 80],
+      Space: [' ', 32], ShiftLeft: ['Shift', 16], Escape: ['Escape', 27], Enter: ['Enter', 13],
+    };
     const [key, vk] = map[code] ?? [code, 0];
     await page.send('Input.dispatchKeyEvent', {
       type: down ? (code === 'Space' ? 'rawKeyDown' : 'keyDown') : 'keyUp',

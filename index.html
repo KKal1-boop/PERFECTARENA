@@ -17,16 +17,107 @@
       color: #e8e0c8; text-shadow: 0 0 3px #000; pointer-events: none; white-space: pre;
     }
     #hud .k { color: #d8b45a; }
+    /* ── what a place says when you arrive (src/scenes/interior.js) ──────────
+       Arena's own prose: `citytxt`'s gate greeting for a city-state, or
+       `dungeon.txt`'s arrival text for a quest dungeon. */
+    #arrival {
+      position: fixed; left: 50%; top: 8vh; transform: translateX(-50%); z-index: 4;
+      width: min(560px, 86vw); display: none; padding: 16px 20px 14px;
+      background: #0d1018ee; border: 1px solid #4a4436; border-left: 3px solid #8a7440;
+      color: #e8e0c8; font: 13px/1.65 ui-monospace, Menlo, Consolas, monospace;
+      box-shadow: 0 10px 40px #000b; pointer-events: none;
+    }
+    #arrival.on { display: block; }
+    #arrival h2 { margin: 0 0 8px; font-size: 15px; color: #f2d9a0; letter-spacing: 0.04em; }
+    #arrival p { margin: 0 0 4px; }
+    #arrival .src { margin-top: 8px; color: #7d7761; font-size: 11px; }
+    #notice {
+      position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%); z-index: 4;
+      max-width: min(560px, 86vw); display: none; padding: 9px 14px; white-space: pre-wrap;
+      background: #0d1018ee; border: 1px solid #6f9e78; color: #d8f0dc;
+      font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; text-align: center;
+    }
+    #notice.on { display: block; }
     #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #d8b45a;
             font: 14px/1.6 ui-monospace, monospace; text-align: center; background: #06070a; z-index: 6; }
     #boot.hidden { display: none; }
     #boot button { font: inherit; padding: 8px 14px; margin-top: 12px; background: #1b1d24; color: #e8e0c8;
                    border: 1px solid #4a4436; cursor: pointer; }
+    /* ── the world map (src/scenes/worldmap.js) ──────────────────────────────
+       A DOM layer over the game canvas: Arena's own TAMRIEL.IMG art, province
+       borders from CITYDATA.64, and a marker per location. */
+    #map { position: fixed; inset: 0; z-index: 7; display: none; background: #0b1626; }
+    #map.on { display: block; }
+    #map-canvas { position: absolute; inset: 0; touch-action: none; }
+    #map-bar {
+      position: absolute; left: 0; right: 0; top: 0; padding: 9px 12px; display: flex; gap: 16px;
+      align-items: baseline; background: linear-gradient(#080a10ee, #080a10bb 70%, #080a1000);
+      font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; pointer-events: none;
+    }
+    #map-bar .obj { color: #ffe9a8; }
+    #map-bar .side { color: #9fd8a8; }
+    #map-bar .pieces { color: #d8b45a; }
+    #map-bar .hint { margin-left: auto; color: #8d8770; }
+    /* ── the side work (src/game/radiantQuests.js, shown by the world map) ─── */
+    #map-board {
+      position: absolute; left: 14px; top: 52px; width: 330px; max-height: 68vh; overflow: auto;
+      display: none; padding: 12px 14px; background: #10131cf2; border: 1px solid #4a4436; border-radius: 3px;
+      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; box-shadow: 0 6px 24px #000a;
+    }
+    #map-board.on { display: block; }
+    #map-board h2 { margin: 0 0 6px; font-size: 13px; color: #f2d9a0; letter-spacing: 0.02em; }
+    #map-board ul { list-style: none; margin: 0; padding: 0; }
+    #map-board li { margin: 0 0 10px; padding: 8px 9px; background: #171b26; border-left: 2px solid #5d6b8e; }
+    #map-board li h3 { margin: 0 0 3px; font-size: 12px; color: #ffe9a8; }
+    #map-board .sub { margin: 2px 0; color: #a9a48d; }
+    #map-board code { color: #ffe9a8; }
+    #map-board .src { color: #9fd8a8; }
+    #map-board .active { margin: 2px 0 8px; padding: 8px 9px; background: #14201a; border-left: 2px solid #6f9e78; }
+    #map-board .hint { margin: 6px 0 0; color: #8d8770; }
+    #map-board button {
+      font: inherit; margin-top: 6px; padding: 4px 10px; background: #26304a; color: #e8e0c8;
+      border: 1px solid #5d6b8e; cursor: pointer;
+    }
+    #map-board button:hover { background: #33405f; }
+    #map-journal {
+      position: absolute; left: 12px; bottom: 92px; padding: 7px 10px; background: #080a10cc;
+      border: 1px solid #33302a; color: #c9c3ab; font: 11px/1.6 ui-monospace, monospace; pointer-events: none;
+    }
+    #map-journal b { color: #f2d9a0; }
+    #map-card {
+      position: absolute; right: 14px; bottom: 14px; width: 300px; display: none; padding: 12px 14px;
+      background: #10131ce8; border: 1px solid #4a4436; border-radius: 3px;
+      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; box-shadow: 0 6px 24px #000a;
+    }
+    #map-card.on { display: block; }
+    #map-card h2 { margin: 0 0 4px; font-size: 15px; color: #f2d9a0; letter-spacing: 0.02em; }
+    #map-card .sub { margin: 2px 0; color: #a9a48d; }
+    #map-card code { color: #ffe9a8; }
+    #map-card button {
+      font: inherit; margin-top: 8px; padding: 6px 12px; background: #26304a; color: #e8e0c8;
+      border: 1px solid #5d6b8e; cursor: pointer;
+    }
+    #map-card button.ghost { margin-left: 6px; background: #1b1d24; border-color: #4a4436; }
+    #map-card button:hover { background: #33405f; }
+    #map-hover {
+      position: absolute; display: none; padding: 3px 7px; background: #080a10e0; border: 1px solid #4a4436;
+      color: #ffe9a8; font: 11px/1.4 ui-monospace, monospace; pointer-events: none; white-space: nowrap;
+    }
+    #map-hover.on { display: block; }
+    #map-legend {
+      position: absolute; left: 12px; bottom: 12px; padding: 8px 10px; background: #080a10cc;
+      border: 1px solid #33302a; color: #c9c3ab; font: 11px/1.7 ui-monospace, monospace; pointer-events: none;
+    }
+    #map-legend b { color: #f2d9a0; }
+    #map-legend .k { color: #f2d9a0; } #map-legend .d { color: #8c8676; }
+    #map-legend .s { color: #e2564a; } #map-legend .p { color: #f6f2df; }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
   <pre id="hud"></pre>
+  <div id="arrival"></div>
+  <div id="notice"></div>
   <div id="boot">PERFECTARENA<br />starting…</div>
   <script type="module" src="./src/main.js"></script>
 </body>

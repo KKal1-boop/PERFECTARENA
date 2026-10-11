@@ -484,6 +484,134 @@ width table with plausible small values (2–8). Glyph bitmap blocks follow.
 Milestone 4 will either finish this or fall back to a built-in bitmap face
 (logged in PROGRESS.md).
 
+## 10a. The loose text files (**VERIFIED**) — the game's own prose
+
+Arena does not keep its writing inside `A.EXE`. Six kinds of loose file beside it
+hold every word the game says, and all of them are **pure 7-bit ASCII** — measured,
+not assumed: `citytxt`, `dungeon.txt`, `template.dat`, `muguild.dat`,
+`tavern.dat`, `equip.dat`, `selling.dat`, `artfact1.dat` and `artfact2.dat`
+contain not one byte above 127 between them, so a high byte in one of them is
+padding rather than a CP437 glyph (`arenaText.decodeText` drops it).
+
+Parsed by `src/arena/arenaText.js`; `tests/unit/text.test.mjs` checks every count
+and every mapping below against the real files.
+
+### `citytxt` — the gate greeting of every city-state
+
+```
+#0600<CRLF>            #0600…#0663, 64 records
+<CRLF>
+North Point hail thee, <CRLF>
+...body, hard-wrapped...<CRLF>
+fortune within our walls...&   <- the body ends with '&'
+```
+
+**The index is the finding.**
+
+```
+id = 600 + provinceID * 8 + cityIndexWithinProvince
+```
+
+600 is **decimal**, not `0x600` — the markers are written `#0600`, and reading
+them as hex shifts every greeting by 936 and lands each one on the wrong city.
+Eight provinces × eight city-states = the 64 records that are there; the Imperial
+Province has none, because its one city is the palace the game shows instead.
+
+This is checked *by name*: each greeting's own opening words name the city it
+belongs to — 600 → North Point, 601 → Daggerfall, 602 → Camlorn, 628 → Necrom,
+663 → Archon, and **63 of the 64** name their city (Firsthold's opens with "When
+High Lord Torinaan came to this…"). `tests/unit/text.test.mjs` pins the five named
+above and asserts the one exception by name, so a shifted stride fails loudly
+rather than quietly greeting the wrong town.
+
+### `dungeon.txt` — what a quest dungeon says as you stand before it
+
+`#`-separated blocks; the first line of each is the dungeon's own name and the rest
+is its arrival prose. **Nine** blocks: the eight Staff dungeons, plus the palace.
+The order is **not** the quest order (it runs Halls of Colossus, Crypt of Hearts,
+Crystal Tower, Dagoth-Ur, Elden Grove, Fang Lair, Labyrinthian, Murkwood), which is
+why the parse returns a map keyed by lower-cased name and nothing downstream may
+rely on a position. Each of the eight names a Staff piece, e.g. Halls of
+Colossus's says "Here lies the fourth piece of the Staff of Chaos" — and the fourth
+piece is Halls of Colossus's in the quest chain, so the prose and `CITYDATA.64`
+confirm each other.
+
+### `artfact1.dat` / `artfact2.dat` — the artifact quests (**VERIFIED**)
+
+NUL-separated `\0` records, 240 per bank, and each bank holds **two kinds**:
+
+| kind | count | has `%`-words? | example |
+|---|---:|---|---|
+| offer | 186 | yes | "As soon as you mention the Lord's Mail, a man you didn't see when you entered seats himself by you at the bar…" |
+| reply | 54 | no | "Forget it, pal. You're going to have to do a lot better than that." |
+
+372 offers and 108 replies across the two banks. The offers are the recruiting
+speeches a quest can use; the replies are what a haggle gets back. The split is by
+content — an offer names what varies (`%an` the speaker, `%ra` the player's race,
+`%oap` the price, `%cn` the country), a reply names nothing — so no record can be
+in both sets, and the tests assert exactly that.
+
+**Fourteen artifact names are provably in this text**, which is what makes
+`radiantQuests.ARTIFACTS` a data-backed table rather than a list from memory:
+Lord's Mail, Staff of Magnus, Ebony Blade, Chrysamere, Oghma Infinium, Ring of
+Phynaster, Ring of Khajiit, Skeleton's Key, Warlock's Ring, Auriel's Bow, Auriel's
+Shield, Ebony Mail, Spell Breaker, Volendrung. (Masque of Clavicus Vile, Sanguine
+Rose, Skull of Corruption and Savior's Hide are **not** in these banks and are
+consequently not in the table.)
+
+### `template.dat` — the talk templates (**VERIFIED**)
+
+`#NNNNa`-style markers, where the four digits are an id and the trailing letter
+picks one of several interchangeable phrasings of the same moment:
+
+```
+#0000a<CRLF> You walk into the %t's audience chamber… %rf, %t of %cn …&<CRLF>
+#0000b<CRLF> …the same scene, raining outside…&<CRLF>
+…
+#0015<CRLF> …(a one-off line)…&<CRLF>
+```
+
+**811 records over 613 ids.** The shape is measured: **six** ids carry more than
+one phrasing — the largest holds **48** — and **607** are single one-off lines.
+Note `#0015` appearing between `#0000l` and `#0001a`: the original's numbering is
+not sorted, so the parse groups by id and never by position. The `%`-word
+vocabulary is wide (67 distinct words, `%a` … `%u`), which is why
+`arenaText.fillTemplate` matches keys **longest-first** (`%mm` must not be read as
+`%m` + `m`) and drops an unknown word rather than showing a player `%qmn`.
+
+### The shopkeeper banks — `muguild.dat`, `tavern.dat`, `equip.dat`, `selling.dat`
+
+NUL/blank-line separated lines, all of them templates for a transaction
+(`%i` the item, `%mm` the gold): 123 mages-guild lines, 75 tavern lines, 200
+equipment lines, 141 selling lines. `muguild.dat`'s first record opens with a run of
+`?` bytes (the original's editor wrote a length it never filled in); they are
+stripped rather than shown. Tavern lines are the flavour of the game's own speech —
+"Me give you %i, for %mm gold. Okay?" — and are reused by the city's services.
+
+### `guard.dat`, `classes.dat`, `names.dat` — **not** text
+
+Binary despite the extension: 72 bytes for the guard table, 216 for the class table
+(stat pairs), and `names.dat` is 480 bytes of the literal string `EMPTY` repeated —
+an unusable stub in this install, so nothing here generates a person's name from
+the game's data. `artfact*.dat`'s `%an` is filled from a table in
+`radiantQuests.js` instead, and labelled AUTHORED where it is.
+
+## 10b. What a quest's dungeon holds (**RECONSTRUCTED**)
+
+The MIF grid's index convention is **`cells[x * width + z]`** — `x` is the *row*
+(world X, spanning `depth`) and `z` is the *column* (world Z, spanning `width`) —
+as `mifMesh.buildLevelMesh` shows by building `x0 = row * S` and `z0 = col * S`.
+Reading it the other way round is invisible on a square, centred level (`START.MIF`,
+and every dungeon's first floor) and only shows on an off-centre one, where the
+spawn cell turns out to be inside a wall: that is how it was caught.
+
+Arena keeps a piece in a room that `A.EXE` names (D11). Derived instead: a
+breadth-first flood from the level's spawn over every cell that is **not a wall** —
+doors open, chasms are jumped, raised platforms are stepped onto — taking the last
+cell reached. Walking, not flying: reachability across the sixteen shipped dungeons
+measures 5–100% per level, and the deepest cell is 60–305 cells from the spawn on
+the floors it is used on.
+
 ## 10. Text and rules data
 
 | File | Size | Status | Contents |

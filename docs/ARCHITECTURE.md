@@ -172,6 +172,26 @@ renderer.resolveFrame();
 | Combat | `game/combat.js` — Arena's to-hit / damage / monster attack model | Milestone 4. |
 | Raised-platform geometry | `game/tables/raisedPlatforms.js` — **reconstructed**, because the arrays live in `A.EXE` which this data set does not have | DECISIONS.md D11, FORMATS.md §13. |
 
+### 5a. The world, the prose and the side work (added since Milestone 4)
+
+| Module | What it is | Data it reads |
+|---|---|---|
+| `arena/cityDataFile.js` | `CITYDATA.64`: nine province rectangles and 432 locations | **verified** offsets (FORMATS §8) |
+| `arena/cityDataSeeds.js` | the per-location seeds — city, wilderness, province, ruler, sky — and the `.MIF` name a dungeon seed produces | **verified** (FORMATS §8b–8c) |
+| `game/worldMap.js` | the world model: global pixel, latitude, climate, coast, and `travel()` | `CITYDATA.64` + `TERRAIN.IMG` |
+| `arena/arenaText.js` | Arena's prose: `citytxt`, `dungeon.txt`, `artfact*.dat`, `template.dat`, the shopkeeper banks, and the `%`-word filler | **verified** (FORMATS §10a) |
+| `game/questData.js` | the main quest as *derived* data: eight provinces, eight Staff dungeons, and the map dungeon that reveals each | `CITYDATA.64`'s two quest dungeons per province |
+| `game/questState.js` | the main quest's ten-stage machine, modelled on Arena's `MQDATA` save flags | — |
+| `game/radiantQuests.js` | side work: five kinds of job drawn from the world, using Arena's own artifact speeches where it has them; `ARTIFACTS` and `MONSTERS` are checked against the real data | `artfact*.dat`, the archive's `.CFA` names |
+| `game/save.js` | the one place the three saved things live: last location, main quest, side work | `localStorage` |
+| `scenes/worldmap.js` | the map of all Tamriel: Arena's `TAMRIEL.IMG`, province borders, a marker per location, and the board the side work is posted on | `TAMRIEL.IMG`, `CITYDATA.64` |
+
+**The two rules the side work is built on.** A radiant quest may only ever point at
+a place the install can open — the sixteen dungeons whose `.MIF` ships as a file,
+discovered from a loose-file listing rather than assumed — and a draw is a pure
+function of `(world, library, kind, seed, giver, day)`, so the same town on the same
+day posts the same board and a save file is a seed plus a small state.
+
 ## 6. Tests (`tests/`)
 
 * `tests/unit/*.test.mjs` — Node tests (`node --test`) over the **real** Arena
@@ -183,7 +203,12 @@ renderer.resolveFrame();
   headless over raw CDP, drives real key events, captures screenshots into
   `tests/shots/`, fails on console errors, and measures the frame (colour count,
   dominant share, hard-edge count, band brightness) rather than trusting an exit
-  code. Suites: `testmap`, `movement`, `interior`.
+  code. Suites: `testmap`, `movement`, `interior`, `city`, `worldmap`, `radiant`,
+  `story`. The last three are the Milestone 5 work: the map draws Arena's own art
+  with 432 markers; the board is clicked with **real mouse events**
+  (`page.clickSelector` → `Input.dispatchMouseEvent`), not a synthetic `click()`;
+  and `story` plays the Milestone 4 slice — escape, find the map, take the piece,
+  survive a reload — with the `E` key rather than the debug API.
 * `tools/lib/shotascii.mjs` — prints a screenshot as ASCII so a human can read the
   shape of a frame in a terminal.
 

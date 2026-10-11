@@ -2,9 +2,16 @@
 
 *Re-read this file first after any context reset.*
 
-**Current milestone: 4 (vertical slice) — IN PROGRESS.**
-Cities are in and walkable; character creation, NPCs/dialog, combat, quest state and
-save/load are not. See "Milestone 4 — what is done so far" below for the exact split.
+**Current milestone: 5 (full content) — IN PROGRESS; the Milestone 4 slice is
+playable end to end.**
+
+What you can do right now, in one session: travel the world map, arrive in a
+city-state and be greeted in Arena's own words, take a job off the town's board and
+be paid for it, learn where piece 1 of the Staff lies from Stonekeep's parchment,
+take the piece from Fang Lair's deepest chamber, and come back to the map — with the
+quest, the journal and the calendar all surviving the page loads. What remains:
+character creation, NPCs you can talk to at length, combat, the other seven pieces
+and the finale, and the UI windows.
 
 ---
 
@@ -15,19 +22,111 @@ save/load are not. See "Milestone 4 — what is done so far" below for the exact
 | 1 | Survey and decisions (docs) | ✅ done — ARCHITECTURE, DECISIONS, FORMATS |
 | 2 | Scaffold + hand-made test map | ✅ done — 17/17 browser checks |
 | 3 | MIF pipeline (decompress, parse, mesh, walk a real interior) | ✅ done — 13/13 unit + 29/29 browser checks |
-| 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | 🟡 cities done (9/9 unit + 28/28 browser); chargen, NPCs, dialog, combat, quest, save/load remain |
-| 5 | Full content (all provinces, all staff pieces, main quest completable) | ⬜ not started |
+| 4 | Vertical slice (chargen → city → dungeon → staff piece → save/load) | 🟡 **one piece of the main quest is playable through real input, and the quest/log/calendar save and reload.** Chargen, NPC dialog, combat and the UI windows remain |
+| 5 | Full content (all provinces, all staff pieces, main quest completable) | 🟡 **the world map of all Tamriel is in** (9 provinces, 432 locations, fast travel, the radiant board); the other seven pieces, the finale and the ending remain |
 | 6 | Systems and polish (magic, inventory, audio, performance) | ⬜ not started |
 
 ### Verifiable commands
 
 ```
-npm run test          # node --test tests/unit/*.test.mjs          → 22/22
-npm run test:browser  # node tests/run-browser.mjs                → 78/78
+npm run test          # node --test tests/unit/*.test.mjs          → 41/41
+npm run test:browser  # node tests/run-browser.mjs                → 137/137
+npm run check         # both, in order                             → the whole suite
 npm run dev           # node tools/serve.mjs 8080                 → the game
 npm run probe:mif     # node tools/mif-dump.mjs                   → format evidence
 npm run probe:city    # node tools/city-dump.mjs --slots --ascii=60 → city evidence
+node tools/world-dump.mjs --quest --terrain                      → world + quest evidence
+node tools/world-dump.mjs --settlements                          → every settlement, with its seeds
+node tests/run-browser.mjs worldmap|radiant|story                 → one suite
 ```
+
+The browser suite needs `ARENA_PATH` (or `?arena=<folder>` on the URL) so it can
+read a real Arena installation. Without it the `interior`, `city`, `worldmap`,
+`radiant` and `story` suites cannot run; `testmap` and `movement` need no game data.
+
+### The world, the prose and the side work — what was done (Milestone 5 opening)
+
+**Verified by running it, in the browser as well as in Node:**
+
+* **The map of all Tamriel draws.** `TAMRIEL.IMG` (320×200, its own embedded
+  palette) with the nine province rectangles from `CITYDATA.64` laid over it and a
+  marker at every one of the 432 locations; 288 settlements, 144 dungeons, and the
+  Imperial Palace placed by hand because it is not a `CITYDATA` record.
+* **A location's identity comes from its position.** Global pixel = its local point
+  scaled into its province's rectangle; the same two coordinates are its city seed,
+  so `?location=Daggerfall` is Daggerfall's city and not a generic one. Climate and
+  coast come from `TERRAIN.IMG` sampled at that pixel, with the original's quirk that
+  a pixel of open sea is replaced by the sample 12 to its left.
+* **The main quest is derived, not authored.** Eight provinces × two quest dungeons,
+  ordered by the game's own documented order, gives Fang Lair → Labyrinthian →
+  Elden Grove → Halls of Colossus → Crystal Tower → Crypt of Hearts → Murkwood →
+  Dagoth-Ur, with the map dungeon that reveals each (Stonekeep, Fortress of Ice,
+  Selene's Web, Temple of Agamanus, Temple of Mad God, Mines of Khuras, Vaults of
+  Gemin, Black Gate). Every name, seed and `.MIF` is checked against the data.
+* **Arena's prose is read and shown.** 64 city-state greetings (`citytxt`, indexed
+  `600 + province * 8 + cityIndex`, checked by name), 9 dungeon arrival texts
+  (`dungeon.txt`), 372 artifact offers + 108 haggle replies (`artfact*.dat`), 811
+  talk templates over 613 ids (`template.dat`), and 539 shopkeeper lines.
+* **Side work is generated end to end** — five kinds, a board of three per town, a
+  deadline in the world's own days, gold scaled from distance and danger, and a state
+  machine that refuses work done in the wrong place or out of order.
+* **The vertical slice is playable with real keys.** `story` presses `E`: escape the
+  Imperial Dungeons (the way out is 90 cells deep), find the map in Stonekeep, take
+  piece 1 from Fang Lair's deepest chamber, and the quest is still `step 2, pieces 1`
+  after a reload.
+* **The board is clicked with real mouse events** — `page.clickSelector` dispatches
+  `Input.dispatchMouseEvent`, so the panel's Accept button is hit as a person would
+  hit it.
+
+### Concrete numbers from the real data
+
+| | |
+|---|---|
+| Provinces / locations / settlements | 9 / 432 / 288 |
+| Dungeons whose `.MIF` ships as a file | **16 of 144** — the rest the original generates from their seed |
+| City-state greetings (`citytxt`) | 64, of which 63 name their own city |
+| Dungeon arrival texts (`dungeon.txt`) | 9, all eight of them naming a Staff piece |
+| Artifact offers / haggle replies | 372 / 108 |
+| Artifact names provably in those offers | 14 |
+| Talk templates (`template.dat`) | 811 records over 613 ids; 6 ids carry variants, the largest 48 |
+| Creature sprite sets (`*.CFA`) | 340; 17 named creatures in the table, each checked stem by stem |
+| Shopkeeper lines (4 banks) | 539 |
+| Radiant quests generated in one test run | 300, all with a real target |
+| Quest 1's piece, in play | the way out 90 cells deep, the map 98, the piece 95 |
+
+### What the tests caught (each was a real defect, each is now fixed)
+
+1. **`citytxt`'s index base was read as hex.** `#0600` is decimal 600; as `0x600`
+   every greeting shifted by 936 and none of them belonged to its city. Caught by
+   the by-name check before a line of it was shown to a player.
+2. **The voxel grid was indexed `z * width + x`.** Invisible on `START.MIF` (square
+   and centred) and wrong on every off-centre level, where the spawn cell is a wall.
+   The mesh builder's own `x0 = row * S` settles it — D16.
+3. **The deepest-chamber flood stopped at doors and entity cells**, so only 12 of
+   2 500 cells were "reachable" and the objective could land outside its own region.
+   A wall is the only thing a player cannot cross.
+4. **An artifact quest could name one artifact and sell another**, because the
+   speech and the title were drawn independently. The artifact is now read back out
+   of the prose that names it.
+5. **Dropped templates left punctuation behind** ("listen up, ."). `fillTemplate`
+   now tidies the seam and matches keys longest-first, so `%mm` is never `%m` + `m`.
+6. **A scene crashed on load** — a stray module-scope `void canvas;` in the new world
+   map, left over from marking unused parameters. Both scenes now share the same
+   signature with `_`-prefixed unused names.
+
+### Broken / not yet established (UNVERIFIED)
+
+* **Characters, NPCs and combat.** There is no character sheet, nobody to talk to,
+  and nothing to fight. The prose and the templates for all three are loaded and not
+  yet used.
+* **Seven of the eight Staff pieces and the finale** are in the data and not in play.
+  `?dungeon=<name>` opens any of the sixteen; only piece 1's chain is wired.
+* **Only the level you arrive on is searched** for a piece. A three-level dungeon's
+  piece could be on level 2 and the objective would point at level 0's deepest room.
+* **The UI is DOM, not the engine's GL pass.** The map and the arrival text draw in
+  HTML over the canvas; Arena's font is still not decoded (FORMATS §9).
+* **No city frame has been timed on real GPU hardware** (headless software rendering
+  only), and the radiant board has not been played for a long session.
 
 The browser suite needs `ARENA_PATH` (or `?arena=<folder>` on the URL) so it can
 read a real Arena installation. Without it the `interior` suite is the only one
@@ -263,6 +362,12 @@ original's draw order, with Arena's own RNG.
 | S15 | **A city's block-grid start position and reserved-slot lists are reconstructed** | Both live in `A.EXE` (D11). The grid is centred inside the skeleton's wall ring and the reserved list is measured from the skeleton, so neither invents data. Consequences are tested: no stamp may touch the wall ring or the water. |
 | S16 | **A city's climate is a parameter (`?climate=`), not a location lookup** | Climate comes from the world map terrain image at the location's global pixel; decoding that image and the province rectangles is Milestone 5. Any of the eleven city INFs can be selected meanwhile. |
 | S17 | **Cities use one daylight ambient + sun** instead of Arena's light tables | Same reason as the interiors (D13). The sun is on for a city so buildings read as solid rather than flat-lit; the numbers are in `scenes/interior.js` and overridable with `?ambient=&sun=&fog=`. |
+| S18 | **Fast travel is the plain distance between two world pixels** | Arena walks the line and looks up a climate/weather speed table per pixel; those tables are in `A.EXE` (D11). `world.travel()` keeps the *scale* of an Arena journey (a province hop is days, a continent crossing is weeks) without pretending to the original's numbers. |
+| S19 | **The world map and the arrival text are DOM layers over the GL canvas** | The engine's own UI pass wants an `FNT` font Arena's files have not given up (FORMATS §9). The map is static art plus markers, so a 2D canvas is both cheaper and easier to read; the GL-UI version is the noted alternative. |
+| S20 | **`ITEMS` (a fetch quest's trinket) is authored** | Arena's equipment names are in `A.EXE` (D11). `ARTIFACTS` and `MONSTERS` are *not* authored — they are checked against the artifact banks and the archive's `.CFA` names respectively — so this is the only table of its kind. |
+| S21 | **A quest's creature is named, not fought** | Combat is Milestone 6. "Clear the lair" resolves when the player reaches the objective, and the notice says so. |
+| S22 | **A Staff piece lies in the deepest reachable chamber of the level you arrive on** | Arena keeps it in a room `A.EXE` names (D11). The deepest-chamber search is derived from the level and is guaranteed reachable; it does not search a multi-level dungeon's other floors, and it does not place a visible object — the HUD gives the distance and `E` takes it. |
+| S23 | **A radiant job's days pass on travel, not on walking around** | The clock moves when a fast travel happens (`advanceDays`), so a deadline is real without a full calendar behind the interiors. |
 
 ## Known risks
 

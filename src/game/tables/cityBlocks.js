@@ -126,16 +126,22 @@ export function cityInfName(opts = {}) {
 /**
  * The skeleton `.MIF` a settlement of this kind uses.
  *
- * @param {{type?: 'city'|'town'|'village', coastal?: boolean, globalCityID?: number}} opts
+ * `variant` is the 1-based number the game derives from the location's id
+ * (`cityDataSeeds.cityTemplateVariant`); passing it is how a *named* location gets
+ * its own skeleton. Left out, the variant is derived from `globalCityID`, which is
+ * what the URL-driven `?city` path uses.
+ *
+ * @param {{type?: 'city'|'town'|'village', coastal?: boolean, globalCityID?: number, variant?: number}} opts
  * @returns {string}
  */
 export function cityTemplateName(opts = {}) {
-  const { type = 'city', coastal = false, globalCityID = 0 } = opts;
+  const { type = 'city', coastal = false, globalCityID = 0, variant = null } = opts;
   const template = CITY_TEMPLATES[type];
   if (!template) throw new Error(`unknown settlement type "${type}"`);
   const pattern = coastal ? template.coastal : template.inland;
   const count = coastal ? template.coastalCount : template.inlandCount;
-  return pattern.replace('%d', String(1 + (Math.abs(globalCityID) % count)));
+  const number = variant ?? (1 + (Math.abs(globalCityID) % count));
+  return pattern.replace('%d', String(Math.max(1, Math.min(count, number))));
 }
 
 /**

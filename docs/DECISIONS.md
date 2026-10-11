@@ -377,6 +377,78 @@ decorations). Both are labelled `RECONSTRUCTED` in `tables/cityBlocks.js`'s
 `SOURCE`, and the falsifiable consequence is tested: a stamped grid may never touch
 the skeleton's wall ring or its water. Logged as S15 in PROGRESS.md.
 
+## D15 — Side work is generated from Arena's world, in Arena's own words
+
+**Decision.** Radiant quests are drawn from the data: the giver is a settlement in
+`CITYDATA.64`, the target is a dungeon or settlement that exists, the distance and
+deadline come from `world.travel()`, and the prose is Arena's own
+(`artfact1.dat`/`artfact2.dat`) wherever the kind allows it.
+
+**Rationale.** "Radiant quests" is the one Daggerfall feature with no Arena
+counterpart, and the obvious way to satisfy it — a table of authored quests — would
+be neither. The world data is already rich enough to generate from: 432 locations,
+288 of them settlements, each with a real name, province, climate and seed. What was
+missing was *words*, and those turned out to be in the game's folder the whole time
+(FORMATS §10a): 372 artifact recruiting speeches, 811 talk templates, a gate
+greeting for every city-state, and an arrival text for every quest dungeon.
+
+**The two invariants, and why they matter more than the variety.**
+
+1. A quest may only point at a place the game can open. Only **16 of Arena's 144
+dungeon records ship as `.MIF` files** — the two quest dungeons of each of the eight
+provinces — because the original generates the rest from their seed at run time.
+The board therefore discovers the loose files (`discoverLooseMifs`) instead of
+assuming, and refuses a dungeon kind when the install has none. A radiant quest can
+never strand a player at a door that does not exist.
+2. A quest is a pure function of `(world, library, kind, seed, giver, day)`. The
+same town on the same day posts the same board; the browser suite can name an offer
+and click it; and the save file is a seed rather than a transcript.
+
+**Rejected: a fixed list of authored quests.** It would run out, and it would throw
+away the fact that the same eight provinces and 288 settlements already exist.
+**Rejected: authoring the offer text.** Arena has 372 of them, each naming the
+player's race, the price and the country — writing my own would be strictly worse
+text pretending to be the game's. **Rejected: sending jobs to the 128 dungeons whose
+files are absent**, which is the tempting version of "all of Arena" and produces a
+quest that cannot be finished.
+
+**Consequences.** A quest's subject is drawn from the same prose it is sold with —
+an artifact quest picks one of the 14 artifact names that provably **appear in the
+banks**, then an offer that mentions it, so the title and the speech always agree
+("Recover Auriel's Bow" sells Auriel's Bow). `MONSTERS` is read off the archive's
+`.CFA` sprite sets (`GOBLIN*.CFA`, `GHOUL*.CFA`), which the unit test checks stem by
+stem. `ITEMS` — a fetch quest's trinket — is **authored**, because Arena's
+equipment names live in `A.EXE` (D11); it is labelled AUTHORED in the source and in
+FORMATS. Logged as S20–S22 in PROGRESS.md.
+
+## D16 — `localStorage` behind one module, and the cell grid read the mesh's way
+
+**Decision.** Everything that survives a page load goes through `game/save.js`:
+last location, the main quest, the side work. And the voxel grid is indexed the way
+`mifMesh` builds it — `cells[x * width + z]`, `x` over `depth` — everywhere.
+
+**Rationale.** Fast travel in this game *is* a page change: the world map is one
+page, a city another, a dungeon a third. That is honest about what fast travel is,
+but it means progress must live outside the page, and three scenes each keeping
+their own copy of the keys is three chances to disagree. The states are deliberately
+plain JSON — no functions, no class instances — so a save is `JSON.stringify` and a
+load is `JSON.parse`, and the round-trip is a real test.
+
+**The grid convention is a bug that was found, not a preference.** The flood that
+finds a dungeon's deepest chamber first used `cells[z * width + x]`, which is
+indistinguishable from the truth on a square, centred level — `START.MIF`, and every
+dungeon's first floor — and wrong on off-centre ones, where the "spawn cell" came
+out inside a wall. The mesh builder's own `x0 = row * S` / `z0 = col * S` settles
+it, and the same reading is used for the quest objective, the deepest-chamber search
+and the teleport seam.
+
+**Rejected: a URL-carried save** (`?save=…` on every link) — it would work and would
+put a save in every link a player might share. **Rejected: `sessionStorage`**, which
+loses the game on a tab close, and a dungeon crawl is longer than that.
+
+**Consequences.** A browser that refuses storage is fine: every write may fail and
+the game starts fresh. `clearSave()` exists for the tests and for a new game.
+
 **What this does not yet give you:** a *specific* location's city. Climate comes
 from the world map terrain image plus province rectangles, and the city seed comes
 from `CITYDATA.64`'s per-location records — so `?city=town&seed=99` is a real Arena

@@ -436,7 +436,253 @@ async function suiteArenaCity(page) {
   check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
 }
 
-const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity };
+/**
+ * Suite: the world map of Tamriel — Arena's own map art, the nine provinces, every
+ * location, and the side-work board.
+ *
+ * This is Milestone 5's centrepiece and it had no browser coverage until now: the
+ * node checks could say `CITYDATA.64` parsed, but only a real page can say the map
+ * *draws* — that the art decoded, the markers landed on the continent, and the
+ * quest chain's stage is reachable by clicking where a player would click.
+ */
+async function suiteWorldMap(page) {
+  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
+  const q = `arena=${encodeURIComponent(arena)}`;
+  await page.goto(`http://localhost:${PORT}/?map&${q}`);
+  try {
+    await page.waitFor('window.__debug?.scene === "worldmap" || !!window.__bootError', { label: 'the map', timeoutMs: 60000 });
+  } catch (e) {
+    const diag = await page.evalJs('JSON.stringify({ href: location.href, boot: window.__bootError || null, errs: window.__debug?.pageErrors, dbg: window.__debug?.scene, title: document.title })');
+    throw new Error(`${e.message}; page state ${diag}`);
+  }
+  const bootError = await page.evalJs('window.__bootError || null');
+  check('the world map boots without a boot error', !bootError, bootError ? String(bootError).slice(0, 400) : '');
+
+  await page.waitFor('window.__debug.state().frames > 3', { label: 'map frames' });
+  const st = await page.evalJs('window.__debug.state()');
+  check('the map drew the whole continent, from the game\'s own art', st?.drawn?.width === 320 && st?.drawn?.height === 200,
+    `${st?.drawn?.width}×${st?.drawn?.height}`);
+  check('all nine provinces of Tamriel are on the map', st?.provinces === 9, `provinces=${st?.provinces}`);
+  check('every CITYDATA location became a marker', st?.locations === 432, `locations=${st?.locations}`);
+  check('288 of them are settlements and the rest are dungeons', st?.settlements === 288, `settlements=${st?.settlements}`);
+
+  const png = await page.screenshot(path.join(SHOTS, 'm5-worldmap.png'));
+  const decoded = decodePng(png);
+  const stats = imageStats(decoded);
+  check('the map screenshot is not blank', stats.distinctColors > 60 && stats.dominantShare < 0.9,
+    `${stats.distinctColors} colours, dominant ${(stats.dominantShare * 100).toFixed(1)}%`);
+  const edges = Math.max(...[0.35, 0.5, 0.65].map((f) => scanlineEdges(decoded, Math.floor(decoded.height * f))));
+  check('the map is a drawn picture, not a flat fill', edges > 20, `${edges} edges along the best scanline`);
+
+  // The continent, sampled where the provinces are: a marker or land art must be
+  // there, and open sea must not be mistaken for it.
+  const at = (name) => page.evalJs(`window.__debug.markerAt(${JSON.stringify(name)})`);
+  const daggerfall = await at('Daggerfall');
+  const morrowind = await at('Dagoth-Ur');
+  check('a named city has a marker on the map', Boolean(daggerfall && daggerfall.x > 0 && daggerfall.y > 0), JSON.stringify(daggerfall));
+  check('the east of the map is where Morrowind is', Boolean(morrowind && morrowind.world.x > daggerfall.world.x),
+    `Daggerfall x=${daggerfall?.world?.x}, Dagoth-Ur x=${morrowind?.world?.x}`);
+  check('the map knows the terrain under a pixel',
+    await page.evalJs('(() => { const t = window.__debug.terrainAt(172, 106); return t.glyph !== "?" && typeof t.climate === "string"; })()'));
+
+  // Climate comes from TERRAIN.IMG; High Rock is temperate and Hammerfell is desert
+  // in Arena's own world, and the unit tests pin the classes. Here the question is
+  // whether the *browser* path reads them the same way.
+  const climates = await page.evalJs(`JSON.stringify({
+    daggerfall: window.__debug.state().selected, riven: window.__debug.closest(60, 80) })`);
+  check('the map resolves a location\'s climate and coast', /temperate|mountain|desert/.test(climates), climates.slice(0, 160));
+
+  // The main quest chain, derived from the world data, as the map shows it.
+  const chain = await page.evalJs('window.__debug.chain()');
+  check('the chain has the escape, eight pieces and the finale', chain?.length === 10 && chain[1]?.kind === 'piece' && chain[9]?.kind === 'finale',
+    `${chain?.length} stages: ${chain?.map((s) => s.title).slice(0, 3).join(', ')}…`);
+  check('every piece stage names its province and a real .MIF', chain?.slice(1, 9).every((s) => s.province && /^\d{8}\.MIF$/.test(s.mif ?? '')),
+    chain?.slice(1, 9).map((s) => `${s.title}=${s.mif}`).join(' '));
+
+  check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
+  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
+  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
+}
+
+/**
+ * Suite: radiant quests — the side work, end to end.
+ *
+ * A whole job is played the way a player plays it: read the board, accept a
+ * posting from the panel, travel, do the work, come back and be paid. The map is a
+ * UI, so the parts that can go through real clicks and real keys do.
+ */
+async function suiteRadiant(page) {
+  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
+  const q = `arena=${encodeURIComponent(arena)}`;
+  // A clean save: the board must be reproducible from nothing.
+  await page.goto(`http://localhost:${PORT}/?map&${q}`);
+  await page.waitFor('window.__debug?.scene === "worldmap"', { label: 'the map', timeoutMs: 60000 });
+  await page.evalJs('localStorage.clear()');
+  await page.goto(`http://localhost:${PORT}/?map&${q}`);
+  await page.waitFor('window.__debug?.scene === "worldmap"', { label: 'the map again', timeoutMs: 60000 });
+
+  // ── Arena's own prose reached the browser ────────────────────────────────
+  const lib = await page.evalJs('window.__debug.radiant().library');
+  check('Arena\'s city greetings loaded in the browser', lib?.greetings === 64, `greetings=${lib?.greetings}`);
+  check('Arena\'s dungeon texts loaded', lib?.dungeonIntros === 8, `dungeonIntros=${lib?.dungeonIntros}`);
+  check('Arena\'s artifact quest texts loaded', lib?.artifactOffers === 372, `artifactOffers=${lib?.artifactOffers}`);
+  check('Arena\'s haggle replies loaded too, told apart from the offers', lib?.artifactReplies === 108, `artifactReplies=${lib?.artifactReplies}`);
+  check('Arena\'s talk templates loaded', lib?.talkTemplates === 613, `talkTemplates=${lib?.talkTemplates}`);
+
+  // ── the board ────────────────────────────────────────────────────────────
+  check('only dungeons the install can open are offered', (await page.evalJs('window.__debug.radiant().enterableDungeons')) === 16,
+    `enterable=${await page.evalJs('window.__debug.radiant().enterableDungeons')} of 144 dungeon records`);
+  const offers = await page.evalJs('window.__debug.radiantRefresh()');
+  check('the board posts work', offers?.length >= 2, `${offers?.length} offers: ${offers?.map((o) => o.kind).join(', ')}`);
+  check('every posting aims at a place the game can open', offers?.every((o) => /^\d{8}\.MIF$/.test(o.targetMif ?? '') || o.kind === 'deliver'),
+    offers?.map((o) => `${o.kind}→${o.target}${o.targetMif ? `(${o.targetMif})` : ''}`).join(', '));
+  check('at least one posting carries Arena\'s own text', offers?.some((o) => o.dataText) === true,
+    offers?.map((o) => `${o.kind}:${o.dataText ? 'data' : 'authored'}`).join(', '));
+  const deterministic = await page.evalJs('JSON.stringify(window.__debug.radiantRefresh())');
+  await page.evalJs('window.__debug.radiantRefresh()');
+  check('the same town on the same day posts the same board', JSON.stringify(offers) === deterministic,
+    deterministic.slice(0, 120));
+
+  // ── accepting, by clicking the panel like a player ───────────────────────
+  await page.evalJs('window.__debug.openBoard(true)');
+  await page.waitFor('!!document.querySelector("#map-board button[data-offer]")', { label: 'the board panel' });
+  const buttonCount = await page.evalJs('document.querySelectorAll("#map-board button[data-offer]").length');
+  check('the board is a panel with an Accept button per posting', buttonCount >= 2, `${buttonCount} buttons`);
+  await page.clickSelector('#map-board button[data-offer]');
+  await new Promise((r) => setTimeout(r, 120));
+  const afterClick = await page.evalJs('window.__debug.radiant()');
+  check('clicking Accept takes the job', Boolean(afterClick?.active), `${afterClick?.active?.title} → ${afterClick?.active?.target}`);
+  check('the objective names where to go', /Travel to|Deliver to/.test(afterClick?.objective ?? ''), afterClick?.objective);
+  check('the panel now shows the job in hand', await page.evalJs('document.querySelector("#map-board .active") !== null'));
+
+  // ── doing the work, in order, at the right places ────────────────────────
+  const active = afterClick.active;
+  const finish = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind];
+  const wrongPlace = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: 'Somewhere Else' }))`);
+  check('the work cannot be done from somewhere else', JSON.parse(wrongPlace).ok === false, JSON.parse(wrongPlace).reason);
+  const arriving = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('arrive', { where: ${JSON.stringify(active.target)} }))`);
+  check('reaching the target is recorded', JSON.parse(arriving).ok === true, active.target);
+  const done = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: ${JSON.stringify(active.target)} }))`);
+  check('the job is finished at its own target', JSON.parse(done).ok === true, `${finish} at ${active.target}`);
+  const early = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('return', { where: ${JSON.stringify(active.target)} }))`);
+  check('the reward is not paid away from the giver', JSON.parse(early).ok === false, JSON.parse(early).reason);
+  const paid = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('return', { where: ${JSON.stringify(active.giver)} }))`);
+  const paidResult = JSON.parse(paid);
+  check('returning to the giver pays the reward', paidResult.ok === true && paidResult.gold > 0, `${paidResult.gold} gold`);
+  const log = await page.evalJs('window.__debug.radiant().entries');
+  check('the journal records the whole job', log?.length >= 4 && /Completed/.test(log[log.length - 1]), log?.at(-1));
+
+  // ── the calendar, which is what deadlines are measured in ────────────────
+  await page.evalJs('window.__debug.radiantRefresh()');
+  const nextOffer = await page.evalJs('window.__debug.radiant().offers[0]');
+  await page.evalJs(`window.__debug.acceptOffer(${JSON.stringify(nextOffer.id)})`);
+  const days = await page.evalJs(`window.__debug.radiantDays(${nextOffer.days + 5})`);
+  check('a job that runs out of days is failed, not silently kept', days?.failed >= 1 && days?.active === null,
+    `day ${days?.day}, ${days?.failed} failed`);
+  const failedLog = await page.evalJs('window.__debug.radiant().entries');
+  check('the journal says why it failed', failedLog?.some((entry) => /the \d+ days ran out/.test(entry)), failedLog?.at(-1));
+
+  // ── persistence: the side work survives a reload, like the main quest does ─
+  const before = await page.evalJs('window.__debug.radiant()');
+  await page.goto(`http://localhost:${PORT}/?map&${q}`);
+  await page.waitFor('window.__debug?.scene === "worldmap"', { label: 'reload', timeoutMs: 60000 });
+  const after = await page.evalJs('window.__debug.radiant()');
+  check('the side work survived a reload', after?.taken === before?.taken && after?.gold === before?.gold && after?.day === before?.day,
+    `taken ${after?.taken}/${before?.taken}, gold ${after?.gold}/${before?.gold}, day ${after?.day}/${before?.day}`);
+
+  await page.screenshot(path.join(SHOTS, 'm5-board.png'));
+  check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
+  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
+  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
+}
+
+/**
+ * Suite: the story — Arena's prose on arrival, and the main quest played through
+ * real key presses.
+ *
+ * This is the Milestone 4 slice end to end, with the E key rather than the debug
+ * API doing the work: escape the Imperial Dungeons, find the map in Stonekeep, take
+ * the first piece of the Staff from Fang Lair, and find it still taken after a
+ * reload. Every step is a real place from the player's own Arena folder, arrived at
+ * by its own name.
+ */
+async function suiteStory(page) {
+  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
+  const q = `arena=${encodeURIComponent(arena)}`;
+
+  // ── Arena's own greeting, for a city-state the player can name ───────────
+  await page.goto(`http://localhost:${PORT}/?location=Daggerfall&${q}`);
+  await page.waitFor('window.__ready === true || !!window.__bootError', { label: 'Daggerfall', timeoutMs: 60000 });
+  const cityArrival = await page.evalJs('window.__debug.arrival()');
+  check('a city-state says Arena\'s own greeting on arrival', Boolean(cityArrival && /Daggerfall/.test(cityArrival.text)),
+    cityArrival ? `${cityArrival.title}: "${cityArrival.text.replace(/\n/g, ' ').slice(0, 70)}…"` : 'no arrival text');
+  check('the greeting is credited to the file it came from', cityArrival?.source === 'Arena: citytxt', cityArrival?.source);
+  check('the greeting is on screen, not just in memory', await page.evalJs('window.__debug.state().arrivalShown') === true);
+  await page.screenshot(path.join(SHOTS, 'm4-citytext.png'));
+
+  // ── the escape, with the E key ───────────────────────────────────────────
+  await page.evalJs('localStorage.clear()');
+  await page.goto(`http://localhost:${PORT}/?interior=START.MIF&${q}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', { label: 'START.MIF', timeoutMs: 60000 });
+  const escapeObjective = await page.evalJs('window.__debug.objective()');
+  check('the opening dungeon holds the way out', escapeObjective?.event === 'escaped', JSON.stringify(escapeObjective));
+  check('the objective is at the deepest reachable cell', (escapeObjective?.depth ?? 0) > 5,
+    `${escapeObjective?.depth} cells deep of ${escapeObjective?.cells} walkable`);
+  const tooFar = await page.evalJs('window.__debug.interact()');
+  check('the way out cannot be taken from across the dungeon', tooFar === false && /not there yet/.test(await page.evalJs('window.__debug.state().notice ?? ""')),
+    await page.evalJs('window.__debug.state().notice'));
+  await page.evalJs('window.__debug.teleportToObjective()');
+  await new Promise((r) => setTimeout(r, 150));
+  await page.pressKey('KeyE');
+  await new Promise((r) => setTimeout(r, 250));
+  const escaped = await page.evalJs('window.__debug.quest()');
+  check('pressing E at the way out escapes the Imperial Dungeons', escaped?.step === 1, `step ${escaped?.step}: ${escaped?.entries?.at(-1)}`);
+  check('the escape is written to the journal', /Escaped the Imperial Dungeons/.test(escaped?.entries?.[0] ?? ''), escaped?.entries?.[0]);
+
+  // ── the clue: Arena's own arrival text, then the map in Stonekeep ───────
+  await page.goto(`http://localhost:${PORT}/?dungeon=Stonekeep&${q}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', { label: 'Stonekeep', timeoutMs: 60000 });
+  await page.screenshot(path.join(SHOTS, 'm4-dungeon.png'));
+  const clueObjective = await page.evalJs('window.__debug.objective()');
+  check('the clue dungeon holds the map to the first piece', clueObjective?.event === 'foundClue' && /Fang Lair/.test(clueObjective?.what ?? ''), JSON.stringify(clueObjective));
+  await page.evalJs('window.__debug.teleportToObjective()');
+  await new Promise((r) => setTimeout(r, 150));
+  await page.pressKey('KeyE');
+  await new Promise((r) => setTimeout(r, 250));
+  check('finding the map is recorded on the quest', (await page.evalJs('window.__debug.quest()'))?.mapKnown === true,
+    await page.evalJs('window.__debug.state().notice'));
+
+  // ── the piece, in Fang Lair, whose arrival text Arena wrote ─────────────
+  await page.goto(`http://localhost:${PORT}/?dungeon=Fang Lair&${q}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', { label: 'Fang Lair', timeoutMs: 60000 });
+  const fangArrival = await page.evalJs('window.__debug.arrival()');
+  check('a quest dungeon announces itself in Arena\'s own words', Boolean(fangArrival && /dragon gate/i.test(fangArrival.text)),
+    fangArrival ? fangArrival.text.replace(/\n/g, ' ').slice(0, 80) : 'none');
+  check('the dungeon text says which piece lies inside', /Staff of Chaos/i.test(fangArrival?.text ?? ''), fangArrival?.source);
+  const pieceObjective = await page.evalJs('window.__debug.objective()');
+  check('the piece is here, at the deepest chamber', pieceObjective?.event === 'foundPiece', JSON.stringify(pieceObjective));
+  await page.evalJs('window.__debug.teleportToObjective()');
+  await new Promise((r) => setTimeout(r, 150));
+  await page.pressKey('KeyE');
+  await new Promise((r) => setTimeout(r, 250));
+  const taken = await page.evalJs('window.__debug.quest()');
+  check('pressing E takes the first piece of the Staff', taken?.pieces === 1, `pieces ${taken?.pieces}: ${taken?.entries?.at(-1)}`);
+  check('the quest moves on to the next piece, which must be learned first',
+    taken?.step === 2 && /piece 2/.test(taken?.objective ?? '') && taken?.mapKnown === false, taken?.objective);
+
+  // ── and it is still taken after a reload ─────────────────────────────────
+  await page.goto(`http://localhost:${PORT}/?interior=START.MIF&${q}`);
+  await page.waitFor('window.__debug?.scene === "interior"', { label: 'reload', timeoutMs: 60000 });
+  const restored = await page.evalJs('window.__debug.quest()');
+  check('the main quest survived a page load', restored?.pieces === 1 && restored?.step === 2,
+    `pieces ${restored?.pieces}, step ${restored?.step}, ${restored?.entries?.length} journal entries`);
+
+  check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
+  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
+  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
+}
+
+const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity, worldmap: suiteWorldMap, radiant: suiteRadiant, story: suiteStory };
 
 async function main() {
   if (!findBrowser()) {
