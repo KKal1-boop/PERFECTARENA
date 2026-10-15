@@ -174,10 +174,19 @@ export function dangerOf(opts = {}) {
 export function monsterCountFor(opts = {}) {
   const danger = opts.danger ?? 4;
   const size = (opts.level?.width ?? 0) * (opts.level?.depth ?? 0);
-  // A level that names no monster of its own gets none: `start.inf` — the Imperial
-  // Dungeons — lists keys, equipment and treasure and not one creature, which is exactly
-  // why the escape is quiet, and it must stay that way (measured in `dungeonItems`'s own
-  // header). A level that names some keeps its own breed and gets a count by danger.
+  // A level that names no monster of its own gets none. **The sentence that used to stand
+  // here justified that law wrongly**, and the 2026-10-15 audit caught it (D-02b): it said
+  // `start.inf` "lists keys, equipment and treasure and not one creature". Measured with
+  // `monsterRosterFromInf`, `start.inf` names **23 species** — itemIndexes 1…8 and 32…54, rat
+  // through lich — and the Imperial Dungeons field five of them. The law keeps its own
+  // footing (a level that names nothing gets nothing); the false justification is gone.
+  //
+  // **What it costs today is the whole country.** `TWN.INF`, `DWN.INF` and `MWN.INF` place
+  // three item flats and no creature (`itemIndexes [15, 2, 14]`, none in the monster range), so
+  // a wilderness window gets `[]` here and zero creatures — `docs/AUDIT-2026-10-15.md` §S-B.
+  // The per-terrain, per-hour bestiary that fills it is P1's, and until ACD.EXE is unpacked
+  // (P2) it is **this project's own** table, stamped as such. A level that names some keeps its
+  // own breed and gets a count by danger.
   if (opts.monsters && !opts.monsters.length) return 0;
   if (size && size < 400) return 2;                       // a shop, a cellar, a single room
   return Math.max(4, Math.min(14, 6 + Math.floor(Math.max(0, danger - 2) / 3)));

@@ -545,20 +545,31 @@ own name (`TLAUNDRY`, `TLAUNDR1/2`) says so, and it stands on `BS` blocks.
   foot of the entry corridor — and neither is `startingLevelIndex`: a house arrives on its
   **third** level because that is the ground floor in these files.
 
-**Consequences.** The round trip is two page loads, exactly as the game already changes
-place (`M` for the world map), and the city the player comes back to is the *same* city
-because a city is deterministic in its seed: `back` carries the whole page they left, with
-`at` set to the doorway cell, and `?at=row,col` stands them there. A building has **no
+**Consequences.** The city the player comes back to is the *same* city because a city is
+deterministic in its seed: `back` carries the page they left, with `at` set to the doorway
+cell, and `?at=row,col` stands them there. **Amended 2026-10-15 — the round trip is no
+longer two page loads.** It has not been for some time: `enterDoor`, `leaveDoor`, `crossGate`
+and `useStair` all go through `goInPlace` (`interior.js`), which re-boots the scene inside
+the same document — the shipping path cannot use a URL at all, because a *picked* folder
+lives in that page's memory. The audit measured it rather than inferring it
+(`docs/AUDIT-2026-10-15.md` §S-E: `__debug.navigations` 2 → 2 across a real `E`, and a
+variable set on the street still readable inside `EQUIP2.MIF`), and `docs/PROGRESS.md`'s S35
+row is retired with it. A hop is still a full scene re-boot — decode, mesh, upload, populate —
+not a payload swapped into a living world; that is P3's remaining half. A building has **no
 monsters** (a shop with a keeper and four rats in it was the first run's behaviour, and it
 read as a bug) and its keeper speaks their trade's own bank — `equip.dat`, `tavern.dat`,
 `muguild.dat` — filtered to whole sentences that want no item and no price; a temple, a
 noble house and a house have no bank of their own and say so (`SHOP_KINDS[kind].bank` is
 `null`) rather than borrowing one.
 
-**Rejected: entering a building in place.** Swapping the scene's `.MIF` under the same page
-would need `cityRequest`, the quest's objective, the town's people and the lighting to be
-re-derived mid-session, and the return trip has to rebuild the city anyway — a page load is
-both simpler and honest about what has happened. **Rejected: keying the interior off the
+**Rejected at the time, and since taken anyway: entering a building in place.** The reason
+recorded here was that swapping the scene's `.MIF` under the same page would need
+`cityRequest`, the quest's objective, the town's people and the lighting to be re-derived
+mid-session, and that the return trip has to rebuild the city anyway. That reasoning still
+holds — and `goInPlace` pays exactly that price, re-running the whole scene boot — but it is
+forced by the folder: a picked Arena folder is memory in one page (`browserSource.js`), so the
+shipping path has no URL to navigate to. The reversal is recorded here so the next reader does
+not find a rejection the code ignores. **Rejected: keying the interior off the
 block type.** The laundry sign stands in equipment blocks as well as house blocks, and a
 door whose sign says *tavern* must not open an equipment store.
 

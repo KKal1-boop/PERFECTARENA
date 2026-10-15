@@ -137,7 +137,7 @@ Re-run both (or `npm run check`) after any change; the numbers above are a recor
 | S32 | How many people a settlement holds is a rule, not a table | 14 / 9 / 5, drawn deterministically from the place's seed |
 | S33 | Which of the eight interiors a door opens is **reconstructed** | The block → interior table is in `A.EXE` (D11/D21); the block's own number picks one |
 | S34 | A keeper speaks (the corpus is read, not performed) | A bank's lines wanting an `%i` or `%mm` are dropped; only whole plain sentences are used. The *system* the corpus served is here: stock and haggle live (`game/services.js`) |
-| S35 | A building is entered and left by a page load | `back` carries the city page with `at` set to the doorway (D21) |
+| S35 | ~~A building is entered and left by a page load~~ **RETIRED 2026-10-15** | The code has not done this since `goInPlace` landed: a door, a gate and a stair re-boot the scene **inside the same document**. Measured, not argued — `docs/AUDIT-2026-10-15.md` §S-E: `__debug.navigations` stays flat across a real `E` into the smith and a variable set on the street is still readable inside. What is still true is the *reason* the row existed: a hop is a full scene re-boot, not a payload swap into a living world (P3) |
 | S36 | Which of Arena's six swings a blow is comes from the movement keys | The original reads the mouse's gesture, which a key/click port does not have |
 | S37 | `FLAIL.CIF` and `BOW.CIF` are not in this install | The game draws nothing and names the missing file rather than substituting art |
 | S38 | Half the twin's regard table has nothing to fire it | `gift`/`helped`/`saved` are kept and unwired, and said so |
