@@ -210,3 +210,59 @@ blue ≥ red, stars, per-climate) + `living`/`world`/`scenevisuals` browser 72/7
 **Regression state after this session:** 375 unit tests, `combat`+`actioncombat` 49/49,
 `townsfolk`+`living` 90/90, `living`+`world`+`scenevisuals` 72/72 — 0 failures.
 `docs/ROADMAP.md` §0 is the schematic master plan of what remains.
+
+---
+
+# Session 2026-10-16 — the owner played both games side by side
+
+The owner compared this port with the real Arena and reported a specific list (now
+**D-12 … D-24** in `docs/DEFECTS.md`, with their own section, in the order the player
+would hit them). Two of the list's items are closed in the same session; the rest are
+recorded as reports, not findings, and each says what is still unknown.
+
+## What the player can now see
+
+1. **A town at night is asleep, not frozen** (D-01a, `62b75b8`). Two causes, both real:
+   the flag that says "this one's day has them indoors" was written one frame in six
+   hours (the day is asked once per rest block), and **no city had a single trade** —
+   `populateTown` ignored the level's own `*ITEM` people records, so every citizen was a
+   plain townsperson whose 21:00 block is `goHome`. A settlement now takes its **roster**
+   from its own blocks (Daggerfall's `CITYW2.MIF` names nineteen people: ten priests,
+   the Mages Guild's wizard, three vendors, a beggar, three harlots, a shady character)
+   while the cells stay the seeded placement's.
+   *Measured (`.scratch/nightprobe.mjs`, 20 s watches):* 10:00 → 48 people, 44 out of
+   doors, 41 walking, 16 on a route; **23:00 → 4 out and walking, 44 indoors**; 06:00 →
+   9 priests walking to worship. The audit's own S-A night check is green for the first
+   time (`node tests/run-browser.mjs audit`, 15/23 — every red is the wilderness).
+2. **The Imperial Dungeons' first rooms hold rats, goblins and wolves, not a golem and
+   a vampire** (D-15, `40bc42d`). `spawnEncounter` drew the kind **uniformly** over the
+   level's whole `*ITEM` roster; it now fields a **prefix** of the level's own list,
+   widening with the place's danger and with depth (`encounters.rosterWindow`, and the
+   order is Arena's own: item 32 rat → item 54 lich). The audit's dungeon line, before →
+   after: `{stonegolem:1, ghoul:1, goblin:1, firedaemon:1, vampire:1}` →
+   `{lizardman:1, orc:2, wolf:1, rat:1, goblin:1}`.
+
+## The commands that prove it
+
+```
+ARENA_PATH=C:/ArenaProject/arena/ARENA npm test          # 421/421, exit 0
+node tests/run-browser.mjs townsfolk city living         # 133/133
+node tests/run-browser.mjs actioncombat                  # 23/23
+node tests/run-browser.mjs dungeonplay combat            # 45/45
+node tests/run-browser.mjs audit                         # 15/23 (wilderness reds are D-01b/D-02a)
+node .scratch/nightprobe.mjs                             # the 10:00 / 23:00 / 06:00 table above
+```
+
+## What is NOT established
+
+* Nothing about performance on real hardware (headless SwiftShader).
+* The wilderness is still empty of people and creatures (**D-01b**, **D-02a**) and is
+  still a 128×128-cell window rather than a country (**D-04**, **D-22**) — the audit's
+  four remaining reds are all this, and it is P3/P4, not P1.
+* **D-14** (the first-person weapon) is only half settled: the install ships six weapon
+  sheets and no dagger sheet, so a dagger and a longsword cannot differ from Arena's own
+  art; whether the *equip path* moves the rig on a real page is **not yet probed**, and
+  the starting loadout (a dagger in `startingKit()`, a longsword in `placeholderPlayer()`)
+  is this project's own choice against Arena's unarmed opening.
+* Eleven more of the owner's reports (D-12, D-13, D-16 … D-21, D-23, D-24) are recorded
+  with what is known and no fix yet.
