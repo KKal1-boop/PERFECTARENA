@@ -187,6 +187,12 @@ how it stays honest.
 ## 6. Engineering
 
 - [x] GL payload disposal on every level swap; bounded FX pools; reward idempotence.
+- [x] **Module gate** (`unit/modules.test.mjs`): every module under `src/` parses (`node --check`),
+  every static import and re-export resolves to a file, no bare dependency is imported, every
+  module imports in bare Node, and `src/main.js` is still the one module `index.html` boots.
+  4/4, mutation-checked 2026-10-15: a missing import and a syntax error each turn it red. This is
+  the guard against the failure this repo has paid for twice — a name used before it was declared
+  and a TDZ page that only a human opening the browser could see.
 - [~] `typecheck` (`tsc --noEmit`) — best structural addition left.
 - [ ] Texture atlas iff the 45-material city blocks become the draw-call ceiling (D14).
 

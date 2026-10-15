@@ -10,7 +10,10 @@ nine reds are the work list in `docs/DEFECTS.md`.
 
 IN PROGRESS: nothing half-edited. `src/main.js` gained `installPageLoadCounter()` (the audit's
 S-E instrument: `__debug.navigations`, `sessionStorage`-based, 0 in a tab's first document);
-`tests/suites/audit.mjs` is new and registered as `audit` in `tests/run-browser.mjs`.
+`tests/suites/audit.mjs` is new and registered as `audit` in `tests/run-browser.mjs`;
+`tests/unit/modules.test.mjs` is the P0 **module gate** (every `src/` module parses, every static
+import resolves, every module imports in bare Node, one entry point) — mutation-checked: a
+missing import and a syntax error each turn it red.
 
 WHAT THE AUDIT PROVED (full write-up: `docs/AUDIT-2026-10-15.md`):
 * **S-A town, 10:00: 48 people, 43 of them (90 %) moved > 5 m in 20 s, 17 mid-step, 7 mid-route.**
@@ -31,14 +34,19 @@ WHAT THE AUDIT PROVED (full write-up: `docs/AUDIT-2026-10-15.md`):
 
 NEXT 3 STEPS:
 1. **D-01b then D-02a** — people and creatures in the country (P1 items 1–2). These two are the
-   same complaint ("there is nothing out there") and are the biggest player-visible win.
+   same complaint ("there is nothing out there") and are the biggest player-visible win. For the
+   bestiary, `rosterFor(danger)` already exists and is annotated; a *terrain/clock* table does not,
+   and until ACD.EXE is unpacked (P2) it must be stamped this project's own.
 2. **D-01a** — find out why the town freezes at 23:00; probe `stepTownsfolk`/`townPaths` at night
    before changing anything.
-3. **D-02b + D-05a** — retire the wrong `encounters.js` comment and the stale S35 row (one
-   commit, no behaviour change).
+3. **D-07** — names exist only on this checkout's dev door (hard-coded
+   `C:/ArenaProject/daggerfall/arena2/...` behind a silent catch). Serve the corpus through the
+   player's own folder and fall back to `daggerfall/src/characters/nameGen.json` (D-06), so a
+   missing corpus is a degraded feature rather than an invisible one.
 
-OPEN DEFECTS (top): D-01a · D-01b · D-02a · D-02b · D-03 (breadth) · D-05 · D-05a — full list
-and the observation O-01: `docs/DEFECTS.md`.
+OPEN DEFECTS (top): D-01a · D-01b · D-02a · D-03 (breadth) · D-05 · D-06 (the fallback) · D-07 —
+D-02b and D-05a are DOC and landed in `f2003c7`. Full list and the observation O-01:
+`docs/DEFECTS.md`.
 
 DO-NOT-REPEAT (paid for already):
 * Reading `src/scenes/interior.js` whole (478 KB, one ~8 400-line closure). Grep a name, then
