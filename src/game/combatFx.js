@@ -47,10 +47,15 @@ export class CombatFx {
   }
   setBolts(bolts = []) { this.bolts = bolts; }
   burst(x, y, z, outcome = 'hit', heavy = false) {
+    // **A landed blow is blood, not sparks.** Arena's own hit feedback is the wound, and the
+    // owner's report names this port's coloured debris among the things that read as foreign
+    // ("ugly battle particles … instead normal arena … has its own blood particles",
+    // 2026-10-16 — D-20). The parry, the block and a charge's dust keep their own colours:
+    // those are the tell of a *defence*, and reading them is how a player learns the exchange.
     const colour = outcome === 'parried' ? [1, 0.85, 0.3]
-      : outcome === 'charge' ? [1, 0.78, 0.16]  // the held heavy's own amber, readable in first person
+      : outcome === 'charge' ? [1, 0.78, 0.16]  // a charge stamps dust; the hold itself has no tell now
       : outcome === 'blocked' ? [0.6, 0.85, 1]
-      : outcome === 'dust' ? [0.65, 0.53, 0.35] : [0.95, 0.35, 0.17];
+      : outcome === 'dust' ? [0.65, 0.53, 0.35] : [0.55, 0.06, 0.05];
     const count = heavy ? 14 : outcome === 'charge' ? 5 : 8;
     for (let i = 0; i < count; i++) {
       if (this.particles.length >= FX_MAX_PARTICLES) this.particles.shift();

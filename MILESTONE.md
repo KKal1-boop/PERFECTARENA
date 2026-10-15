@@ -293,3 +293,27 @@ second, the scene's own one-axis-at-a-time stepping):
 **Commands:** `npm test` → **423/423, exit 0**; `node tests/run-browser.mjs actioncombat
 combat townsfolk` → **118/118**; `living dungeonplay` → **45/45**. The two new pins were
 mutation-checked: single-frame heading → 150 sharp turns, deadband removed → 138 flips.
+
+## 2026-10-16 (third) — D-20: the held heavy stops spraying the player
+
+"if i hold left click i just spawn in front of me piss yellow particles and a message that
+says heavy harmed release". Read off the code: an armed heavy emitted **fourteen amber
+particles out of the player every 0.12 s** for the whole of the hold, 1.35 m ahead at chest
+height, plus a notice written in design jargon ("Heavy armed — release! (unblockable answer:
+roll)").
+
+* The spray is **gone**. The heavy's tell is the drawn weapon held in its wind-up plus one
+  plain line, "Heavy blow armed — release." — Arena has no wind-up particles at all, and the
+  pulse was this port's own invention.
+* The mechanic is now **reported** rather than inferred from a side effect:
+  `__debug.combat().defence.charge = { armed, progress }` (a tap inside `HEAVY.armSeconds`
+  reads `{armed:false, progress:0}`, a 600 ms hold reads `{armed:true, progress:0.50}`).
+* A **landed blow is blood**, not amber sparks (`combatFx.burst`'s 'hit' colour is now
+  `[0.55, 0.06, 0.05]`). Parry, block and a charge's dust keep their own colours: those tell a
+  player what the *defence* did.
+* Two `combat` suite checks that read the removed `effects.chargeBursts` were restated to the
+  law the tell was a proxy for, and logged in `docs/DEFECTS.md` — the change is a behaviour
+  the owner asked for, so the checks moved to the mechanic rather than keeping the spray.
+
+**Commands:** `npm test` → **423/423, exit 0**; `node tests/run-browser.mjs combat actioncombat`
+→ **60/60**.

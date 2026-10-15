@@ -7267,8 +7267,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           reach: s.attack.profile.reach, x: s.world.x, z: s.world.z };
       }),
       telegraphs: combatFx.telegraphs,
-      effects: { space: 'world', depthTested: true, particles: combatFx.particles.length, vertices: combatFx.count, bursts: combatFx.bursts, chargeBursts: dbg.chargeBursts ?? 0, hitStop },
-      defence: { rollT: defence.rollT, parryT: defence.parryT, direction: defence.rollDirection, live: liveDefence(), riposte: defence.riposte, stamina: defence.stamina.stamina ?? null, max: defence.stamina.max ?? null },
+      effects: { space: 'world', depthTested: true, particles: combatFx.particles.length, vertices: combatFx.count, bursts: combatFx.bursts, hitStop },
+      defence: { rollT: defence.rollT, parryT: defence.parryT, direction: defence.rollDirection, live: liveDefence(), riposte: defence.riposte, stamina: defence.stamina.stamina ?? null, max: defence.stamina.max ?? null,
+        // The player's own heavy, as the step reads it: whether the hold has armed the blow and
+        // how full the charge is. It is reported because the *tell* is no longer a particle
+        // (`interior.js`'s charge block), and a test has to be able to hold the heavy to its law.
+        charge: { armed: Boolean(defence.chargeArmed), progress: defence.chargeProgress ?? 0 } },
       monsters: monsters.map((s) => ({
         serial: s.serial,
         name: s.monster.name, id: s.monster.id, level: s.monster.level,
@@ -8262,44 +8266,32 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     defence.guardBroken = false;
   }
     combatFx.step(dt);
-    // The held heavy announces itself while the hold *runs*, not only when it lands: a
-    // thread of amber sparks in front of the player, thicker as the charge fills, and a one
-    // beat notice when it is fully charged — the wind-up the player's own attack gets, the
-    // same language a monster's wind-up speaks.
+    // ── the held heavy's own tell ────────────────────────────────────────────────
+    //
+    // **The blow announces itself in the weapon and the HUD, never in sparks out of the
+    // player's chest.** The owner, playing both games side by side (2026-10-16): "if i hold
+    // left click i just spawn in front of me piss yellow particles and a message that says
+    // heavy harmed release". Arena's own presentation has no wind-up particles at all — the
+    // amber pulse this replaces was this port's invention, and it fired a **burst of fourteen
+    // amber particles out of the player every 0.12 s** for as long as the hold ran, clear in
+    // front of the eye in first person. What a player gets instead is what the original gives:
+    // the drawn weapon held in its wind-up, and the charge the HUD and `__debug.combat()`
+    // report (`defence.charge`) so a test can still hold the heavy to its own law without
+    // reading a particle count. The one notice is plain, and it names the blow rather than a
+    // mechanic.
     if (defence.charging) {
-      const held = dbg.seconds - defence.chargeStart;
-      const charge = chargeScale(held);
-      // **The tell belongs to an ARMED heavy, not to the press.** A hold shorter than
-      // `HEAVY.armSeconds` (0.18 s) is a light swing being wound, not a heavy: it has no
-      // tell of its own, and a plain left click — which is exactly that, a press and
-      // release inside the arm — must not spray anything. It did: the pulse ran from the
-      // press's first frame, so a click put a burst of amber at the player's own chest
-      // (reported as "random yellow particles come out of me when I left click").
-      if (!charge.heavy) defence.chargePulse = 0;
-      else {
-        defence.chargePulse -= dt;
-        if (defence.chargePulse <= 0) {
-          defence.chargePulse = 0.12;
-          const feet = feetOf();
-          const fx = Math.sin(cam.yaw);
-          const fz = Math.cos(cam.yaw);
-          // …and it reads as a thread of sparks *ahead* of the player, clear of the camera:
-          // the old point sat 0.9 m out at eye height, which in first person is the near
-          // plane's own face.
-          combatFx.burst(feet[0] + fx * 1.35, feet[1] + 1.05 + charge.progress * 0.25, feet[2] + fz * 1.35, 'charge', charge.heavy);
-          // The tell is counted **on its own** (`dbg.chargeBursts`), because the scene's whole
-          // burst tally also moves when a creature's blow lands, when a parry rings and when
-          // a charge stamps dust — and a check that read the total could not tell the
-          // player's own tell from somebody else's effect (measured: a light press "emitted"
-          // a burst because a rat chose that 100 ms to hit).
-          dbg.chargeBursts = (dbg.chargeBursts ?? 0) + 1;
-        }
-      }
+      const charge = chargeScale(dbg.seconds - defence.chargeStart);
+      defence.chargeArmed = charge.heavy;
+      defence.chargeProgress = charge.progress;
       if (charge.heavy && !chargeFullShown) {
         chargeFullShown = true;
-        showNotice('Heavy armed — release! (unblockable answer: roll)', 800);
+        showNotice('Heavy blow armed — release.', 800);
       }
-    } else chargeFullShown = false;
+    } else {
+      chargeFullShown = false;
+      defence.chargeArmed = false;
+      defence.chargeProgress = 0;
+    }
     // The camera's wound decays in about half a second.
     screenShake = Math.max(0, screenShake - dt * 2.2);
     if (dbg.seconds > defence.riposteUntil) { defence.riposte = 0; defence.riposteTarget = null; }

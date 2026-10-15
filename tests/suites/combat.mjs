@@ -117,38 +117,37 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
       `${killsBefore} → ${killsAfter} slain`);
     await page.screenshot(path.join(shots, 'm6-combat.png'));
 
-    // ── a plain click is a light swing, and it leaves no tell ─────────────
+    // ── a plain click is a light swing; a hold arms the heavy ────────────────
     //
-    // The heavy's amber tell (`combatFx.burst(…, 'charge')`) belongs to an *armed* heavy,
-    // not to the press: a hold inside `HEAVY.armSeconds` (0.18 s) is a light swing, and the
-    // press must therefore spray nothing. It did — the pulse ran from the press's own first
-    // frame, so a single left click put a burst of amber at the player's chest, which is the
-    // reported "random yellow particles come out of me when I left click". Read *during* the
-    // press and before the release, so a light blow landing on the rat (a legitimate hit
-    // burst) cannot be mistaken for the tell.
-    //
-    // The **charge tell's own counter** is what is read, not the scene's whole tally: the
-    // total also moves when a creature's blow lands or a parry rings, and a check that read
-    // it called a rat's hit the player's own tell (measured: a light press "emitted" one).
-    const tellsBefore = await page.evalJs('window.__debug.combat().effects.chargeBursts');
+    // **The tell is a state now, not a spray.** These two checks used to read the amber
+    // particle tell the scene emitted while a heavy was held (`effects.chargeBursts`). The
+    // owner, playing both games side by side (2026-10-16), reported that tell as a bug in its
+    // own right — "if i hold left click i just spawn in front of me piss yellow particles and
+    // a message that says heavy harmed release" — and Arena's own presentation has no wind-up
+    // particles at all, so the spray is gone (`interior.js`'s charge block, D-20). What the
+    // heavy and the light swing are still held to is the *law the tell was a proxy for*: a
+    // press inside `HEAVY.armSeconds` (0.18 s) arms nothing, and a hold past it arms the blow.
+    // `defence.charge` is the step's own answer, so the checks read the mechanic rather than a
+    // side effect of it — and they no longer depend on a rat choosing not to hit the player
+    // during the sample.
     const at = { x: canvasBox.x, y: canvasBox.y, button: 'left', clickCount: 1 };
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, buttons: 0 });
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, buttons: 1 });
     await new Promise((r) => setTimeout(r, 100));       // inside the arm: still a light swing
-    const tellDuringTap = await page.evalJs('window.__debug.combat().effects.chargeBursts');
+    const tapCharge = await page.evalJs('window.__debug.combat().defence.charge');
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, buttons: 0 });
     await new Promise((r) => setTimeout(r, 150));
-    check('a light click\u2019s press leaves no charge tell (no particles out of the player)',
-      tellDuringTap === tellsBefore, `${tellsBefore} → ${tellDuringTap} tells during the press`);
+    check('a light click’s press arms nothing (the heavy needs a hold)',
+      tapCharge?.armed === false, JSON.stringify(tapCharge));
 
-    // …and the hold that *does* arm the heavy still announces itself.
+    // …and the hold that *does* arm the heavy is reported as armed.
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, buttons: 1 });
     await new Promise((r) => setTimeout(r, 600));       // well past the arm
-    const tellsDuringHold = await page.evalJs('window.__debug.combat().effects.chargeBursts');
+    const heldCharge = await page.evalJs('window.__debug.combat().defence.charge');
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, buttons: 0 });
     await new Promise((r) => setTimeout(r, 250));
-    check('a held heavy still announces itself in amber while the hold runs',
-      tellsDuringHold > tellDuringTap, `${tellDuringTap} → ${tellsDuringHold} tells while held`);
+    check('a held heavy is armed while the hold runs',
+      heldCharge?.armed === true, JSON.stringify(heldCharge));
 
     // ── the player takes blows, and the HUD says so ─────────────────────────
     //
