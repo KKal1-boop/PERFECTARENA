@@ -3189,6 +3189,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // clamps to the batch's own quads, so an undersized batch silently loses a person while
     // `indexCount` asks for indices the buffer does not hold (a GL error, caught by the
     // `city` suite's WebGL-misuse check).
+    // ── the trades this town's own blocks name ────────────────────────────────
+    //
+    // A settlement's assembled blocks carry the map's own `*ITEM` records, and they name
+    // people: Daggerfall's `CITYW2.MIF` places nineteen — its priests, the Mages Guild's
+    // wizard, market vendors, a beggar, its harlots and a shady character
+    // (`loaded.peopleSpots`, read by `game/dungeonItems.js`). `populateShop` has always read
+    // them for a *building*, where the record's **cell** is the room its person belongs in;
+    // on the street the record's cell is inside a block the player cannot walk into, so what
+    // a town takes from its own map is the **roster** — which trades this town keeps — while
+    // the cells stay the seeded placement's. That division is the one S32 and `populateShop`
+    // already make, and it is what makes a night street possible at all: the trades whose own
+    // day keeps them out after dark are the harlots, the shady characters and the watch, and
+    // with every citizen a plain townsperson a city held not one of them — measured 2026-10-15
+    // at 23:00, forty-eight people and all forty-eight of them indoors (D-01a).
+    const trades = (loaded.peopleSpots ?? []).map((spot) => spot.role).filter(Boolean);
+    placed.forEach((person, i) => { if (i < trades.length) person.role = trades[i]; });
     const perOutfit = new Map();
     for (const person of placed) {
       const entry = perOutfit.get(person.outfit.key) ?? { outfit: person.outfit, count: 0 };
@@ -4418,7 +4434,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function folkInReach(feet, fx, fz) {
     let best = null;
     for (const person of townsfolk) {
-      if (person.down) continue;
+      // A swing cannot reach through a wall: somebody whose day has them indoors is not a
+      // target on the street, however close their own doorstep is to the player's hand.
+      if (person.down || person.atHome) continue;
       const dx = person.world.x - feet[0];
       const dz = person.world.z - feet[2];
       const distance = Math.hypot(dx, dz);
@@ -4477,15 +4495,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // so a killing was never seen: the figure vanished mid-street. They fall in their own
       // art now and are swept up once it has played (`FOLK_DIE_SECONDS`, in the step).
       person.downAt = dbg.seconds;
-      for (const other of townsfolk) if (other !== person && !other.down) notePerson(other, 'slain');
+      // **The witnesses are the people who could see it.** Somebody indoors did not watch a
+      // killing in the street, and the port has the flag that says so (`atHome`).
+      for (const other of townsfolk) if (other !== person && !other.down && !other.atHome) notePerson(other, 'slain');
       showNotice(`${fighter.name} falls. The town saw it.`, 4000);
       // …and the watch's own answer, which is a *different* question from what the witnesses
       // think of the player (`game/livingWorld.js`): how many come, whether it is an arrest,
       // and nothing at all when the street was empty.
-      callWatch({ crime: 'murder', witnesses: townsfolk.filter((p) => !p.down).length + 1 });
+      callWatch({ crime: 'murder', witnesses: townsfolk.filter((p) => !p.down && !p.atHome).length + 1 });
     } else {
       showNotice(`${fighter.name} takes the blow.`, 2500);
-      callWatch({ crime: 'assault', witnesses: townsfolk.filter((p) => !p.down).length });
+      callWatch({ crime: 'assault', witnesses: townsfolk.filter((p) => !p.down && !p.atHome).length });
     }
     updateCombatHud();
     return {
@@ -5026,7 +5046,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!townsfolk.length) return null;
     let best = null;
     for (const person of townsfolk) {
-      if (person.down) continue;
+      // A person at home is behind a door the port cannot open (there is no home interior to
+      // enter), so they are not somebody the player can speak to from the street either.
+      if (person.down || person.atHome) continue;
       const distance = personDistance(person);
       if (!best || distance < best.distance) best = { person, distance };
     }
@@ -6312,9 +6334,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // `enterDoor` refuses a door with.
     for (const line of livingLines()) lines.push(line);
     if (townsfolk.length) {
+      // **How many are *about*, not how many the town holds.** Since the day can put somebody
+      // indoors (`stepTownsfolk`'s rest branch), a line counting the roster would promise a
+      // street full of people at midnight; the count the player is owed is the one they can see.
+      const about = townsfolk.filter((person) => !person.atHome);
+      const indoors = townsfolk.length - about.length;
       lines.push(townsfolk.length === 1 && townsfolk[0].shop
         ? `${townsfolk[0].description} keeps this place; press T to speak.`
-        : `${townsfolk.length} people are about; press T to speak to whoever is nearest.`);
+        : `${about.length} ${about.length === 1 ? 'person is' : 'people are'} about${indoors ? `, ${indoors} indoors` : ''}; press T to speak to whoever is nearest.`);
     }
     hud.textContent = (current.hudBase ?? '') + lines.map((line) => `\n${line}`).join('');
   }
@@ -6890,6 +6917,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     /** Who is standing in this settlement, and what the game says they wear. */
     townsfolk: () => townsfolk.map((person) => ({
       file: person.file,
+      // **Whether their own day has them indoors right now** — the flag the draw skips them
+      // with and the talk reach refuses them with. Reported so a reader can tell "nobody is
+      // out" from "the scene stopped stepping them", which is D-01a's whole question.
+      atHome: Boolean(person.atHome),
       armour: person.armour,
       description: person.description,
       cell: { row: person.place.row, col: person.place.col },
@@ -7617,8 +7648,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         : null,
       place: { row: person.place.row, col: person.place.col },
       home: person.home ?? null,
+      // **Whether their own day has them indoors right now** — which is why the street can be
+      // empty of figures while the town still holds forty-eight people. Reported because
+      // "nobody is out" and "the scene stopped stepping them" look identical from positions
+      // alone, and the difference is the whole of the night defect it was measured for.
+      atHome: Boolean(person.atHome),
       shop: Boolean(person.shop),
-      activity: person.role ? currentActivity(person, clockNow()).activity : null,
+      // The trade this one's day is built from, as the living world reads it (`roleOf`): a
+      // probe that wants to know *why* a street is empty at midnight has to be able to ask
+      // which trades the town holds at all.
+      role: roleOf(person),
+      activity: currentActivity(person, clockNow()).activity,
     })),
     /**
      * The town's own walking, as numbers: how many people are on their way somewhere, where to,
@@ -8504,7 +8544,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /** Is anybody standing (not walking) close enough to a point that a walker would have to stop? */
   function personInWay(person, x, z) {
     for (const other of townsfolk) {
-      if (other === person || other.down || other.shop || other.walking) continue;
+      if (other === person || other.down || other.shop || other.walking || other.atHome) continue;
       if (Math.hypot(other.world.x - x, other.world.z - z) < PERSON_CLEARANCE) return true;
     }
     return false;
@@ -8512,7 +8552,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /** Is another person already on this cell, or stepping onto it? */
   function occupiedCell(row, col, self) {
-    return townsfolk.some((other) => other !== self && !other.down
+    return townsfolk.some((other) => other !== self && !other.down && !other.atHome
       && ((other.place?.row === row && other.place?.col === col)
         || (other.walk?.to?.row === row && other.walk?.to?.col === col)));
   }
@@ -8527,7 +8567,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const pos = current.motor.pos;
     const min = PERSON_RADIUS + PLAYER_RADIUS;
     for (const person of townsfolk) {
-      if (person.shop || person.down) continue;
+      // A person indoors is not a body the player can walk into: they are behind a door the
+      // port has no interior for, and an invisible wall on the pavement is worse than nothing.
+      if (person.shop || person.down || person.atHome) continue;
       const dx = pos[0] - person.world.x;
       const dz = pos[2] - person.world.z;
       const d = Math.hypot(dx, dz);
@@ -8571,6 +8613,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (person.hostile) {
         person.route = null;
         if (person.walk) person.walk.to = null;
+        // The whole day is dropped when the town turns on the player (`stepHostileFolk`),
+        // and the indoors flag belongs to the day: it goes with it, or a hostile man who
+        // was at home when the town turned would be invisible while he charged.
+        person.atHome = false;
         continue;
       }
       person.rng = person.rng ?? new ArenaRandom((Math.round(person.world.x * 71 + person.world.z * 131) + 4483) >>> 0);
@@ -8680,6 +8726,48 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         // (`game/townPaths.js`'s `keyOf` reads the two numbers): a person handed the book an
         // object and the search died on `from is not iterable`.
         const here = { row: person.place.row, col: person.place.col };
+        // ── a person whose day says they are home **rests, and does not pace their door** ──
+        //
+        // Measured on Daggerfall at 23:00 (`.scratch/nightprobe.mjs`, 2026-10-15): 41 of the
+        // town's 48 people moved more than 20 cm in twenty seconds and **not one of them moved
+        // more than 2.5 m** — the whole street shuffling inside a cell. The cause is this loop's
+        // own fall-through: the day plan puts them at `home`, `streetGoal` hands back the cell
+        // they are standing on, the goal is therefore "already arrived", and the idle step below
+        // then walks them *off* their doorstep — so the next ask sends them back.
+        //
+        // A person is at home to *be* home. They stand still for as long as their own plan's
+        // block lasts (`currentActivity`'s `until`, which is the plan's own number rather than a
+        // new constant), and when it ends the loop asks the day again — at dawn they walk to
+        // work, at closing they walk home, and somebody whose block is thirty minutes long is
+        // back to being a person in the street in thirty minutes. The night street is then what
+        // Arena's is: quiet, with only the folk whose day keeps them out still walking.
+        //
+        // **The flag is `person.atHome`, and it is set here rather than cleared at the top of
+        // the turn.** The first version of this branch cleared it at the top of every person's
+        // turn and set it again only on the frame the day was asked — and the branch below it
+        // (`if (person.wait > 0) continue`) means the day is asked *once* per rest block, so
+        // the flag was true for exactly one frame in a night and false for the rest: the whole
+        // town was in bed and every one of it was still drawn. Measured with `.scratch/nightprobe.mjs`
+        // at 23:00 — "indoors 0" with "drawn 48". A flag that describes where somebody is for
+        // the next six hours has to be written where the six hours are decided.
+        const atHome = Boolean(goal) && /^home/.test(goal.reason ?? '')
+          && goal.row === here.row && goal.col === here.col;
+        person.atHome = atHome;
+        if (atHome) {
+          const activity = currentActivity(person, clock);
+          const left = Math.max(0, Number(activity?.until ?? clock.minutes) - Number(clock.minutes ?? 0));
+          person.wait = Math.max(TOWN_WAIT_MIN, secondsForMinutes(left));
+          person.walking = false;
+          // **And they are indoors, which the street has to show.** The port has no home
+          // interiors to put them in (the install's own data records no doors for houses), so a
+          // person at home is *not drawn* rather than drawn asleep on the pavement: the crowd
+          // empties as the town goes to bed and fills again at dawn, which is what Arena's own
+          // streets do. `townsfolk` still holds them — the regard ledger, a job and a name are
+          // not removed by an hour — and `people()` reports the flag so a probe can tell "nobody
+          // is out" from "the scene stopped stepping them".
+          person.atHome = true;
+          continue;
+        }
         const from = [here.row, here.col];
         const to = [goal?.row, goal?.col];
         if (goal && (goal.row !== here.row || goal.col !== here.col)) {
@@ -8775,6 +8863,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let figures = 0;
     const groups = new Map();
     for (const actor of [...monsters, ...townsfolk]) {
+      // **Somebody at home is not on the street.** Their day put them indoors
+      // (`stepTownsfolk`'s rest branch), the port has no home interior to put them in, and a
+      // figure standing on its own doorstep all night is exactly what "the town is frozen"
+      // looks like. They keep their ledger, their trade, their name and their sheet —
+      // `townsfolk` still holds them, `townsfolk()` reports them with `atHome`, and `file` is
+      // still the sheet they would be showing — they are simply not part of the street's crowd
+      // until their day sends them out again. Skipped here rather than by emptying `file`,
+      // because the sheet a person *has* is what the roster's own checks read.
+      if (actor.atHome) continue;
       let file = actor.file;
       // A fallen person draws their own death sheet for as long as the body lasts: the
       // family's `die` file when this install ships one (`peopleKinds.js`).

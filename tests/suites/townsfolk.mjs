@@ -37,11 +37,15 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     // ── the player does not stand inside a person ───────────────────────────
     // The player is put beside the nearest person, the game runs for a moment with no keys
     // held, and the feet must end at least a body's width (0.4 + 0.35 m) from theirs.
+    //
+    // **Beside somebody who is out of doors**, because the body the player is pushed out of is
+    // a body on the street: a person the day has put at home is behind a door the port has no
+    // interior for (D-01a), and there is nothing there to push against.
     {
       // Placed 0.2 m from the first person's centre — inside their body, on purpose.
-      await page.evalJs('(() => { const p = window.__debug.people()[0]; const f = window.__debug.state().feet; window.__debug.teleport(p.world.x + 0.2, f[1], p.world.z); return 1; })()');
+      await page.evalJs('(() => { const p = window.__debug.people().filter((q) => !q.atHome)[0]; const f = window.__debug.state().feet; window.__debug.teleport(p.world.x + 0.2, f[1], p.world.z); return 1; })()');
       await settle(600);
-      const after = await page.evalJs('(() => { const s = window.__debug.state(); const f = s.feet; let best = Infinity; for (const p of window.__debug.people()) { const d = Math.hypot(p.world.x - f[0], p.world.z - f[2]); if (d < best) best = d; } return { best }; })()');
+      const after = await page.evalJs('(() => { const s = window.__debug.state(); const f = s.feet; let best = Infinity; for (const p of window.__debug.people().filter((q) => !q.atHome)) { const d = Math.hypot(p.world.x - f[0], p.world.z - f[2]); if (d < best) best = d; } return { best }; })()');
       check('the player cannot stand inside a person',
         after.best >= 0.7 - 0.05, `nearest person ${after.best.toFixed(2)} m from the feet, bar 0.70 m`);
     }
@@ -160,8 +164,18 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     // Uploaded is not drawn. The billboards are built every frame from whoever is in the
     // level, so this reads the frame's own count — the first version of this suite checked
     // the uploads and the people were invisible on screen.
-    check('and every one of them is drawn, as a billboard in front of the camera',
-      state.figures === people.length, `${state.figures} billboards for ${people.length} people`);
+    //
+    // **The count is "everybody who is out", not "everybody the town holds".** Since
+    // `stepTownsfolk` rests the people whose own day puts them at home (D-01a: the crowd was
+    // frozen all night because that branch had no way to say so), a person indoors is not on
+    // the street and not drawn — the town holds them, the street does not show them. The
+    // check was *state.figures === people.length* and is restated, not loosened: it still
+    // demands that every single person on the street has a billboard, and it reports how
+    // many the day has taken indoors so a run that hides the whole crowd is visible here.
+    const out = people.filter((p) => !p.atHome);
+    check('and every one of them who is out of doors is drawn, as a billboard in front of the camera',
+      state.figures === out.length && out.length > 0,
+      `${state.figures} billboards for ${out.length} people out of doors (${people.length - out.length} indoors)`);
     // Drawn is not the same as *still*, and it is not the same as *walking either*. Two
     // rules the game has to keep at once, now that the town's people walk about it
     // (`stepTownsfolk`):
@@ -475,7 +489,7 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     for (let tries = 0; tries < 8 && at < 0; tries++) {
       await page.evalJs('window.__debug.pause(true)');
       paused = await page.evalJs('window.__debug.people()');
-      at = paused.findIndex((p) => !p.walking);
+      at = paused.findIndex((p) => !p.walking && !p.atHome);
       if (at < 0) {
         await page.evalJs('window.__debug.pause(false)');
         await settle(320);
