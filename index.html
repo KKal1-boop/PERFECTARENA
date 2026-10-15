@@ -7,15 +7,62 @@
   <link rel="icon" href="data:," />
   <style>
     html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; overscroll-behavior: none; }
-    #c { display: block; width: 100vw; height: 100vh; touch-action: none; -webkit-user-select: none; user-select: none; }
+    /* ── THE WHOLE WINDOW IS THE VIEW ────────────────────────────────────────
+       The original drew into a 320×200 VGA screen: the 3D view was the top **147**
+       lines and its status bar (`P1.IMG`, 320×53) the bottom 53. That 147 is not a
+       guess — every frame of the install's six weapon sheets puts its own
+       `yOffset + height` exactly there, because the weapon is pinned to the bottom of
+       the *view* (`game/weaponView.js`) — and the port keeps the line.
+
+       What it does **not** keep is the black band. The first version cut the canvas
+       off at that line (`height: 73.5vh`) and left the bottom quarter of the window as
+       bare page background — a black strip under the world, with the HUD text in it,
+       which is the reported "a black band where the GUI is covers almost half the
+       screen". The view now fills the window and the status band is an **overlay** on
+       it: the weapon still stands on the 147-line, the HUD still sits below it, and the
+       world carries on behind both. */
+    #c {
+      display: block; width: 100vw; height: 100vh;
+      touch-action: none; -webkit-user-select: none; user-select: none;
+    }
     /* The HUD is a DOM layer for Milestone 2 only; the Arena windows
        (character sheet, inventory, quest log, dialog, world map) draw
-       through the engine's GL UI pass instead. See docs/PROGRESS.md. */
+       through the engine's GL UI pass instead. See docs/PROGRESS.md.
+
+       It is an overlay now, so it carries its own shade: over a bright wilderness the
+       text would otherwise be unreadable, and a solid panel would be the same black
+       band by another name. The gradient fades out upward, so nothing of the world is
+       hidden but what the words are written on. */
+    /* ── the HUD, in the status band ────────────────────────────────────────
+       **Its top is the status line itself** (the original's 147th row of 200, which the weapon
+       art stands on — `game/weaponView.js`), and its bottom is the window's own margin: the
+       panel *is* the band, rather than a box with a `max-height` guessed to fit inside one.
+       What used to be here (`bottom: 8px; max-height: 25.5vh`) measured 153px tall in a 151px
+       band at a 960×600 window — the panel crossed the status line by 14px and put its own
+       last four lines under the fold, where the player never saw them. `overflow: hidden`
+       still cuts what does not fit, so the line order below is the priority order; and the
+       line height is 1.3 so the nine lines an ordinary street prints do fit. */
     #hud {
-      position: fixed; left: 10px; bottom: 10px; z-index: 5;
-      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      position: fixed; left: 10px; top: 73.5vh; bottom: 8px; z-index: 5;
+      width: min(680px, 64vw); overflow: hidden;
+      padding: 4px 8px 4px; box-sizing: border-box;
+      background: linear-gradient(to top, #05070cd9 55%, #05070c00);
+      border-radius: 3px;
+      font: 12px/1.3 ui-monospace, Menlo, Consolas, monospace;
       color: #e8e0c8; text-shadow: 0 0 3px #000; pointer-events: none; white-space: pre;
     }
+    /* ── the weapon in the player's hands (src/scenes/interior.js) ──────────
+       Arena's own first-person weapon art: a `.CIF` whose frames are the swing, drawn at
+       the screen positions the original's headers carry. It is a 2D layer over the world,
+       under the HUD, and it never takes a click (the world still fights on the canvas
+       below). Third person draws the avatar's own sprite instead, so this stays empty. */
+    #weapon { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 3; pointer-events: none; }
+    /* The level panel (left) and the fight panel (right) share the status band rather
+       than stacking in one corner: both are several lines tall, and stepping the level
+       panel *up* to clear the fight one — what this rule used to do — pushed it into the
+       view band over the world. Side by side they fit in the 26.5% the status bar has,
+       which is the space Arena's own status bar had. */
+    body.combat-on #hud { width: 52vw; max-width: 52vw; }
     #hud .k { color: #d8b45a; }
     /* ── what a place says when you arrive (src/scenes/interior.js) ──────────
        Arena's own prose: `citytxt`'s gate greeting for a city-state, or
@@ -38,6 +85,56 @@
       font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; text-align: center;
     }
     #notice.on { display: block; }
+    /* ── character creation (src/scenes/chargen.js) ─────────────────────────
+       Arena's own `CHARSPEL.IMG` screen as the backdrop, scaled to fit. */
+    #chargen {
+      position: fixed; inset: 0; z-index: 9; display: none; overflow: auto;
+      background: #05060a; color: #e8e0c8;
+      font: 13px/1.6 ui-monospace, Menlo, Consolas, monospace;
+    }
+    #chargen.on { display: block; }
+    #chargen-art {
+      position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover;
+      image-rendering: pixelated; opacity: 0.35; display: none; pointer-events: none;
+    }
+    #chargen-panel {
+      position: relative; margin: 0 auto; padding: 26px 22px 40px; max-width: 660px;
+      min-height: 100vh; background: #080a10f2; box-sizing: border-box;
+    }
+    #chargen-panel h1 { margin: 0 0 10px; font-size: 19px; color: #f2d9a0; letter-spacing: 0.03em; }
+    #chargen-panel .lead { margin: 0 0 10px; color: #cfc8b0; }
+    #chargen-panel .sub { margin: 8px 0; color: #8d8770; font-size: 12px; }
+    #chargen-panel .warn { margin: 8px 0; color: #e8a08a; }
+    #chargen-panel .steps { margin: 0 0 6px; color: #9fd8a8; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    #chargen-panel .prose p { margin: 0 0 3px; white-space: pre-wrap; }
+    #chargen-panel .answers { margin: 14px 0 6px; display: grid; gap: 8px; }
+    #chargen-panel button {
+      display: block; width: 100%; text-align: left; font: inherit; padding: 9px 12px; cursor: pointer;
+      background: #161a24; color: #e8e0c8; border: 1px solid #3b4358; border-left: 3px solid #5d6b8e;
+    }
+    #chargen-panel button:hover { background: #1e2432; border-left-color: #9fd8a8; }
+    #chargen-panel button .key { color: #ffe9a8; margin-right: 6px; }
+    #chargen-panel button .tag { color: #8d8770; float: right; margin-left: 10px; }
+    #chargen-panel button.ghost { border-left-color: #4a4436; color: #a9a48d; }
+    #chargen-panel button.class-choice .name { display: block; color: #ffe9a8; }
+    #chargen-panel button.class-choice .stat { display: block; color: #8d8770; font-size: 11px; }
+    #chargen-panel button.class-choice .abil { display: block; color: #a9a48d; font-size: 11px; }
+    #chargen-panel button.class-choice.on { background: #1d2a22; border-left-color: #6f9e78; }
+    #chargen-panel .field { display: block; margin: 10px 0; color: #cfc8b0; }
+    #chargen-panel input, #chargen-panel select {
+      display: block; width: 100%; margin-top: 5px; padding: 7px 9px; box-sizing: border-box;
+      font: inherit; background: #10131c; color: #e8e0c8; border: 1px solid #3b4358;
+    }
+    #chargen-panel table.attrs { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    #chargen-panel table.attrs th { text-align: left; padding: 5px 6px; color: #ffe9a8; width: 44px; }
+    #chargen-panel table.attrs td { padding: 5px 6px; border-top: 1px solid #22262f; }
+    #chargen-panel table.attrs .val { color: #9fd8a8; text-align: right; width: 42px; }
+    #chargen-panel table.attrs .bonus { color: #8d8770; font-size: 11px; }
+    #chargen-panel table.attrs .spend { text-align: right; width: 108px; }
+    #chargen-panel table.attrs .spend button {
+      display: inline-block; width: auto; padding: 1px 8px; background: #1b1d24; border-left-width: 1px;
+    }
+    #chargen-panel table.attrs .spend span { display: inline-block; min-width: 20px; text-align: center; color: #ffe9a8; }
     #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #d8b45a;
             font: 14px/1.6 ui-monospace, monospace; text-align: center; background: #06070a; z-index: 6; }
     #boot.hidden { display: none; }
@@ -50,7 +147,8 @@
     #map.on { display: block; }
     #map-canvas { position: absolute; inset: 0; touch-action: none; }
     #map-bar {
-      position: absolute; left: 0; right: 0; top: 0; padding: 9px 12px; display: flex; gap: 16px;
+      position: absolute; left: 0; right: 0; top: 0; padding: 9px 12px; display: flex; gap: 14px;
+      flex-wrap: wrap; row-gap: 2px;
       align-items: baseline; background: linear-gradient(#080a10ee, #080a10bb 70%, #080a1000);
       font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; pointer-events: none;
     }
@@ -58,6 +156,29 @@
     #map-bar .side { color: #9fd8a8; }
     #map-bar .pieces { color: #d8b45a; }
     #map-bar .hint { margin-left: auto; color: #8d8770; }
+    /* The player's own sheet, bottom-right, so the map can say who is travelling. */
+    #map-sheet {
+      position: absolute; right: 12px; bottom: 12px; display: none; max-width: 260px; padding: 9px 11px;
+      background: #080a10e6; border: 1px solid #3b4358; border-left: 3px solid #c8a54a;
+      font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; pointer-events: none;
+    }
+    #map-sheet.on { display: block; }
+    #map-sheet b { color: #ffe9a8; }
+    #map-sheet .sub { color: #8d8770; }
+    #map-sheet .hp { color: #9fd8a8; }
+    #map-sheet .sp { color: #8fb8e8; }
+    #map-sheet .gold { color: #e8c86a; }
+    #map-sheet .warn { color: #e8c0b4; }
+    /* The sheet is a *view* over the map, so clicks pass through it to the markers behind
+       it (`pointer-events: none`) — its own buttons are the one exception, and they have
+       to say so, or the new-game door here is a button nobody can press. */
+    #map-sheet button {
+      pointer-events: auto; font: inherit; margin: 7px 6px 0 0; padding: 5px 10px; cursor: pointer;
+      background: #232833; color: #e8e0c8; border: 1px solid #4a4436; border-left: 3px solid #5d6b8e;
+    }
+    #map-sheet button:hover { background: #2c3240; color: #ffe9a8; border-left-color: #9fd8a8; }
+    #map-sheet button.danger { border-left-color: #8c3a2e; }
+    #map-sheet button.danger:hover { background: #2a1a18; color: #ffb4a8; border-left-color: #e2564a; }
     /* ── the side work (src/game/radiantQuests.js, shown by the world map) ─── */
     #map-board {
       position: absolute; left: 14px; top: 52px; width: 330px; max-height: 68vh; overflow: auto;
@@ -79,8 +200,11 @@
       border: 1px solid #5d6b8e; cursor: pointer;
     }
     #map-board button:hover { background: #33405f; }
+    /* The journal sits under the bar on the right, NOT on the bottom edge: the
+       character sheet is bottom-right too, and the two used to draw over each other
+       (seen in the first overlay build). */
     #map-journal {
-      position: absolute; right: 14px; bottom: 14px; max-width: 300px; padding: 7px 10px;
+      position: absolute; right: 14px; top: 44px; max-width: 300px; padding: 7px 10px;
       background: #080a10cc; border: 1px solid #33302a; color: #c9c3ab;
       font: 11px/1.6 ui-monospace, monospace; pointer-events: none; text-align: right;
     }
@@ -89,9 +213,13 @@
        the panels stop being a third of the screen each. */
     @media (max-width: 820px) {
       #map-legend { display: none; }
-      #map-board { width: min(330px, calc(100vw - 24px)); max-height: 44vh; }
+      #map-bar { font-size: 11px; gap: 8px; }
+      #map-board { width: min(330px, calc(100vw - 24px)); max-height: 40vh; }
       #map-card { width: min(300px, calc(100vw - 24px)); }
-      #map-journal { max-width: min(300px, calc(100vw - 24px)); }
+      /* Right side: journal under the bar, sheet at the bottom, card between them.
+         Left side: the board, with the legend (the usual bottom-left tenant) hidden. */
+      #map-journal { max-width: min(300px, calc(100vw - 24px)); top: 60px; bottom: auto; }
+      #map-sheet { max-width: min(260px, calc(100vw - 24px)); }
     }
     #map-card {
       position: absolute; right: 14px; bottom: 78px; width: 300px; display: none; padding: 12px 14px;
@@ -120,13 +248,211 @@
     #map-legend b { color: #f2d9a0; }
     #map-legend .k { color: #f2d9a0; } #map-legend .d { color: #8c8676; }
     #map-legend .s { color: #e2564a; } #map-legend .p { color: #f6f2df; }
+    /* ── the fight (src/scenes/interior.js) ─────────────────────────────────
+       The player's health and experience, and what is in front of them. Bottom-left,
+       above nothing else, so it never covers the HUD text or the arrival panel. */
+    #combat {
+      position: fixed; right: 12px; bottom: 8px; z-index: 5; display: none; width: max-content; max-width: 34vw; box-sizing: border-box;
+      max-height: 25.5vh; overflow: hidden;
+      padding: 8px 11px; background: #080a10cc;
+      border-left: 3px solid #8c3a2e;
+      font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; pointer-events: none;
+    }
+    #combat.on { display: block; }
+    #combat b { color: #ffe9a8; }
+    #combat .hint { color: #8d8770; font-size: 11px; }
+    @media (max-width: 700px) {
+      #hud, body.combat-on #hud {
+        left: 8px; right: 8px; width: auto; max-width: none;
+        top: 73.5vh; bottom: 8px; overflow: auto; pointer-events: auto;
+        white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px;
+      }
+      #combat {
+        right: 8px; bottom: 27.5vh; width: auto; max-width: calc(100vw - 16px);
+        max-height: 15vh; overflow: auto; pointer-events: auto; font-size: 11px;
+      }
+      #combat .hint { display: none; }
+      #arrival { width: 90vw; box-sizing: border-box; font-size: 12px; }
+    }
+    /* ── the ending (src/scenes/interior.js) ────────────────────────────────
+       Arena's closing scene, in its own words: the Emperor's, and then the record of
+       what the player actually did. It is a page, not a banner — it takes the screen.
+       The closing *movie* (`END01.FLC`) now plays before this page does, through the
+       install's own FLIC art (`src/scenes/cutscenePlayer.js`). */
+    #ending {
+      position: fixed; inset: 0; z-index: 40; display: none; overflow: auto;
+      padding: 8vh 6vw; box-sizing: border-box;
+      background: radial-gradient(ellipse at 50% 0%, #2a1c14f2, #05060af7 70%);
+      font: 14px/1.7 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; text-align: center;
+    }
+    #ending.on { display: block; }
+    #ending h2 {
+      margin: 0 0 18px; font-size: 30px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: #f4d98a; text-shadow: 0 0 26px #f4d98a55;
+    }
+    #ending p.quote { margin: 0 auto 16px; max-width: 62ch; color: #efe7d2; font-style: italic; }
+    #ending .record {
+      margin: 26px auto 18px; max-width: 56ch; padding: 14px 18px;
+      border-top: 1px solid #6d5a1e; border-bottom: 1px solid #6d5a1e; color: #c9c3ab;
+    }
+    #ending .record p { margin: 3px 0; }
+    #ending .record b { color: #ffe9a8; }
+    #ending .src { color: #8d8770; font-size: 11px; font-style: normal; }
+    #ending .hint { color: #8d8770; font-size: 11px; }
+    /* ── the install's own movies (src/scenes/cutscenePlayer.js) ─────────────
+       A `.FLC` is 320×200 art from 1994. It is drawn at a whole-number scale with
+       smoothing off, because a palette of 256 hand-inked colours is destroyed by
+       fractional scaling — and the movie is the one thing on screen, so the page
+       behind it goes black. */
+    #cutscene {
+      position: fixed; inset: 0; z-index: 50; display: none;
+      background: #000; align-items: center; justify-content: center; flex-direction: column;
+    }
+    #cutscene.on { display: flex; }
+    #cutscene-sheet { image-rendering: pixelated; background: #000; }
+    #cutscene-caption {
+      margin-top: 10px; color: #6f6a58; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      letter-spacing: 0.06em;
+    }
+    /* ── what the player carries (src/game/inventory.js) ─────────────────────
+       Weapon and material, the purse, the quest's items and the tally. Only what the
+       project can stand behind — the item chunks in `.MIF`/`A.EXE` are not decoded. */
+    #inventory {
+      position: fixed; right: 14px; top: 14px; z-index: 30; display: none;
+      width: min(380px, calc(100vw - 28px)); max-height: 78vh; overflow: auto;
+      padding: 12px 15px; box-sizing: border-box;
+      background: #10131cf2; border: 1px solid #4a4436; border-left: 3px solid #c8a54a;
+      font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8;
+      box-shadow: 0 6px 24px #000a;
+    }
+    #inventory.on { display: block; }
+    #inventory h2 { margin: 0 0 8px; font-size: 13px; color: #f2d9a0; letter-spacing: 0.02em; }
+    #inventory h3 { margin: 10px 0 4px; font-size: 11px; color: #c8a54a; letter-spacing: 0.08em; text-transform: uppercase; }
+    #inventory ul { list-style: none; margin: 0; padding: 0; }
+    #inventory li { padding: 3px 0; border-bottom: 1px solid #1d212c; }
+    #inventory b { color: #efe7d2; }
+    #inventory .sub { color: #8d8770; }
+    #inventory .hint { margin: 10px 0 0; color: #8d8770; font-size: 10px; }
+    /* ── the level-up (src/game/progression.js) ──────────────────────────────
+       Arena hands out 3–6 attribute points a level and **asks** where they go, so this is
+       a panel with one row per attribute and a number key each, not a banner. It sits
+       over the pack's own corner, and it takes the keyboard until it is answered. */
+    #levelup {
+      position: fixed; right: 14px; top: 14px; z-index: 34; display: none;
+      width: min(400px, calc(100vw - 28px)); padding: 14px 16px; box-sizing: border-box;
+      background: #14110af2; border: 1px solid #6d5a1e; border-left: 3px solid #f4d98a;
+      font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8;
+      box-shadow: 0 6px 24px #000a;
+    }
+    #levelup.on { display: block; }
+    #levelup h2 { margin: 0 0 6px; font-size: 14px; color: #ffe9a8; letter-spacing: 0.04em; }
+    #levelup p { margin: 4px 0; }
+    #levelup ul { list-style: none; margin: 8px 0 0; padding: 0; }
+    #levelup li { padding: 2px 0; border-bottom: 1px solid #241f16; }
+    #levelup li.full { color: #8d8770; }
+    #levelup li.spent b { color: #9fd8a8; }
+    #levelup .key { color: #f4d98a; }
+    #levelup b { color: #efe7d2; }
+    #levelup .left { color: #ffe9a8; }
+    #levelup .hint { color: #8d8770; font-size: 11px; }
+    #levelup .src { color: #8d8770; font-size: 10px; }
+    /* The line a pending level-up puts on the combat panel (src/game/progression.js). */
+    #combat .level { color: #f4d98a; }
+    #combat .guard { color: #9fd8a8; }
+    /* A stairway the level's own art marks (src/game/mifLevel.js): the line says where it
+       goes, because in the original walking into one takes it and nothing says where. */
+    #combat .stair { color: #e8c86a; }
+    /* Water and lava, from `ArenaChasmUtils`'s own rules (src/scenes/interior.js). */
+    #combat .water { color: #8fc4e8; }
+    #combat .lava { color: #e8a06a; }
+    /* ── talking to somebody (src/scenes/interior.js) ────────────────────────
+       A town is for talking to people: whoever is nearest says a line of Arena's own
+       prose, and the two questions the project can answer honestly are buttons. */
+    #talk {
+      position: fixed; right: 14px; bottom: 14px; z-index: 30; display: none; width: min(430px, calc(100vw - 28px));
+      max-height: 62vh; overflow: auto; padding: 12px 15px; box-sizing: border-box;
+      background: #10131cf2; border: 1px solid #4a4436; border-left: 3px solid #6f9e78;
+      font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8; box-shadow: 0 6px 24px #000a;
+    }
+    #talk.on { display: block; }
+    #talk h2 { margin: 0 0 8px; font-size: 13px; color: #f2d9a0; letter-spacing: 0.02em; }
+    #talk p.line { margin: 0 0 8px; color: #efe7d2; white-space: pre-wrap; }
+    #talk p.src { margin: 0 0 10px; color: #8d8770; font-size: 10px; }
+    #talk ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+    #talk button {
+      font: inherit; padding: 5px 10px; background: #26304a; color: #e8e0c8;
+      border: 1px solid #5d6b8e; cursor: pointer;
+    }
+    #talk button:hover { background: #33405f; }
+    #talk .hint { margin: 9px 0 0; color: #8d8770; font-size: 10px; }
+    /* ── the work somebody in the street has to offer (src/scenes/interior.js) ─
+       Arena gives its side work through a person, and the prose is the offer's own —
+       `artfact*.dat` where the kind has a bank, this project's words where it has not,
+       with the panel saying which. */
+    #talk .job { margin: 10px 0 0; padding: 8px 10px; background: #161a24; border-left: 3px solid #6f9e78; }
+    #talk .job .offer { margin: 0 0 6px; color: #efe7d2; white-space: pre-wrap; }
+    #talk .job .src { margin: 0 0 6px; color: #8d8770; font-size: 11px; }
+    #talk .job button { color: #e8e0c8; background: #232833; border-color: #4a4436; }
+    /* ── the menu (src/scenes/interior.js) ───────────────────────────────────
+       Escape opens it, Escape closes it, and the world stops while it is up — the
+       game's own pause, with the character and the objective on it, the controls
+       printed once so they are somewhere a player can find them, and **New Game**,
+       which starts over with the same Arena folder still open. */
+    #menu {
+      position: fixed; inset: 0; z-index: 50; display: none; overflow: auto;
+      background: #05060ad9; place-items: center;
+      font: 13px/1.65 ui-monospace, Menlo, Consolas, monospace; color: #e8e0c8;
+    }
+    #menu.on { display: grid; }
+    #menu .panel {
+      width: min(560px, calc(100vw - 32px)); padding: 20px 24px 18px; box-sizing: border-box;
+      background: #10131cf7; border: 1px solid #4a4436; border-left: 3px solid #c8a54a;
+      box-shadow: 0 14px 60px #000c;
+    }
+    #menu h2 { margin: 0 0 10px; font-size: 16px; color: #f2d9a0; letter-spacing: 0.06em; text-transform: uppercase; }
+    #menu .who { margin: 0 0 4px; color: #efe7d2; }
+    #menu .obj { margin: 0 0 4px; color: #ffe9a8; }
+    #menu .side { margin: 0 0 4px; color: #9fd8a8; }
+    #menu .stat { margin: 0 0 4px; color: #c9c3ab; }
+    #menu .stat b { color: #ffe9a8; }
+    #menu .gold { color: #e8c86a; }
+    #menu .rows { display: grid; gap: 8px; margin: 14px 0 4px; }
+    #menu button {
+      font: inherit; text-align: left; padding: 9px 12px; cursor: pointer;
+      background: #161a24; color: #e8e0c8; border: 1px solid #3b4358; border-left: 3px solid #5d6b8e;
+    }
+    #menu button:hover { background: #1e2432; border-left-color: #9fd8a8; }
+    #menu button.danger { border-left-color: #8c3a2e; }
+    #menu button.danger:hover { background: #2a1a18; border-left-color: #e2564a; }
+    #menu button .key { color: #ffe9a8; margin-right: 8px; }
+    #menu button .tag { color: #8d8770; float: right; margin-left: 10px; }
+    #menu .confirm { display: none; margin: 12px 0 2px; padding: 10px 12px; background: #1a1310; border-left: 3px solid #8c3a2e; }
+    #menu .confirm.on { display: block; }
+    #menu .confirm p { margin: 0 0 8px; color: #e8c0b4; }
+    #menu .confirm .rows { margin: 0; }
+    /* The controls, printed once: a player who has forgotten the keys should not have to
+       leave the game to find them. Two columns so the whole list fits without scrolling. */
+    #menu .controls { display: none; margin: 12px 0 0; grid-template-columns: 1fr 1fr; gap: 2px 16px; }
+    #menu .controls.on { display: grid; }
+    #menu .controls div { color: #c9c3ab; }
+    #menu .controls .k { color: #ffe9a8; }
+    #menu .hint { margin: 12px 0 0; color: #8d8770; font-size: 11px; }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
+  <canvas id="weapon"></canvas>
   <pre id="hud"></pre>
   <div id="arrival"></div>
   <div id="notice"></div>
+  <div id="combat"></div>
+  <div id="inventory"></div>
+  <div id="levelup"></div>
+  <div id="talk"></div>
+  <div id="ending"></div>
+  <div id="cutscene"></div>
+  <div id="menu"></div>
+  <div id="chargen"></div>
   <div id="boot">PERFECTARENA<br />starting…</div>
   <script type="module" src="./src/main.js"></script>
 </body>

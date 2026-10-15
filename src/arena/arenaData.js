@@ -11,10 +11,12 @@
 // See docs/ARCHITECTURE.md §3 for the module map.
 
 import { parseBsa } from './bsaArchive.js';
+import { parseCif } from './cifFile.js';
 import { parseImg } from './image.js';
 import { parseInf } from './infFile.js';
 import { parseMif } from './mifFile.js';
 import { imageToUpload, parseCol } from './palette.js';
+import { parseRmd } from './rmdFile.js';
 
 /** `.SET` sheets are a sequence of this many pixels per texture. */
 export const SET_FRAME_SIZE = 64;
@@ -100,6 +102,13 @@ export class ArenaData {
   mif(name) { return this.cached(`mif:${name}`, async () => parseMif(await this.must(name), name)); }
 
   /**
+   * A `.RMD` wilderness block, decoded into its three voxel layers.
+   * @param {string} name
+   * @returns {Promise<import('./rmdFile.js').RmdBlock>}
+   */
+  rmd(name) { return this.cached(`rmd:${name}`, async () => parseRmd(await this.must(name), name)); }
+
+  /**
    * An `.INF` map definition, parsed (archive copies are decrypted).
    * @param {string} name
    * @returns {Promise<import('./infFile.js').InfFile>}
@@ -121,6 +130,17 @@ export class ArenaData {
    * @returns {Promise<import('./image.js').ArenaImage>}
    */
   img(name) { return this.cached(`img:${name}`, async () => parseImg(await this.must(name), name)); }
+
+  /**
+   * A `.CIF`, decoded into its own sequence of screen-positioned images.
+   *
+   * The format is Arena's animation container: one image per frame of a weapon swing,
+   * each carrying the pixel it is drawn at. See `cifFile.js`.
+   *
+   * @param {string} name
+   * @returns {Promise<import('./cifFile.js').CifFile>}
+   */
+  cif(name) { return this.cached(`cif:${name}`, async () => parseCif(await this.must(name), name)); }
 
   /**
    * A `.SET` sheet's frames (each 64×64).

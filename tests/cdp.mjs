@@ -149,16 +149,55 @@ async function attach(wsUrl, { width, height } = {}) {
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
   };
-  /** Click the centre of the first element matching a selector, if it is visible. */
+  /**
+   * The centre of the first element matching a selector, or null if it has no box.
+   * `extra` is prepended inside the probe, so a scroll can be done in the same
+   * expression before the box is read.
+   */
+  const probeBox = (selector, extra = '') => page.evalJs(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return null;
+    ${extra}
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return null;
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    // "In view" is not enough: an ancestor that clips (--inventory's own
+    // overflow auto and max-height 78vh) holds a button whose box is well
+    // inside the window while the *button* sits under the clip, unreachable by
+    // any pointer. The pointer's own answer -- what the click would hit -- is
+    // what decides whether a press can land there.
+    const at = document.elementFromPoint(x, y);
+    const hit = at && (at === el || el.contains(at));
+    return { x, y, hit, inView: r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth };
+  })()`);
+
+  /**
+   * Click the centre of the first element matching a selector, with real mouse
+   * events at real viewport coordinates.
+   *
+   * A mouse event outside the viewport hits nothing at all, so a long panel — the
+   * character-creation class list, whose button is below the fold — needs the same
+   * thing a person needs: a scroll first. That scroll is done here, and the box is
+   * re-read afterwards, because a click at the pre-scroll coordinates would be
+   * dispatched to whatever happens to be there now. The press itself is still a
+   * real press at real coordinates (see `clickAt`); only the reaching is helped.
+   *
+   * The reaching is *proved*, not assumed: the box is only accepted when a
+   * probe click at its coordinates would land on the element itself (ancestor
+   * clipping counts as not-in-view, which is where a shop's shelf, under its
+   * panel's own scroll, used to lose every press to the canvas behind it).
+   */
   page.clickSelector = async (selector) => {
-    const rect = await page.evalJs(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) return null;
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    })()`);
+    let rect = await probeBox(selector);
     if (!rect) throw new Error(`nothing clickable at ${selector}`);
+    if (!rect.inView || !rect.hit) {
+      rect = await probeBox(selector, 'el.scrollIntoView({ block: "center", inline: "center" });');
+      if (!rect) throw new Error(`nothing clickable at ${selector}`);
+      await sleep(120); // let the scroll land before the press
+      rect = await probeBox(selector);
+      if (!rect) throw new Error(`nothing clickable at ${selector}`);
+      if (!rect.inView || !rect.hit) throw new Error(`${selector} could not be brought under the pointer (in ${JSON.stringify(rect)})`);
+    }
     await page.clickAt(rect.x, rect.y);
     return rect;
   };
@@ -167,6 +206,10 @@ async function attach(wsUrl, { width, height } = {}) {
     const map = {
       KeyW: ['w', 87], KeyA: ['a', 65], KeyS: ['s', 83], KeyD: ['d', 68],
       KeyB: ['b', 66], KeyE: ['e', 69], KeyM: ['m', 77], KeyP: ['p', 80],
+      KeyF: ['f', 70], KeyV: ['v', 86], KeyL: ['l', 76], KeyT: ['t', 84],
+      Digit1: ['1', 49], Digit2: ['2', 50], Digit3: ['3', 51], Digit4: ['4', 52],
+      Digit5: ['5', 53], Digit6: ['6', 54], Digit7: ['7', 55], Digit8: ['8', 56],
+      BracketLeft: ['[', 219], BracketRight: [']', 221],
       Space: [' ', 32], ShiftLeft: ['Shift', 16], Escape: ['Escape', 27], Enter: ['Enter', 13],
     };
     const [key, vk] = map[code] ?? [code, 0];

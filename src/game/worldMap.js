@@ -29,6 +29,7 @@
 
 import { parseCityData, questDungeonsOf, locationGlobalPoint, WORLD_MAP_SIZE } from '../arena/cityDataFile.js';
 import { citySeed, dungeonSeed, mainQuestDungeonMifName, wildernessSeed } from '../arena/cityDataSeeds.js';
+import { dungeonNameFor } from './dungeonNames.js';
 
 /** The terrain pixel that means open sea. */
 export const TERRAIN_SEA = 248;
@@ -70,13 +71,27 @@ export class WorldMap {
     this.width = WORLD_MAP_SIZE.width;
     this.height = WORLD_MAP_SIZE.height;
 
+    /** The dungeon names this world has handed out, so no two of them collide. */
+    this.dungeonNames = new Set();
     /** Every location, city and dungeon, with its derived identity. @type {object[]} */
     this.locations = [];
     for (const province of this.provinces) {
       for (const location of province.locations) {
         const global = locationGlobalPoint(province, location);
+        // **A dungeon's name.** Sixteen of the 144 dungeon records carry one and the other
+        // 128 do not (the original names them from tables in `A.EXE` when a quest sends the
+        // player there — D11). A place with coordinates, a seed and a map marker needs
+        // something to call it: a radiant quest has to name its target, the world map has to
+        // label the marker, and the arrival panel has to say where the player is. The name
+        // is drawn from the dungeon's own seed by `game/dungeonNames.js`, which documents
+        // what it is and what it is not.
+        const name = location.name || (location.kind === 'dungeon'
+          ? this.uniqueDungeonName(dungeonSeed(location, province.id), province.name,
+            province.id * 64 + location.id)
+          : '');
         this.locations.push({
           ...location,
+          name,
           global,
           latitude: (WORLD_MAP_SIZE.height - global.y) / WORLD_MAP_SIZE.height,
           climate: this.climateAt(global),
@@ -147,6 +162,41 @@ export class WorldMap {
   provinceAt(point) {
     return this.provinces.find((p) => point.x >= p.rect.x && point.y >= p.rect.y
       && point.x < p.rect.x + p.rect.width && point.y < p.rect.y + p.rect.height) ?? null;
+  }
+
+  /**
+   * A generated dungeon name this world has not used yet.
+   *
+   * `dungeonNames.dungeonNameFor` is deterministic in the dungeon's own seed, and its
+   * vocabulary is small enough that two of the 128 unnamed records can draw the same name
+   * (measured: 19 collisions over the install's 128). Two markers on one map with one name
+   * is worse than a name that reads a little strange, so a collision re-picks from that
+   * dungeon's *own* seed: the same dungeon still gets the same name on every visit — this
+   * walks the records in the file's order — and no two places share one.
+   *
+   * `salt` is the record's own address in the file (`province << 6 | local id`), and it is
+   * what makes the retry work at all: two records can share a **seed** — measured, the
+   * Imperial Province's dungeons draw the same seed as a Skyrim and a Valenwood one, and
+   * re-picking from a shared seed gave those two the same answer twice ("Black Keep",
+   * "Elden Gate", each on two markers). Salting by the record's address separates them,
+   * and the file's order is fixed, so the names are still the same on every visit.
+   *
+   * @param {number} seed
+   * @param {string} province
+   * @param {number} [salt]
+   * @returns {string}
+   */
+  uniqueDungeonName(seed, province, salt = 0) {
+    const salted = (extra) => ((seed ^ Math.imul(salt + 1 + extra, 0x9e3779b1)) >>> 0);
+    let name = dungeonNameFor(salted(0), province);
+    for (let attempt = 1; attempt <= 40 && this.dungeonNames.has(name); attempt++) {
+      name = dungeonNameFor(salted(attempt * 977), `${province}#${attempt}`);
+    }
+    // The last resort is still deterministic (the record's own address) and still unique:
+    // two markers with one name is the one outcome this function exists to prevent.
+    if (this.dungeonNames.has(name)) name = `${name} (${salt + 1})`;
+    this.dungeonNames.add(name);
+    return name;
   }
 
   /** All 288 settlements of the world. */

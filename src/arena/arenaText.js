@@ -324,6 +324,81 @@ export function placeholdersOf(template) {
 }
 
 /**
+ * @typedef {object} Question
+ * @property {number} id       the file's own number, 1…40
+ * @property {string} text     the scenario, rewrapped
+ * @property {{key: string, text: string, letter: string, points: number}[]} answers
+ */
+
+/**
+ * Parse `question.txt`: Arena's character-creation questionnaire.
+ *
+ * The framing is prose with three levels — numbered scenarios, lettered answers,
+ * and a parenthesised score tag — and the tag drifts onto a continuation line in
+ * most of the file, so an answer's tag is whichever one falls inside its block.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{questions: Question[], warnings: string[]}}
+ */
+export function parseQuestions(bytes) {
+  /** @type {string[]} */
+  const warnings = [];
+  const lines = decodeText(bytes).split(/\r?\n/);
+  /** @type {Question[]} */
+  const questions = [];
+  /** @type {{key: string, lines: string[]}|null} */
+  let answer = null;
+  /** @type {{number: number, lines: string[], answers: object[]}|null} */
+  let question = null;
+
+  const closeAnswer = () => {
+    if (!answer || !question) return;
+    const body = answer.lines.join('\n');
+    const tag = /\((\d+)([a-z])\)/i.exec(body);
+    const text = cleanText(body.replace(/\(\d+[a-z]\)/i, ''));
+    if (!text) return;
+    question.answers.push({
+      key: answer.key,
+      text,
+      letter: tag ? tag[2].toLowerCase() : '',
+      points: tag ? Number(tag[1]) : 0,
+    });
+  };
+
+  for (const line of lines) {
+    const numbered = /^(\d+)\.\s+(.*)$/.exec(line);
+    const lettered = /^([abc])\)\s*(.*)$/.exec(line);
+    if (numbered) {
+      closeAnswer();
+      if (question) questions.push({ id: question.number, text: cleanText(question.lines.join('\n')), answers: question.answers });
+      question = { number: Number(numbered[1]), lines: [numbered[2]], answers: [] };
+      answer = null;
+      continue;
+    }
+    if (lettered && question) {
+      closeAnswer();
+      answer = { key: lettered[1], lines: [lettered[2]] };
+      continue;
+    }
+    if (answer) answer.lines.push(line);
+    else if (question) question.lines.push(line);
+  }
+  closeAnswer();
+  if (question) questions.push({ id: question.number, text: cleanText(question.lines.join('\n')), answers: question.answers });
+
+  const withAnswers = questions.filter((q) => q.answers.length >= 2);
+  if (withAnswers.length !== questions.length) {
+    warnings.push(`${questions.length - withAnswers.length} scenarios have fewer than two answers and were dropped`);
+  }
+  const tagged = withAnswers.filter((q) => q.answers.every((a) => a.letter && a.points > 0));
+  if (tagged.length !== withAnswers.length) {
+    warnings.push(`${withAnswers.length - tagged.length} scenarios have an untagged answer`);
+  }
+  if (!tagged.length) warnings.push('question.txt held no scored scenarios');
+  return { questions: tagged, warnings };
+}
+
+/**
  * Wrap text at a column, breaking on spaces, for a fixed-width panel.
  *
  * @param {string} text
@@ -358,6 +433,7 @@ export function wrapText(text, width = 56) {
  * @property {Map<string, object>} dungeonIntros
  * @property {object[]} artifactOffers
  * @property {object[]} artifactReplies
+ * @property {object[]} questions
  * @property {Map<number, string[]>} talkTemplates
  * @property {Record<string, string[]>} service  bank name → lines
  * @property {string[]} warnings
@@ -374,7 +450,7 @@ export async function loadArenaText(data) {
   const warnings = [];
   /** @type {Record<string, Uint8Array|null>} */
   const bytes = {};
-  for (const name of ['citytxt', 'dungeon.txt', 'artfact1.dat', 'artfact2.dat', 'template.dat', 'muguild.dat', 'tavern.dat', 'equip.dat', 'selling.dat']) {
+  for (const name of ['citytxt', 'dungeon.txt', 'artfact1.dat', 'artfact2.dat', 'template.dat', 'muguild.dat', 'tavern.dat', 'equip.dat', 'selling.dat', 'question.txt']) {
     bytes[name] = await data.bytes(name);
     if (!bytes[name]) warnings.push(`${name} is not in this Arena install`);
   }
@@ -390,6 +466,7 @@ export async function loadArenaText(data) {
     replies.push(...parsed.replies.map((t) => ({ text: t, bank: name })));
   }
   const talk = bytes['template.dat'] ? parseTalkTemplates(bytes['template.dat']) : { templates: new Map(), count: 0, warnings: [] };
+  const questions = bytes['question.txt'] ? parseQuestions(bytes['question.txt']) : { questions: [], warnings: [] };
 
   /** @type {Record<string, string[]>} */
   const service = {};
@@ -397,13 +474,14 @@ export async function loadArenaText(data) {
     service[name] = bytes[name] ? parseServiceBank(bytes[name]).lines : [];
   }
 
-  for (const part of [city, dungeon, talk]) warnings.push(...part.warnings);
+  for (const part of [city, dungeon, talk, questions]) warnings.push(...part.warnings);
 
   return {
     cityGreetings: city.greetings,
     dungeonIntros: dungeon.intros,
     artifactOffers: offers,
     artifactReplies: replies,
+    questions: questions.questions,
     talkTemplates: talk.templates,
     service,
     warnings,

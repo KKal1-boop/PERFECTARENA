@@ -1,0 +1,211 @@
+// ARENA'S OWN CUTSCENES — the install's `.FLC` movies, decoded and paced.
+//
+// The port has had a FLIC reader since the Daggerfall side was vendored
+// (`engine/formats/flcFile.js`: header, frame headers, `COLOR_256`, `DELTA_FLC`,
+// `BYTE_RUN`, `PSTAMP`) and **nothing ever called it**. The install ships seventeen loose
+// `.FLC`s — 20 MB of animation, the largest files in the whole install — and the ending
+// screen in this project said so in its own words: *"the cutscene itself (END01.FLC) is not
+// decoded."* This module is the caller.
+//
+// What a cutscene **is** here, measured rather than asserted:
+//   * `header` — 320×200, 8 bits, `numOfFrames` frames, a `frameDelay` the FLIC header
+//     carries (128 ms on `JAGAR.FLC`, so the reader's own law: `raw / 1000` seconds);
+//   * frames decode **sequentially** and are deltas — frame *n* is meaningless without the
+//     frames before it — so this loader is a cursor, not random access: `next()` advances
+//     one frame and answers it. `rewind()` starts again from frame 1.
+//   * the ring frame (the FLIC format's extra frame header) is *not* played as a frame: the
+//     reader's own `bufferNextFrame` wraps `currentFrame` to 1 after the last one, so a
+//     cutscene that wants to hold its last frame does so in the player, not here.
+//
+// The palette arrives per frame (`COLOR_256` chunks are inside the frames, as Arena wrote
+// them), so every frame is decoded to packed RGBA words with the palette the file carried
+// at that moment — which is exactly how a 1994 palette animation looked.
+//
+// No DOM lives here: this is the library a player, a test or a lab tool drives.
+
+import { FlcFile } from '../engine/formats/flcFile.js';
+
+/**
+ * The install's loose `.FLC`s and the story beat each one belongs to.
+ *
+ * `beat` is a **wiring decision** by this project, not a claim about Arena's own code: the
+ * names are the game's, the beats are where this port plays them (`intro` on a new game,
+ * `vision` when the main quest opens, `tharn` on the palace's own beats, `ending` after the
+ * Emperor is freed, `tour` as a menu extra). `what` says only what the file's name and its
+ * measured size say — every one of these is 320×200 animation from the install.
+ */
+export const CUTSCENES = Object.freeze([
+  { file: 'INTRO.FLC', beat: 'intro', what: 'the opening movie' },
+  { file: 'VISION.FLC', beat: 'vision', what: 'a vision' },
+  { file: 'CHAOSVSN.FLC', beat: 'vision', what: 'the vision of chaos' },
+  { file: 'MORPH.FLC', beat: 'tharn', what: 'a transformation' },
+  { file: 'JAGAR.FLC', beat: 'tharn', what: 'Jagar Tharn' },
+  { file: 'JAGRSHLD.FLC', beat: 'tharn', what: "Tharn's shield" },
+  { file: 'JAGARDTH.FLC', beat: 'tharn', what: "Tharn's death" },
+  { file: 'NUJAGDTH.FLC', beat: 'tharn', what: 'the new Tharn falling' },
+  { file: 'SCROLL.FLC', beat: 'story', what: 'a scroll' },
+  { file: 'STAFF.FLC', beat: 'story', what: 'the Staff of Chaos' },
+  { file: 'KING.FLC', beat: 'story', what: 'the Emperor' },
+  { file: 'END01.FLC', beat: 'ending', what: 'the first ending' },
+  { file: 'END02.FLC', beat: 'ending', what: 'the second ending' },
+  { file: 'AFLC2.FLC', beat: 'ending', what: 'a closing animation' },
+  { file: 'WALK.FLC', beat: 'tour', what: 'the walking tour' },
+]);
+
+/**
+ * The install's loose-file index, fetched once per arena root.
+ *
+ * The dev door publishes it (`/arena-local/` — see `tools/serve.mjs`) for exactly this: to
+ * tell "this file is not here" from "this file failed to load" **without paying for a 404**,
+ * which lands in the browser's console as a network error for something entirely expected. A
+ * `.FLC` is a loose file on the install's disk, so the index answers for every movie.
+ *
+ * @param {typeof fetch} fetchImpl @param {string} arenaPath
+ * @returns {Promise<Set<string>|null>} upper-case names, or null when the door has no index
+ */
+async function looseIndex(fetchImpl, arenaPath) {
+  const key = String(arenaPath);
+  if (looseIndex.cache.has(key)) return looseIndex.cache.get(key);
+  let names = null;
+  try {
+    const res = await fetchImpl(`/arena-local/?arena=${encodeURIComponent(arenaPath)}`);
+    if (res.ok) {
+      const body = await res.json();
+      if (Array.isArray(body?.names)) names = new Set(body.names.map((n) => String(n).toUpperCase()));
+    }
+  } catch { /* no index: the loader falls back to probing the name */ }
+  looseIndex.cache.set(key, names);
+  return names;
+}
+/** The index by arena root, so a page asks once. */
+looseIndex.cache = new Map();
+
+/** The install's own movie by name (`intro`, `INTRO`, `INTRO.FLC` all answer it). */
+export function cutsceneByName(key) {
+  const wanted = String(key ?? '').trim().toUpperCase();
+  if (!wanted) return null;
+  const withExt = wanted.includes('.') ? wanted : `${wanted}.FLC`;
+  return CUTSCENES.find((c) => c.file === withExt) ?? null;
+}
+
+/** Every name, as the install spells them. */
+export function cutsceneNames() {
+  return CUTSCENES.map((c) => c.file);
+}
+
+/**
+ * Fetch one `.FLC` through the same dev door every other install file loads by and hand
+ * back a cursor over its frames.
+ *
+ * @param {string} name e.g. `INTRO.FLC` — or `intro`, which is resolved to its file
+ * @param {{fetchImpl?: typeof fetch, arenaPath?: string|null, arenaRoot?: string,
+ *   source?: {getBytes: (name: string) => Promise<Uint8Array|null>}}} [opts]
+ *   `source` is an `ArenaSource` (a hand-picked folder, or the dev door); `fetchImpl` is
+ *   injectable so a unit test can drive real bytes without a server
+ * @returns {Promise<{ok: boolean, name: string, file?: string, reason?: string,
+ *   width?: number, height?: number, frameCount?: number, delayMs?: number,
+ *   totalMs?: number, next?: () => object|null, rewind?: () => void, index?: () => number}>}
+ */
+export async function loadCutscene(name, opts = {}) {
+  const entry = cutsceneByName(name);
+  const file = entry?.file ?? (String(name ?? '').toUpperCase().includes('.') ? String(name).toUpperCase() : `${String(name ?? '').toUpperCase()}.FLC`);
+  const fetchImpl = opts.fetchImpl ?? (typeof fetch !== 'undefined' ? fetch : null);
+  const arenaPath = opts.arenaPath ?? opts.arenaRoot ?? 'C:/arenaproject/arena/ARENA';
+  let bytes = null;
+  try {
+    // A hand-picked folder first: it is the player's own install, and a `FileList` never
+    // reaches a server. The dev door is the other path, keyed by `?arena=`.
+    if (opts.source?.getBytes) bytes = await opts.source.getBytes(file);
+    if (!bytes) {
+      if (!fetchImpl) return { ok: false, name: file, reason: 'no fetch here, and no source with the file' };
+      // A name the door's own index does not carry is refused **without a request**, so a
+      // missing movie is a fact rather than a console error.
+      const index = await looseIndex(fetchImpl, arenaPath);
+      if (index && !index.has(file)) return { ok: false, name: file, reason: `${file} is not in this install` };
+      const res = await fetchImpl(`/arena-local/${file}?arena=${encodeURIComponent(arenaPath)}`);
+      if (!res.ok) return { ok: false, name: file, reason: `the install answered ${res.status} for ${file}` };
+      bytes = new Uint8Array(await res.arrayBuffer());
+    }
+  } catch (err) {
+    return { ok: false, name: file, reason: String(err?.message ?? err) };
+  }
+  if (!bytes) return { ok: false, name: file, reason: `${file} is not in this install` };
+  return decodeCutscene(bytes, file);
+}
+
+/**
+ * The same cursor, from bytes in hand — the honest half of the loader, so the decoding law
+ * can be pinned against the install's own file without a browser.
+ *
+ * @param {Uint8Array} bytes
+ * @param {string} [file]
+ * @returns {object} the shape `loadCutscene` answers
+ */
+export function decodeCutscene(bytes, file = 'CUTSCENE.FLC') {
+  const flc = new FlcFile();
+  let ready = false;
+  try {
+    ready = flc.load(bytes, file);
+  } catch (err) {
+    return { ok: false, name: file, reason: `the FLIC reader refused it: ${String(err?.message ?? err)}` };
+  }
+  if (!ready) return { ok: false, name: file, reason: 'the FLIC reader could not open it' };
+  const header = flc.header;
+  // The delay is the file's own: `frameDelay` is milliseconds in the header, and the reader
+  // keeps the format's own conversion (`/ CINEMATIC_SPEED.FLIC`), which answers seconds.
+  const delaySeconds = Number.isFinite(flc.frameDelay) && flc.frameDelay > 0 ? flc.frameDelay : 0.1;
+  const delayMs = delaySeconds * 1000;
+  const frameCount = Math.max(1, header.numOfFrames);
+  /** The reader decodes frame 1 on load; `shown` is how many this cursor has answered. */
+  let shown = 0;
+  return {
+    ok: true,
+    name: file,
+    beat: cutsceneByName(file)?.beat ?? null,
+    what: cutsceneByName(file)?.what ?? null,
+    width: header.width,
+    height: header.height,
+    frameCount,
+    delayMs,
+    totalMs: delayMs * frameCount,
+    bytes: bytes.length,
+    /** Advance one frame. `null` once every frame of the file has been answered. */
+    next() {
+      if (shown >= frameCount) return null;
+      if (shown > 0 && !flc.bufferNextFrame()) return null;
+      const frame = flc.getFrame();
+      shown++;
+      return { index: shown - 1, width: frame.width, height: frame.height, colours: frame.colors };
+    },
+    /** Start again from frame 1, the way the format's own ring frame would. */
+    rewind() {
+      flc.currentFrame = 1;
+      shown = 0;
+      flc.bufferNextFrame();
+    },
+    /** How many frames this cursor has answered so far. */
+    index: () => shown,
+  };
+}
+
+/**
+ * A decoded frame's packed RGBA words as the bytes an `ImageData` wants.
+ *
+ * The reader packs `a<<24 | b<<16 | g<<8 | r` (its own `rgba`), which is the byte order of
+ * a little-endian `Uint32` — so the packing is read straight out as RGBA, not swapped.
+ *
+ * @param {Uint32Array} colours
+ * @param {Uint8ClampedArray} [into] reused output, when the caller keeps one
+ * @returns {Uint8ClampedArray} `width * height * 4` bytes
+ */
+export function frameBytes(colours, into = null) {
+  const out = into ?? new Uint8ClampedArray(colours.length * 4);
+  for (let i = 0; i < colours.length; i++) {
+    const word = colours[i];
+    out[i * 4] = word & 0xff;
+    out[i * 4 + 1] = (word >>> 8) & 0xff;
+    out[i * 4 + 2] = (word >>> 16) & 0xff;
+    out[i * 4 + 3] = (word >>> 24) & 0xff;
+  }
+  return out;
+}

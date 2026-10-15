@@ -1,153 +1,172 @@
 # PERFECTARENA — Architecture
 
-**What this is:** *The Elder Scrolls: Arena* (1994) reimagined on the WebGL2 engine
-written for `c:/arenaproject/daggerfall` ("Daggerfall Enhanced", `project-dagger`).
-The engine is reused as a **presentation/gameplay shell**; Arena's own data is read
-at runtime from the player's Arena folder and turned into geometry, textures,
-text, and rules **by new Arena-native code**.
+**What this is:** *The Elder Scrolls: Arena* (1994) ported onto the WebGL2 engine written for
+`c:/arenaproject/daggerfall` ("Daggerfall Enhanced"). The engine is reused as a
+**presentation / gameplay shell**; Arena's own data is read at runtime from the player's
+Arena folder and turned into geometry, textures, text and rules by new Arena-native code.
 
-Read `DECISIONS.md` for *why*, `FORMATS.md` for *what the bits are*, and
-`PROGRESS.md` for *what actually runs*. Anything not demonstrated by a command in
-this repo is labelled **UNVERIFIED**.
+Reading order: **this file** (where things are) → [DECISIONS.md](DECISIONS.md) (*why*, D-numbers)
+→ [FORMATS.md](FORMATS.md) (*what the bits are*) → [PROGRESS.md](PROGRESS.md) (*what runs, and
+what is only claimed*) → [ROADMAP.md](ROADMAP.md) (*what is next*) → [TWINS.md](TWINS.md)
+(the measured comparison with the Daggerfall Enhanced tree).
+
+Anything in the docs that no command in this repo demonstrates is labelled **UNVERIFIED**.
 
 ---
 
-## 1. High-level shape
+## 1. Shape
 
 ```
-                 ┌──────────────────────────────────────────┐
-                 │  PERFECTARENA (static site, ES modules)  │
-                 └──────────────────────────────────────────┘
-   index.html ──▶ src/main.js  (router: ?city ?dungeon ?wild ?world ?shot)
-                      │
-      ┌───────────────┼─────────────────────────────┐
-      ▼               ▼                             ▼
-  src/arena/      src/engine/ (copied from      src/game/  (Arena rules,
-  data layer      daggerfall/src, pruned)       quest, chargen, items,
-  (Arena data)    renderer, math, UI, audio,    combat, world model)
-                  input, collider
+index.html ──▶ src/main.js   router: ?map ?worldmap ?location ?dungeon ?city ?wild ?interior ?test
+                   │
+     ┌─────────────┼──────────────────────┬───────────────────────┐
+     ▼             ▼                      ▼                       ▼
+ src/arena/    src/engine/            src/game/                src/scenes/
+ bytes →       (copied from the twin, the world model: rules,   the scene hosts that
+ structures    pruned) pixels,        levels, meshes, people,   bind all three and
+               vectors, input         quests, saves             own the frame loop
 ```
 
-Three bands, one direction of dependency: `arena/` knows bytes, `engine/` knows
-pixels and vectors, `game/` knows Arena's rules. `game/` may import from both;
-`arena/` imports nothing from `engine/` or `game/`.
+Three bands with one direction of dependency: `arena/` knows bytes, `engine/` knows pixels and
+vectors, `game/` knows Arena's rules. `game/` may import from both; `arena/` imports from
+neither. `scenes/` is the only place that talks to the renderer *and* the data layer at once.
+`src/vendor/` holds third-party files.
 
-### Runtime data path (no game data in the repo or the build)
+## 2. Runtime data path (no game data in the repo or the build)
 
-Mirrors Daggerfall Enhanced's "Port-Doctrine" (`scenes/dataSource.js`):
+1. The player picks their **Arena folder** (the one holding `GLOBAL.BSA`). Persisted in
+   IndexedDB; re-picked only on demand.
+2. `src/arena/browserSource.js` exposes the two doors: `fileListSource` (the picked folder) and
+   `localServerSource` (the dev/test door, `?arena=<folder>`, which fetches the server's
+   loose-file index so a name that is not loose is not a 404).
+3. `src/arena/arenaData.js` is the facade every caller uses: `mif()`, `inf()`, `img()`,
+   `setFrames()`, `palette()`, `texture(ref)`. Lookup is loose file → `GLOBAL.BSA`; the cache
+   and the warning sink live here.
+4. `src/arena/bsaArchive.js` indexes `GLOBAL.BSA` (Arena's header has no directory-type field)
+   and serves any record by name.
+5. Nothing is embedded, bundled or copied into the output.
 
-1. Player picks their **Arena folder** once (with the `ARENA/` subfolder).
-   Persisted in **IndexedDB**; re-picked only on demand.
-2. `src/arena/arenaSource.js` exposes `getBytes(name)`:
-   memory cache → IndexedDB → loose file (`ARENA/<NAME>`).
-3. `src/arena/bsaArchive.js` indexes `GLOBAL.BSA` in the picked folder and
-   serves any record by name through the same `getBytes()`.
-4. Nothing is embedded, bundled, or copied into `dist/`. `?arena=<url>` is a dev
-   door that points the loader at a local static copy (used by tests).
+## 3. Subsystem map
 
----
+### 3a. `src/arena/` — the data layer (bytes → structures)
 
-## 2. Engine survey — module classification
-
-Every entry is a real path in the read-only engine (`c:/arenaproject/daggerfall/src`).
-`REUSE` = copied into `src/engine/` and used unchanged (or with a documented
-shim); `ADAPT` = copied but with an Arena-specific adapter at its boundary;
-`NEW` = the engine has an equivalent we will **not** use, so Arena logic is
-written fresh; `DROP` = Daggerfall-data-specific, not copied.
-
-| Engine module | Class | Why / what Arena needs |
-|---|---|---|
-| `render/renderer.js` | REUSE | The WebGL2 core: `createMesh`, `uploadTexture`, `createBillboardBatch`, `drawMesh`, `drawBillboards`, `drawTerrain`, `beginFrame/resolveFrame`, `setFog/setLighting/setPointLights`, sky. 5.5k lines, framework-free. Arena supplies meshes + textures; the renderer never touches game data. |
-| `render/glProgram.js`, `fogGlsl.js`, `contract.js`, `bounds.js`, `renderTarget.js`, `orderedDither.js`, `perfMeter.js` | REUSE | Leaves of the renderer. `contract.js` documents the MeshBundle/BillboardBatch shapes the Arena mesh builders must emit. |
-| `render/skyRenderer.js`, `cloudNoise.js` | REUSE | Procedural sky + night sky. Arena's outdoor maps and wilderness need exactly this. |
-| `render/retroPass.js`, `render/characterSprite.js` | REUSE (optional) | Retro mode and the sprite pass; used for Milestone 6 flavour. |
-| `world/mat4.js`, `quat.js`, `perlin.js` | REUSE | Math. `mirrorProjectionX` encodes the engine's handedness law — Arena geometry must respect it. |
-| `player/pointerLock.js`, `lookFilter.js`, `mwCamera.js` (PITCH_LIMIT) | REUSE | Look input, smoothing, pitch clamp. |
-| `player/motor.js` | REUSE | First-person motor: walk/run/crouch/swim/jump constants, gravity, capsule dims, fixed-step integration. Arena's movement is the same shape; step/slope laws are engine-side. |
-| `player/collider.js` | REUSE | Capsule-vs-triangle-soup collider in a spatial grid, keyed by string with an optional translation provider. Arena MIF meshes register their triangles here. |
-| `ui/cursor.js`, `text.js`, `fpsCounter.js`, `windowStack.js`, `touch.js`, `gamepadInput.js`, `input.js`, `lookSettings.js`, `viewSettings.js`, `hudShortcuts.js`, `nativePanel.js`, `screenshot.js` | REUSE | Input routing, the UI window stack (`pushWindow`/`PopWindow`/pause), text layout, on-screen HUD scaffolding. |
-| `ui/bitmapCanvas.js` | REUSE | Generic "palettized bitmap + palette → canvas". Arena's IMG/CIF/DFA land here verbatim. |
-| `systems/audio.js` | REUSE | WebAudio engine (3-D loops, one-shots, music ramp). Fed by a new Arena VOC/XMI loader. |
-| `systems/settings.js`, `uiPrefs.js`, `frameCap.js`, `notify.js`, `timeScale.js`, `crashText.js` | REUSE | Settings store, frame cap, HUD notices, crash line. |
-| `formats/flcFile.js` | REUSE | Autodesk FLI/FLC. Arena's 17 `.FLC` files (INTRO, KING, STAFF, END01/02…) are the *same* format — intro/movie playback works for free. |
-| `formats/bsaFile.js` | ADAPT | Daggerfall BSA = `int16 count + uint16 directoryType + records@4`. **Arena BSA = `uint16 count + records@2`, no type field.** Verified by inspection (FORMATS.md §2). Arena gets its own reader; the Daggerfall one is kept for reference only. |
-| `formats/dfPalette.js` | ADAPT | Daggerfall palette reader. Arena `.COL` = 8-byte header + 256×RGB (verified). Thin Arena reader in `arena/palette.js`; the RGB→material path is shared. |
-| `formats/fntFile.js`, `ui/text.js` | ADAPT | DFU FNT = 240×16×16 glyphs with an offset table. **Arena fonts (`TEENYFNT.DAT`, `ARENAFNT.DAT`, `FONT*.DAT`) are their own format** (partial decode in FORMATS.md §9). `arena/font.js` adapts Arena glyphs into the FNT shape so `makeFont` is reused unchanged; falls back to a built-in bitmap face if parsing fails. |
-| `formats/cifRciFile.js`, `imgFile.js`, `textureFile.js` | NEW | Daggerfall IMG/SET/CIF are not Arena's IMG/SET/CIF. `arena/image.js` (IMG), `arena/cif.js` (CIF/RCI), `arena/set.js` (SET wall sheets) are new, using the engine's palette + `bitmapCanvas` conventions. |
-| `formats/*` (everything else: `arch3dFile`, `blocksFile`, `mapsFile`, `saveGames`, `bookFile`, `rumorFile`, `hmiFile`, `sndFile`, `spellsStd`, `worldData*`, `mw*`, `unityBundle*`, `pakFile`, `rscTable`, `skyFile`, `woodsFile`, `lz4`) | DROP | Daggerfall record layouts. `lz4.js` is worth remembering — Arena needs **Type08** decompression instead (FORMATS.md §5). |
-| `scenes/world.js`, `exterior.js`, `interior.js`, `dungeon.js`, `interiorContext.js`, `dataPipeline.js`, `shared.js`, `modWorldData.js` | DROP → NEW | Daggerfall scene hosts built on RMB/RDB/BLOCKS/WOODS. Replaced by `src/scenes/{city,dungeon,wild,worldmap}.js`. `interior.js` is kept as the **reference host** for the minimum renderer call sequence (see §4). |
-| `scenes/dataSource.js` | ADAPT | The folder-pick + IndexedDB + `getBytes` pattern is exactly right and is re-implemented for Arena with no ARENA2 `KEEP` diet. |
-| `world/streamingWorld.js`, `terrainGen*.js`, `rmbLayout.js`, `rdbLayout.js`, `blocksFile`, `mapsFile`, `worldOfDaggerfall.js`, `roads*`, `deepWater*`, `windmills*`, `climateSwaps.js`, `seasonReskin.js`, `weather*`, `spawnedDungeons.js`, `smallerDungeons.js` | DROP | A continuous, streamed, procedurally-textured Tamriel built from Daggerfall's data. Arena has no counterpart and no data for it (DECISIONS.md D2). |
-| `world/dungeonLayout.js`, `interiorLayout.js`, `locationLayout.js`, `staticDoors.js` | DROP → NEW | Daggerfall block/record layout. Arena's layout is the MIF grid itself. |
-| `characters/*` (mobile types, beasts, daedra, paperdoll, dyes, nameGen…) | DROP → NEW | DFU creature tables and voxel/sprite rigs. Arena's monsters are a different, smaller set defined by A.EXE tables. |
-| `combat/*` | DROP → NEW | DFU hit/damage/material formulas and the weapon rig. Arena's combat is a much smaller to-hit/damage model (Milestone 4/6). `combat/fpArm.js`, `fpsWeapon.js`, `weaponRig.js` are the *presentation* pieces worth revisiting in Milestone 6. |
-| `systems/quest/*`, `scenes/questBridge.js`, `questData.js`, `questFoeHost.js` | DROP → NEW | **The engine does have a quest framework** — a full port of Daggerfall Unity's QRC quest machine, driven by `.txt` quest scripts in DFU's own language. Arena's main quest is a linear 10-stage chain in a different (save-file) format; porting the QRC machine and authoring Arena's quests in QRC is the rejected alternative in DECISIONS.md D3. |
-| `systems/save.js`, `saveSlots.js`, `classicSave.js`, `cloudSaves.js`, `saveTransfer.js` | DROP → NEW | DFU save tree/record format. `saveSlots.js`'s IndexedDB multi-slot pattern is reused conceptually; the payload is new Arena JSON. |
-| `systems/chargen.js`, `classQuestions.js`, `startingGear.js` | DROP → NEW | DFU skills/careers/backgrounds. Arena chargen (race, class, roll, name) is new logic (DECISIONS.md D5). |
-| `ui/charsheet.js`, `enhancedCharSheet.js`, `hud.js`, `enhancedInventory.js`, `automap*.js`, `chargen.js`, `travelOptions.js`, `talk*.js`, `bankWindow.js`, `bookReader.js` | DROP → NEW | DFU window content and art. The *container* (`windowStack`, `text.js`, `bitmapCanvas.js`) is reused; Arena's char sheet, inventory, quest log, dialog and world map are new windows. |
-| `ui/enhancedMenu.js`, `introScreen.js`, `videoPlayer.js`, `menu.js` | ADAPT | Menu/video plumbing. The splash video player is reusable with Arena `.FLC`; the menus are replaced with Arena's own titles (Milestone 4/6). |
-| `systems/travel*.js`, `transport.js` | DROP → NEW | DFU travel math over a 1000×500 region grid. Arena's travel is province-map based (FORMATS.md §8). |
-| `net/*`, `ai/*`, `systems/talk*.js` (DFU talk trees), `systems/*` remaining features | DROP | Multiplayer, navmesh, and the long feature tail are out of scope. |
-
-**Summary:** the reusable core is the renderer, math, motor/collider, input and
-the UI container — roughly `render/` + `player/` + `ui/` (container only) +
-a dozen `systems/` leaves. Everything that knows *Daggerfall's data* is dropped
-and replaced by Arena-native code.
-
----
-
-## 3. Arena data layer (`src/arena/`)
-
-| Module | Responsibility |
+| File | Owns |
 |---|---|
-| `arenaData.js` | **The facade.** Every name the game asks for comes back decoded and cached: `mif()`, `inf()`, `img()`, `setFrames()`, `palette()`, `texture(ref)`. Lookup order is loose file then `GLOBAL.BSA`. Owns the cache and the warning sink. |
-| `browserSource.js` | The two ways the browser finds Arena: the player's picked folder (`fileListSource`, `pickArenaFolder`) and the dev/test door (`localServerSource`, which fetches a loose-file index so a miss is not a 404). |
-| `bsaArchive.js` | `GLOBAL.BSA` index + record extraction. **Not** the engine's reader — Arena's header has no directory-type field (D6). Verified: 2 441 records, Σ sizes = directory start. |
-| `decompress.js` | Arena's four codecs: `decodeType08` (adaptive Huffman + 4 KiB history), `decodeType04`, `decodeRle`, `decodeRleWords`. Pure, so the same code runs in Node and the browser. |
-| `palette.js` | `.COL` (8-byte header + 256 RGB), embedded 6-bit palettes, and palettized → RGBA with index 0 transparent. |
-| `image.js` | `.IMG`: the raw 4096-byte wall form, the 12-byte headered form, all three compressions, the by-name headerless cases. |
-| `infFile.js` | `.INF` grammar: `@FLOORS/@WALLS/@FLATS/@SOUND/@TEXT`, `*`-directives into the `*BOXCAP`/`*BOXSIDE`/`*MENU` slot arrays, the ordered texture table with `.SET #n` expansion, `*CEILING`, chasm/stair/level textures, plus the **archive decryption**. |
-| `mifFile.js` | `MHDR` header, `LEVL` sections, tagged chunks (`FLOR/MAP1/MAP2` compressed layers, `TARG/TRIG/LOCK/NAME/INFO/NUMF`), and the two quirks of the shipped data (oversized layers, physical level order). |
-| `font.js` | *Milestone 4* — Arena font → FNT-shaped glyph table for `engine/ui/text.js`. |
-| `rmdFile.js`, `cityData.js`, `text.js` | *Milestones 4–5* — wilderness blocks, the `CITYDATA.64` location table, and the `.DAT`/`TXT` text sources. |
-| `tables.js` | *Milestone 4* — Arena **rules** tables. The provided data has **no `A.EXE`** and `ACD.EXE` is PKLITE-packed (D11), so classes/attributes/monsters/items come from documented community tables (UESP) transcribed into data files, each marked with its source. |
+| `arenaData.js` | **The facade**: every decoded name, the cache, the warning sink. |
+| `browserSource.js` | The picked folder and the `?arena=` dev door; loose-file index. |
+| `bsaArchive.js` | `GLOBAL.BSA` index + record extraction. Verified: 2 441 records, Σ sizes = directory start. |
+| `decompress.js` | Arena's codecs: `decodeType08` (adaptive Huffman + 4 KiB history), Type-04, RLE, RLE-words. Pure, so Node and the browser share it. |
+| `palette.js` | `.COL` (8-byte header + 256 RGB), embedded 6-bit palettes, palettized → RGBA with index 0 transparent. |
+| `image.js` | `.IMG`: the raw 4096-byte wall form, the 12-byte headered form, three compressions, headerless cases. |
+| `infFile.js` | `.INF` grammar: `@FLOORS/@WALLS/@FLATS/@SOUND/@TEXT`, `*`-directives into the `*BOXCAP`/`*BOXSIDE`/`*MENU` slots, the ordered texture table with `.SET #n` expansion, `*CEILING`, chasm/stair textures, and the archive decryption. |
+| `mifFile.js` | `MHDR`, `LEVL` sections, tagged chunks (`FLOR/MAP1/MAP2/TARG/TRIG/LOCK/NAME/INFO/NUMF`), oversized layers, physical level order. |
+| `cfa.js` | `.CFA` creature/people sprites: header fields, the palette lookup table at `0x4c` (zero-length is legal for 8-bit art), frame demuxing. |
+| `cifFile.js`, `rciFile.js` | `.CIF`/`.RCI` containers and their per-image headers — the first-person weapon art. |
+| `rmdFile.js` | Wilderness block framing (`.RMD`), sized and codec'd; the 6 bytes per cell are UNVERIFIED. |
+| `cityDataFile.js`, `cityDataSeeds.js` | `CITYDATA.64`: nine province rectangles, 432 locations, the per-location seeds and the `.MIF` name a dungeon seed produces. |
+| `arenaText.js` | Arena's prose: `citytxt`, `dungeon.txt`, `artfact*.dat`, `template.dat`, the shopkeeper banks, and the `%`-word filler. |
+| `spellsFile.js` | `SPELLSG.65` spell records. |
 
-## 4. Game layer (`src/game/`) — the world model
+### 3b. `src/engine/` — the copied engine (pixels, vectors, input)
 
-Arena's structure, taken literally (DECISIONS.md D2):
+154 modules copied by `tools/copy-engine.mjs` and pruned; `src/engine/PROVENANCE.md` records what
+was copied, what was adapted and what was dropped. The bands that matter to this port:
+
+| Band | Modules | Used for |
+|---|---|---|
+| `render/` | `renderer.js`, `glProgram.js`, `fogGlsl.js`, `skyRenderer.js`, `retroPass.js`, `perfMeter.js`, `renderTarget.js`, `bounds.js`, `orderedDither.js` | The WebGL2 core: meshes, textures, billboard batches, sky, fog, lighting, point lights, retro pass. |
+| `player/` | `motor.js`, `collider.js`, `pointerLock.js`, `lookFilter.js`, `mwCamera.js`, `climbing.js` | First-person motor (fixed-step integration, walk/run/crouch/swim constants), capsule-vs-triangle collider, look input. |
+| `world/` | `mat4.js`, `quat.js`, `perlin.js`, `weather.js` | Math (`mirrorProjectionX` is the engine's handedness law) and weather. |
+| `ui/` | `text.js`, `bitmapCanvas.js`, `windowStack.js`, `cursor.js`, `input.js`, `viewSettings.js`, … | Text layout, palettized bitmap → canvas, the UI window stack, input routing. |
+| `systems/`, `formats/`, `combat/`, `characters/`, `net/` | `audio.js`, `settings.js`, format readers, the twin's own systems | Mostly unused by this port; kept because they compile and the renderer/motor depend on some. |
+
+### 3c. `src/game/` — the world model (Arena's rules, levels, people)
+
+| File | Owns |
+|---|---|
+| `mifLevel.js` | The one place Arena's voxel bitfields become a model: `kind`, `solid`, textures, `facing`, heights, `spawn`, `outdoors`, stairs, doors. |
+| `mifMesh.js` | That model → the engine's `MeshBundle` + the collider + one bundle per `0xB` door leaf. |
+| `cityPlan.js` | A city, which is not a file: seeds `arenaRandom.js` with the city seed and stamps 20×20 block `.MIF`s into a skeleton. |
+| `tables/cityBlocks.js` | The block tables (which `.MIF`s each settlement kind draws from). |
+| `tables/raisedPlatforms.js` | Raised-platform heights/thicknesses — **reconstructed** (`A.EXE` is absent, D11). |
+| `wilderness.js` | The `.RMD` ring around a settlement and the window of it that is built. |
+| `dungeonPlan.js` | Generated dungeons (128 of 144 are not shipped as files) and the deepest-chamber search. |
+| `dungeonItems.js`, `flats.js`, `encounters.js` | What the map's own chunks leave on the floor: item flats, scenery flats, creature placements. |
+| `arenaRandom.js` | Arena's own RNG, so a seed reproduces a city, a dungeon and a town. |
+| `character.js`, `chargen.js` | Races, classes, attributes, the ten creation scenarios, health/spell-point derivation. |
+| `progression.js` | Levels, experience, the monster XP rule. |
+| `monsters.js`, `combat.js` | The creature table, the to-hit/damage model, monster attacks. |
+| `weaponView.js`, `playerSprite.js` | The first-person weapon states (draw, six swings, hold, sheath) and the player's own billboard. |
+| `items.js`, `inventory.js`, `spells.js` | Items, the pack, the 64 decoded spells and casting costs. |
+| `doors.js` | Locks, forcing, keys, door animation and the HUD line for a door. |
+| `chasmSurface.js` | Water/lava: the bed below the surface, wading and lava damage. |
+| `livingWorld.js` | The clock's rate, the day plan tiled from a trade and a seed, opening hours, the town watch. |
+| `townsfolk.js` | The people: the roster from the install's `.CFA` files, outfits, views, description, their fighter. |
+| `townPaths.js` | The town's walking: `pathLine`/`pointOnLine`, and the path book that budgets a frame's searching. |
+| `services.js` | Trades, their hours and what a keeper says. |
+| `shops.js` | Door → room: the sign over a city door, the shop it means, the interior `.MIF` behind it, the keeper's greetings. |
+| `regard.js` | The world's opinion of the player: one regard per person, keyed by place and cell. |
+| `radiantQuests.js` | Side work: five kinds of job drawn from the world, the board, and the person who gives one. |
+| `questData.js`, `questState.js` | The main quest as derived data (eight provinces, eight Staff dungeons, their map dungeons) and its ten-stage machine. |
+| `worldMap.js` | The world model: global pixel, latitude, climate, coast, `travel()`. |
+| `arenaSky.js` | Arena's own horizon: the install's mountains and clouds composited over the level's gradient. |
+| `daylight.js` | DFU's day/night law: the sun's arc, the light curve, the night ambient floor, the sky mix at dusk. |
+| `dungeonNames.js` | Dungeon names — from the data, not invented. |
+| `save.js` | The one place saved things live: last location, quest, side work, character, regard, loot, world state. |
+| `worldState.js` | The persistent world: what has been visited, opened, taken and killed, versioned and migration-safe. |
+| `testmap.js` | The hand-made courtyard (needs no game data). |
+
+### 3d. `src/scenes/` — the hosts
+
+| File | Owns |
+|---|---|
+| `interior.js` | **The one scene host for every map**: city, wilderness, dungeon and building interior. Owns the frame loop, the camera, the player motor, monsters, the townsfolk step, the HUD, interaction (`E`, `T`, `F`), level switching, the door leaves and the weapon. It is the largest file in the project and the place most defects live. |
+| `worldmap.js` | The map of all Tamriel, travel, the job board, the regard ledger page. |
+| `chargen.js` | Character creation on Arena's own sheet. |
+| `testmap.js` | The Milestone-2 courtyard (renderer regression test, no data needed). |
+| `newGame.js` | The "start over" flow. |
+
+### 3e. `tools/` and `tests/`
+
+| Path | Owns |
+|---|---|
+| `tools/launch.mjs`, `tools/serve.mjs` | The launcher (`npm start`) and the static dev server (`npm run dev`). |
+| `tools/copy-engine.mjs` | Copies the twin's engine modules into `src/engine/`. |
+| `tools/mif-dump.mjs`, `city-dump.mjs`, `cfa-dump.mjs`, `tex-dump.mjs`, `world-dump.mjs`, `wild-dump.mjs`, `dungeon-audit.mjs`, `inspect.mjs`, `rmd-probe.mjs` | Offline inspectors: formats, cities, creature art, textures, the world, the wilderness. |
+| `tools/lib/` | `mapascii.mjs` (a decoded level as ASCII), `textures.mjs`, `voxhist.mjs`, `shotascii.mjs`, `nodeSource.mjs` (the Node side of the data door). |
+| `tools/tmp/` | Throwaway probes kept out of the build. |
+| `tests/unit/*.test.mjs` | Node tests (`node --test`) over the **real** Arena files. |
+| `tests/suites/*.mjs` | The browser suites that are their own flow: `chargen`, `combat`, `doors`, `gear`, `generated`, `living`, `mainquest`, `menu`, `progression`, `regard`, `townsfolk`, `world`. |
+| `tests/run-browser.mjs`, `tests/cdp.mjs` | The headless suite driver and the raw-CDP client (launch, evaluate, key/mouse events, screenshots). Seven further suites are defined inline in `run-browser.mjs` rather than in a file: `testmap`, `movement`, `interior`, `city`, `worldmap`, `radiant`, `story` — 19 suites in all. |
+
+## 4. Data flow
+
+**Into a city (or a wilderness window, or a building):**
 
 ```
-world map (continental)  ──pick province──▶  province map  ──pick location──▶  location scene
-      │                                                                          ├── city/town/village  (MIF grid + INF + people)
-      │  fast travel (time + cost)                                             ├── wilderness  (RMD chunks around the settlement)
-      └── quest dungeon unlock                                                 ├── dungeon           (MIF grid, multi-level)
-                                                                               └── interior building (MIF grid + flat doors)
+?location=Daggerfall  →  arena/cityDataFile.js + cityDataSeeds.js  →  worldMap.js (climate, coast, seed)
+                      →  game/cityPlan.js (skeleton .MIF + block grid, arenaRandom.js)
+                      →  game/mifLevel.js (cells)            →  game/mifMesh.js (mesh + collider)
+                      →  scenes/interior.js: collider → engine/player/collider.js, mesh → engine/render/renderer.js
+                      →  game/shops.js (doors + rooms)       →  game/townsfolk.js + townPaths.js + livingWorld.js (people)
 ```
 
-* **Location scenes** are loaded one at a time; each is a self-contained MIF grid
-  turned into a mesh bundle by `game/mifMesh.js`. No continuous overworld, no
-  streaming terrain, no floating origin needed for a 100×100 grid.
-* **`game/mifLevel.js` is where Arena's voxel bitfields become a model** and
-  `game/mifMesh.js` is where that model becomes geometry and collision. Splitting
-  them means the decoding can be tested (and printed as ASCII) on its own, and it
-  is: `tools/lib/mapascii.mjs` prints a decoded level, which is how the bitfields
-  were established.
-* **`game/cityPlan.js` is the one place a level is not a file.** A city has no map
-  to load: the module seeds `game/arenaRandom.js` with the city seed and stamps a
-  grid of 20×20 block `.MIF`s (`game/tables/cityBlocks.js`) into a *skeleton* `.MIF`,
-  producing the same shape `arena/mifFile.js` produces — so the decoder, mesher,
-  collider and renderer all need nothing new for a city (DECISIONS.md D15). Its
-  INF comes from the location (`cityInfName`) rather than the map, because a
-  skeleton has no `INFO` chunk. This is the seam Milestone 5's world map plugs into:
-  climate + city seed + settlement kind in, a city out.
-* **Wilderness** is assembled from RMD blocks around the settlement using the
-  settlement seed, matching Arena's 64×64-block area with the town in the middle
-  128×128 cells. Only a window of blocks around the player is built (Milestone 5).
-* **Collision** registers the built mesh's triangles into `engine/player/collider.js`.
-* **Height**: MIF voxel layers give per-column floor/ceiling heights; MAP1/MAP2
-  bits give the column height class. Walls are box sides from the INF mapping.
+**Into a dungeon:** `questData.js`/`dungeonNames.js` name it → `arenaData.mif()` if the file
+ships, else `dungeonPlan.js` generates it → `mifLevel.js` → `mifMesh.js` → `interior.js` →
+`doors.js` (locks, keys) and `dungeonItems.js`/`encounters.js` (loot and creatures).
 
-Minimum renderer call sequence (proven by the engine's own `scenes/interior.js`):
+**The world map:** `TAMRIEL.IMG` (art) + `CITYDATA.64` (provinces, 432 locations) +
+`TERRAIN.IMG` (climate/coast per pixel) → `worldMap.js` → `scenes/worldmap.js` (canvas + DOM
+panels) → a click on a marker is `travel()`, which advances days and hands the next scene its
+`?location=`.
+
+**Saving:** everything the player has done goes through `game/save.js` into `localStorage`: the
+character, the quest, the radiant job, the regard ledger, what has been looted, and
+`worldState.js`'s record of the world.
+
+## 5. The renderer contract
+
+Minimum call sequence proven by the twin's own interior scene:
 
 ```js
 renderer.setClearColor(...); renderer.setLighting(ambient, sunScale, ...);
@@ -160,59 +179,42 @@ renderer.drawBillboards(batches, camRight, UP_Y);
 renderer.resolveFrame();
 ```
 
-## 5. Rules layer
+Rules that are asserted rather than assumed: a foreign pass (the sky) must call
+`markForeignPass()` or the renderer's state shadows go stale; a sub-mesh whose texture is
+missing draws **untextured, not black**; winding is derived per triangle from the face normal
+(`gl.frontFace(gl.CW)` runs through the mirrored projection).
 
-| System | Source | Notes |
-|---|---|---|
-| Races / classes / attributes | documented community tables | 8 races, 18 classes, STR INT WIL AGI SPD END PER LUC. `A.EXE` absent in the provided data (DECISIONS.md D5). |
-| Monsters | documented community tables + `A.EXE` offsets where a matching binary is supplied | Arena's monster list with HP/damage/XP. |
-| Items / artifacts | Arena item list + `ARTFACT*.DAT` lore text | Staff of Chaos pieces and artifacts are flagged quest items (DECISIONS.md D4). |
-| Spells | `SPELLSG.65` / `SPELLS.LST` (128 × 85 bytes, verified) | Milestone 6. |
-| Quest | `game/questState.js` — a 10-stage machine modelled on Arena's `MQDATA` save block (`NextStep`, `DungeonLocationKnown`, `HasStaffPiece`, `HasKeyItem`) | DECISIONS.md D3. |
-| Combat | `game/combat.js` — Arena's to-hit / damage / monster attack model | Milestone 4. |
-| Raised-platform geometry | `game/tables/raisedPlatforms.js` — **reconstructed**, because the arrays live in `A.EXE` which this data set does not have | DECISIONS.md D11, FORMATS.md §13. |
+## 6. Where a feature lives (index)
 
-### 5a. The world, the prose and the side work (added since Milestone 4)
+| Feature | Files |
+|---|---|
+| Read Arena's data | `arena/arenaData.js` → the reader for the format |
+| A city | `game/cityPlan.js`, `game/tables/cityBlocks.js`, `game/mifLevel.js`, `game/mifMesh.js` |
+| A dungeon | `game/dungeonPlan.js`, `game/dungeonNames.js`, `game/mifLevel.js`, `game/mifMesh.js` |
+| Doors, locks, keys | `game/doors.js` (+ the `0xB` leaf bundles from `mifMesh.js`) |
+| Entering a building | `game/shops.js` → `scenes/interior.js` (`enterDoor`/`leaveDoor`) |
+| The people | `game/townsfolk.js`, `game/townPaths.js`, `game/livingWorld.js`, `game/services.js` |
+| Talking, jobs, regard | `scenes/interior.js`, `game/radiantQuests.js`, `game/regard.js`, `arena/arenaText.js` |
+| Combat | `game/monsters.js`, `game/combat.js`, `game/weaponView.js`, `scenes/interior.js` |
+| Character and items | `game/character.js`, `game/chargen.js`, `game/items.js`, `game/inventory.js`, `game/spells.js` |
+| The main quest | `game/questData.js`, `game/questState.js`, `scenes/worldmap.js` |
+| The world of Tamriel | `game/worldMap.js`, `arena/cityDataFile.js`, `arena/cityDataSeeds.js`, `scenes/worldmap.js` |
+| Sky, sun, weather | `game/daylight.js`, `game/arenaSky.js`, `engine/render/skyRenderer.js` |
+| Saving and the persistent world | `game/save.js`, `game/worldState.js`, `game/regard.js` |
 
-| Module | What it is | Data it reads |
-|---|---|---|
-| `arena/cityDataFile.js` | `CITYDATA.64`: nine province rectangles and 432 locations | **verified** offsets (FORMATS §8) |
-| `arena/cityDataSeeds.js` | the per-location seeds — city, wilderness, province, ruler, sky — and the `.MIF` name a dungeon seed produces | **verified** (FORMATS §8b–8c) |
-| `game/worldMap.js` | the world model: global pixel, latitude, climate, coast, and `travel()` | `CITYDATA.64` + `TERRAIN.IMG` |
-| `arena/arenaText.js` | Arena's prose: `citytxt`, `dungeon.txt`, `artfact*.dat`, `template.dat`, the shopkeeper banks, and the `%`-word filler | **verified** (FORMATS §10a) |
-| `game/questData.js` | the main quest as *derived* data: eight provinces, eight Staff dungeons, and the map dungeon that reveals each | `CITYDATA.64`'s two quest dungeons per province |
-| `game/questState.js` | the main quest's ten-stage machine, modelled on Arena's `MQDATA` save flags | — |
-| `game/radiantQuests.js` | side work: five kinds of job drawn from the world, using Arena's own artifact speeches where it has them; `ARTIFACTS` and `MONSTERS` are checked against the real data | `artfact*.dat`, the archive's `.CFA` names |
-| `game/save.js` | the one place the three saved things live: last location, main quest, side work | `localStorage` |
-| `scenes/worldmap.js` | the map of all Tamriel: Arena's `TAMRIEL.IMG`, province borders, a marker per location, and the board the side work is posted on | `TAMRIEL.IMG`, `CITYDATA.64` |
+## 7. Verification
 
-**The two rules the side work is built on.** A radiant quest may only ever point at
-a place the install can open — the sixteen dungeons whose `.MIF` ships as a file,
-discovered from a loose-file listing rather than assumed — and a draw is a pure
-function of `(world, library, kind, seed, giver, day)`, so the same town on the same
-day posts the same board and a save file is a seed plus a small state.
+```bash
+ARENA_PATH=/path/to/arena/ARENA npm test            # node --test tests/unit/*.test.mjs
+ARENA_PATH=/path/to/arena/ARENA npm run test:browser # headless Chrome/Edge, all suites
+npm run check                                        # both, in order
+node tests/run-browser.mjs townsfolk|doors|combat|living   # one suite
+npm run probe:mif   ·  npm run probe:city            # format and city evidence
+```
 
-## 6. Tests (`tests/`)
+The browser suite drives real key and mouse events and measures the captured frame (colour
+count, dominant share, hard-edge count, band brightness) instead of trusting an exit code.
+It needs `ARENA_PATH` or `?arena=<folder>`; `testmap` needs no game data.
 
-* `tests/unit/*.test.mjs` — Node tests (`node --test`) over the **real** Arena
-  files: the BSA directory identity, MIF framing and level counts, every loose
-  `.MIF` parsing and decoding, oversized layers, physical level order, Type08
-  output sizes, INF decryption and grammar, every referenced texture decoding, and
-  winding on a 20 800-quad level. `ARENA_PATH` selects the folder.
-* `tests/run-browser.mjs` + `tests/cdp.mjs` — launches the installed Chrome/Edge
-  headless over raw CDP, drives real key events, captures screenshots into
-  `tests/shots/`, fails on console errors, and measures the frame (colour count,
-  dominant share, hard-edge count, band brightness) rather than trusting an exit
-  code. Suites: `testmap`, `movement`, `interior`, `city`, `worldmap`, `radiant`,
-  `story`. The last three are the Milestone 5 work: the map draws Arena's own art
-  with 432 markers; the board is clicked with **real mouse events**
-  (`page.clickSelector` → `Input.dispatchMouseEvent`), not a synthetic `click()`;
-  and `story` plays the Milestone 4 slice — escape, find the map, take the piece,
-  survive a reload — with the `E` key rather than the debug API.
-* `tools/lib/shotascii.mjs` — prints a screenshot as ASCII so a human can read the
-  shape of a frame in a terminal.
-
-`window.__debug` is the one test seam. The interior scene exposes `state()`,
-`levels()`, `loadLevel(i)`, `loadLevelAndSettle(i)`, `teleportCell(row, col)`,
-`cellAt(row, col)`, `teleport`, `look`, `input`, `advance`, `spawnPoint`,
-`shotPose`. Milestone 4 adds `giveItem`, `setQuestFlag`, `questLog`, `save`, `load`.
+See [PROGRESS.md](PROGRESS.md) for what those runs currently prove, and for the simplifications
+(S-numbers) that code and docs cite.

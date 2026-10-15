@@ -13,6 +13,9 @@
 //                                from here and can offer a way back
 //   `perfectarena.quest`         the main quest (`game/questState.js`)
 //   `perfectarena.radiant`       the side work (`game/radiantQuests.js`)
+//   `perfectarena.character`     who the player is (`game/character.js`)
+//   `perfectarena.regard`        who knows them, and how they feel (`game/regard.js`)
+//   `perfectarena.loot`          what they have already taken, and when it restocks
 //
 // The values are plain JSON — the two state machines are deliberately free of
 // functions and class instances so that a save is `JSON.stringify` and a load is
@@ -22,6 +25,9 @@
 
 import { deserializeQuestState, createQuestState } from './questState.js';
 import { deserializeRadiantState, createRadiantState, serializeRadiantState } from './radiantQuests.js';
+import { deserializeRegard, createRegardRecord, serializeRegard } from './regard.js';
+import { parseWorld, serializeWorld } from './worldState.js';
+import { createGuildState } from './guilds.js';
 
 /** Where the last location's identity is remembered, so the map can return to it. */
 export const LAST_LOCATION_KEY = 'perfectarena.lastLocation';
@@ -31,6 +37,80 @@ export const QUEST_KEY = 'perfectarena.quest';
 export const RADIANT_KEY = 'perfectarena.radiant';
 /** Where the character sheet lives between page loads. */
 export const CHARACTER_KEY = 'perfectarena.character';
+/** Where the emptied loot piles are remembered, so a dungeon restocks on its own clock. */
+export const LOOT_KEY = 'perfectarena.loot';
+/** Where the world's opinion of the player lives: one regard per person, by place and cell. */
+export const REGARD_KEY = 'perfectarena.regard';
+/** Door changes, visit and kill history; kills never control encounter population. */
+export const WORLD_KEY = 'perfectarena.world';
+/** Guild memberships, ranks and earned standing, saved by the same JSON discipline. */
+export const GUILD_KEY = 'perfectarena.guilds';
+
+export function loadWorldState() { return parseWorld(read(WORLD_KEY)); }
+export function saveWorldState(world) { write(WORLD_KEY, serializeWorld(world)); }
+
+/**
+ * How many of the world's days a dungeon takes to restock what the player has taken.
+ *
+ * Arena's treasures are not a fixed amount: a dungeon the player has stripped is worth
+ * coming back to later (its chests and bodies are placed by the map's own flats and are
+ * simply there again), and the original's dungeons do restock. The number of days is this
+ * project's rule and says so — two weeks is long enough that a dungeon is not a vending
+ * machine and short enough that a player who spends a quest's travel time gets it back.
+ */
+export const RESTOCK_DAYS = 14;
+
+/**
+ * Load the emptied-loot record: `{ [mapKey]: { day, cells: ["row,col", …] } }`.
+ *
+ * @returns {Record<string, {day: number, cells: string[]}>}
+ */
+export function loadLootRecord() {
+  const raw = read(LOOT_KEY);
+  if (!raw || typeof raw !== 'object') return {};
+  /** @type {Record<string, {day: number, cells: string[]}>} */
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!value || typeof value !== 'object') continue;
+    const day = Number(value.day);
+    const cells = Array.isArray(value.cells) ? value.cells.filter((c) => typeof c === 'string') : [];
+    out[key] = { day: Number.isFinite(day) ? day : 0, cells };
+  }
+  return out;
+}
+
+/**
+ * Remember that a cell of a level was emptied on a day.
+ *
+ * @param {string} mapKey  e.g. `START.MIF#0`
+ * @param {string} cell    `row,col`
+ * @param {number} day     the world's own day
+ * @returns {{day: number, cells: string[]}}
+ */
+export function markLootTaken(mapKey, cell, day) {
+  const record = loadLootRecord();
+  const at = record[mapKey] ?? { day: 0, cells: [] };
+  at.day = Number.isFinite(Number(day)) ? Number(day) : at.day;
+  if (!at.cells.includes(cell)) at.cells.push(cell);
+  record[mapKey] = at;
+  write(LOOT_KEY, record);
+  return at;
+}
+
+/**
+ * Which cells of a level are still empty: the ones taken since the last restock.
+ *
+ * @param {string} mapKey
+ * @param {number} day
+ * @returns {Set<string>}
+ */
+export function lootStillEmpty(mapKey, day) {
+  const record = loadLootRecord()[mapKey];
+  if (!record) return new Set();
+  const now = Number.isFinite(Number(day)) ? Number(day) : 0;
+  if (now - record.day >= RESTOCK_DAYS || now < record.day) return new Set();
+  return new Set(record.cells);
+}
 
 /**
  * Read and parse one key, tolerating a missing store, a refused read, and corrupt
@@ -82,20 +162,59 @@ export function saveRadiantState(state) {
 }
 
 /**
- * Where the player was, as `{name, dungeon}`.
- * @returns {{name: string, dungeon: boolean}|null}
+ * The regard ledger: who the player has met in the world, and how each of them feels.
+ *
+ * Kept beside the character rather than inside it because it is written *from* a scene that
+ * has no character in hand (a street, a shop) and read by one that does (the map's
+ * journal) — and because a player who starts a new character should meet a world that has
+ * never heard of them.
+ *
+ * @returns {object} the ledger, empty when nothing has been saved
+ */
+export function loadRegard() {
+  const saved = read(REGARD_KEY);
+  return saved ? deserializeRegard(saved) : createRegardRecord();
+}
+
+/** @param {object} record */
+export function saveRegard(record) {
+  write(REGARD_KEY, serializeRegard(record));
+}
+
+/**
+ * Where the player was, as `{name, dungeon}` — and, in the wild, **where in the wild**.
+ *
+ * The outdoor world is a real place now: a city gate that was crossed lands the player
+ * back on the same cell of the same country after a reload, which is what "the world is
+ * persistent" has to mean. `wild` is the *absolute* cell of the 128×128 wilderness grid
+ * (`CITY_ORIGIN`-based; see `game/wilderness.js`), written by the interior scene when its
+ * level is a wilderness window (cell 0,0 when the page stood at the settlement's gate —
+ * the same country either way).
+ *
+ * @returns {{name: string, dungeon: boolean, wild: {row: number, col: number}|null}|null}
  */
 export function loadLastLocation() {
   const saved = read(LAST_LOCATION_KEY);
-  return saved && typeof saved.name === 'string' ? { name: saved.name, dungeon: Boolean(saved.dungeon) } : null;
+  const wild = saved && Number.isFinite(saved?.wild?.row) && Number.isFinite(saved?.wild?.col)
+    ? { row: Math.max(0, Math.round(saved.wild.row)), col: Math.max(0, Math.round(saved.wild.col)) }
+    : null;
+  return saved && typeof saved.name === 'string'
+    ? { name: saved.name, dungeon: Boolean(saved.dungeon), wild }
+    : null;
 }
 
 /**
  * Remember where the player is.
- * @param {{name: string, dungeon?: boolean}} entry
+ * @param {{name: string, dungeon?: boolean, wild?: {row: number, col: number}|null}} entry
  */
 export function saveLastLocation(entry) {
-  write(LAST_LOCATION_KEY, { name: entry.name, dungeon: Boolean(entry.dungeon) });
+  write(LAST_LOCATION_KEY, {
+    name: entry.name,
+    dungeon: Boolean(entry.dungeon),
+    wild: entry.wild && Number.isFinite(entry.wild.row) && Number.isFinite(entry.wild.col)
+      ? { row: Math.round(entry.wild.row), col: Math.round(entry.wild.col) }
+      : null,
+  });
 }
 
 /**
@@ -112,9 +231,30 @@ export function saveCharacter(character) {
   write(CHARACTER_KEY, character);
 }
 
+/**
+ * The saved guild state: memberships, ranks and earned standing.
+ *
+ * Same discipline as the radiant state — plain JSON, no functions, and a corrupt or
+ * partial store falls back to a fresh one rather than crashing.
+ * @returns {import('./guilds.js').GuildState}
+ */
+export function loadGuildState() {
+  const saved = read(GUILD_KEY);
+  if (!saved || typeof saved !== 'object') return createGuildState();
+  return {
+    memberships: saved.memberships && typeof saved.memberships === 'object' ? saved.memberships : {},
+    standings: saved.standings && typeof saved.standings === 'object' ? saved.standings : {},
+  };
+}
+
+/** @param {import('./guilds.js').GuildState} state */
+export function saveGuildState(state) {
+  write(GUILD_KEY, state);
+}
+
 /** Forget everything. Used by the tests, and by a player who wants a new game. */
 export function clearSave() {
-  for (const key of [LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY, CHARACTER_KEY]) {
+  for (const key of [LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY, CHARACTER_KEY, REGARD_KEY, LOOT_KEY, WORLD_KEY, GUILD_KEY]) {
     try { if (typeof localStorage !== 'undefined') localStorage.removeItem(key); } catch { /* nothing to do */ }
   }
 }

@@ -6,6 +6,7 @@
   "description": "The Elder Scrolls: Arena reimagined on the Daggerfall WebGL2 engine. Reads Arena's own data at runtime; bundles no game data.",
   "license": "MIT",
   "scripts": {
+    "start": "node tools/launch.mjs",
     "dev": "node tools/serve.mjs 8080",
     "serve": "node tools/serve.mjs",
     "test": "node --test tests/unit/*.test.mjs",

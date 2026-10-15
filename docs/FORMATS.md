@@ -53,7 +53,7 @@ Contents by extension (**VERIFIED**, counted from the directory):
 |---|---:|---|
 | `IMG` | 946 | Palettized images (flats, UI art, faces, map pieces) |
 | `MIF` | 533 | Map/level data — **all** city, dungeon and wilderness maps |
-| `CFA` | 340 | Character frame animations (sprite sets, e.g. `01AXE.CFA`, `ZOMBIE6.CFA`) |
+| `CFA` | 340 | Character frame animations (sprite sets, e.g. `01AXE.CFA`, `ZOMBIE6.CFA`) — **89 are people** (`<set><armour><action>.CFA`), **65** of them walk files: see §10c |
 | `SET` | 180 | Wall texture sheets (128×128 8-bit — see §6) |
 | `INF` | 93 | Map definitions (text; **encrypted in the archive**, see §4) |
 | `DFA` | 79 | Decor/flat animations (`CHAOS1.DFA`) |
@@ -300,16 +300,73 @@ A plain sequence of **64×64 8-bit chunks** with no header: `size / 4096` textur
 consecutive texture-table entries, all the same filename, with `setIndex` 0…n−1 —
 so the `#n` value must equal the sheet's frame count.
 
-### `.CIF` / `.RCI` / `.DFA` (**TENTATIVE**)
+### `.CIF` (**VERIFIED — images and animations**), `.RCI` / `.DFA` (**TENTATIVE**)
 
 * `.CIF` — header `uint16 xOffset, yOffset, width, height, flags` then compressed
   data (verified `ARROWS.CIF` = 1 083 bytes, header `7f 00 2f 00 0c 00 09 00`).
-  Needed for UI art in Milestone 4, not for maps.
+  A `.CIF` holds **many** such images, back to back; see §9b for the container and §9c for
+  the weapon animations it exists for.
 * `.DFA` — animated flat: header then frame data (verified `CHAOS1.DFA` 4 980 bytes).
 * `.RCI` — animated wall textures (`LAVAANI.RCI`, `WATERANI.RCI`). Milestone 6.
 
 All are 8-bit palettized with index 0 as the transparent cutout, matching the
 engine's `ui/bitmapCanvas.js` convention.
+
+### 9b. `.CIF` — a sequence of screen-positioned images (**VERIFIED**)
+
+A `.CIF` is not one image. It is **a list of them**, each with its own 12-byte header, and the
+headers run back to back until the file ends:
+
+| Offset | Size | Contents |
+|---:|---:|---|
+| 0 | 2 | `xOffset` — where the original draws it, in **320×200 screen pixels** |
+| 2 | 2 | `yOffset` |
+| 4 | 2 | width |
+| 6 | 2 | height |
+| 8 | 2 | flags — **low byte is the compression kind** (0, 2, 4 or 8; see §5), high byte `0x08` on every animated file, so a class marker rather than a codec |
+| 10 | 2 | `length` — payload bytes that follow the header |
+| 12 | `length` | payload: uncompressed indices, byte RLE, Type-04 or Type-08 (which carries its own 2-byte decompressed length first, exactly as a `.IMG` of that kind does) |
+
+Six records are **headerless** sheets with a frame count and dimensions the original knows by
+name: `BRASS.CIF` and `BRASS2.CIF` (9 × 8×8), `MARBLE.CIF`/`MARBLE2.CIF` (9 × 3×3),
+`PARCH.CIF`/`SCROLL.CIF` (9 × 20×20). Read from a raw-override table, as OpenTESArena does.
+
+**What the offsets are for: the weapon animations.** Arena fights in the first person and the
+weapon in your hand is a `.CIF` whose every image is the weapon at one position of its swing,
+with that position in the image's own header. This is the reason the format is a sequence at
+all, and it is why `FLAIL.CIF` being absent from an install matters — see §9c.
+
+**Verified against `GLOBAL.BSA`:** its 58 `.CIF` records decode header by header, the only
+compression kinds present are 0, 2, 4 and 8, and each file's headers walk to exactly its last
+byte (`tests/unit/weapon.test.mjs`).
+
+### 9c. The first-person weapon (**VERIFIED, from OpenTESArena's reading of `A.EXE`**)
+
+Eight sheets, one per weapon family, and a state table of frame indices into them:
+
+| Family | File | Frames |
+|---|---|---|
+| Staff | `STAFF.CIF` | 33 |
+| Blade (dagger → dai-katana) | `SWORD.CIF` | 33 |
+| Mace | `MACE.CIF` | 33 |
+| Flail | `FLAIL.CIF` | — **not in this install** |
+| War hammer | `HAMMER.CIF` | 33 |
+| War / battle axe | `AXE.CIF` | 33 |
+| Bows | `BOW.CIF` | — **not in this install** |
+| Fists (and the gauntlets) | `HAND.CIF` | 13 |
+
+States: **sheathed** (nothing drawn), **unsheathing** `30,31,32`, **sheathing** `32,31,30`,
+**idle** `32`, and one per swing direction — **forward** `25–29`, **down** `0–4`,
+**right** `15–19`, **left** `10–14`, **down-right** `20–24`, **down-left** `5–9`. The fists
+sheet has the same shape at 0–12. Played at **16 frames a second**, so a swing is 5/16 s.
+That the melee sheets are *exactly* 33 images and the fist sheet *exactly* 13 is the table's
+own arithmetic, and the unit test holds the two to each other.
+
+PROVENANCE: `ArenaWeaponUtils.h` (the filenames, the per-weapon-type indices, the state table
+and `FRAMES_PER_SECOND = 16`) and `CIFFile.cpp` (the container), OpenTESArena, MIT. The
+frame geometry is verified here against the real sheets — `SWORD.CIF`'s resting blade is
+`(284, 68) 35×79` and the raised chop `(249, 0) 44×147`, and every frame the table can show
+fits inside Arena's 320×200 screen.
 
 ### Palette selection (**VERIFIED**)
 
@@ -457,8 +514,9 @@ takes the climate as a parameter (`?climate=`).
 A city has **no `0xB` door voxels at all.** `TCN.INF` declares no `*DOOR`
 directive, and a built city decodes to `door: 0`. What marks a building entrance is
 an **`0xA` edge voxel** whose texture index selects the shop's sign —
-`T_DEQ.IMG` for the equipment shop, for instance — which is what the game tests
-when you look at a building and press the interaction key. A city's `MAP2` still
+`T_TEQ.IMG` for the equipment shop, for instance — drawn as a single quad on one
+face of the cell, and the cell itself is passable (`solid = false`), so the doorway
+is walkable. Which sign means which shop is the `.INF`'s own `*MENU` table (§8c). A city's `MAP2` still
 puts roofs over the buildings (4 176 cells on the seed above) while the streets
 stay `MAP2 == 0`, which is how "outdoors" is decided.
 
@@ -473,6 +531,64 @@ deliberately excluded — counting them reserved five of `CITY1`'s thirty-six bl
 for two street decorations each. `tests/unit/city.test.mjs` asserts the rule in
 both directions, including that `CITY2.MIF` (74 structural voxels inside its grid)
 does reserve slots and `CITYW1.MIF` reserves exactly the slots its water sits in.
+
+## 8c. Entering a building — the `*MENU` slots, the signs and the interiors (**VERIFIED**)
+
+Every city `.INF` — all eleven of `DCN DCR DCW`, `MCN MCR MCS MCW`, `TCN TCR TCS
+TCW` — is **59 textures long and has the same layout**; only the art differs per
+climate. Fourteen of those entries are bound by a `*MENU <slot>` line, and the
+sign art's own filename names the shop:
+
+| Slot | Index | `TCN.INF`'s art | Shop | Slot | Index | Art | Shop |
+|---:|---:|---|---|---:|---:|---|---|
+| 0 | 5 | `T_DEQ.IMG` | equipment (`EQ`) | 6 | 40 | `T_DBS3.IMG` | house |
+| 1 | 10 | `T_DTAV.IMG` | tavern (`TAV`) | 7 | 44 | `T_DLGT.IMG` | left signpost |
+| 2 | 16 | `T_DMU.IMG` | Mages Guild (`MU`) | 8 | 45 | `T_DRGT.IMG` | right signpost |
+| 3 | 23 | `T_DTEP.IMG` | temple (`TEP`) | 9 | 53 | `T_DNB1.IMG` | noble house (`NB1`) |
+| 4 | 30 | `T_DBS1.IMG` | house (`BS1`) | 11,12 | 51,52 | `TBK01/02PAL` | bookstands |
+| 5 | 35 | `T_DBS2.IMG` | house (`BS2`) | 13 | 50 | `PGATE.IMG` | the city gate |
+
+**A slot binds a pair.** The blocks draw the *`T_T…`* art at **index + 1** —
+`T_TEQ.IMG` (6), `T_TTAV.IMG` (11), `T_TMU.IMG` (17), `T_TTEP.IMG` (24) — while
+the `.INF` names the *`T_D…`* art at the bound index. All 368 block `.MIF`s were
+walked and their `0xA` edges carry **exactly five indices**: `6`, `11`, `17`, `24`
+and `47` (`TLAUNDRY.IMG`, 137/135/…/31 edges each). The pair therefore means the *same
+shop*, except where the entry after a bound index is a `.SET` wall sheet (the
+house slots 30/35/40 are followed by `TBS1..3.SET`) or where the next index belongs
+to another slot (44/45 are the left and right signposts) — which is why a shop sign
+is `MENU[n]` **or** `MENU[n] + 1` *when that entry is an image*.
+
+The houses' business signs are in **no** `*MENU` slot at all: the blocks draw the
+laundry art at indices 47–49 (`TLAUNDRY.IMG`, `TLAUNDR1.IMG`, `TLAUNDR2.IMG` in
+`TCN.INF`; `LAUNDRY/LAUNDRY1/LAUNDRY2` in the mountain ones, `LAUNDRYD/LAUND1D/
+LAUND2D` in the desert ones). Its name is the evidence that it is a shop, and it is
+the sign of a `BS` block.
+
+### The interiors
+
+`GLOBAL.BSA` holds **eight interiors of each kind** — 56 files plus the towers:
+
+| Family | Files | Their own `.INF` | Size | Arrives on |
+|---|---|---|---|---:|
+| `EQUIP` | `EQUIP1..8.MIF` | `EQUIP.INF` (+ empty `INT.INF` second level) | 25×25 | level 1 of 2 |
+| `MAGE` | `MAGE1..8.MIF` | `MAGE.INF` | 25×25 | level 1 of 2 |
+| `TAVERN` | `TAVERN1..8.MIF` | `TAVERN.INF` | 20×20 or 25×25 | `startingLevelIndex` (0 or 1) |
+| `TEMPLE` | `TEMPLE1..8.MIF` | `TEMPLE.INF` | 25×25 | level 1 of 2 |
+| `NOBLE` | `NOBLE1..8.MIF` | `NOBLE.INF`, `NOBLE1/2.INF` | 20×20 | **level 3 of 3** |
+| `BS` | `BS1..8.MIF` | `NOBLE.INF`, `BS1.INF` | 20×20 | **level 3 of 3** |
+| `TOWER` | `TOWER1..8.MIF` | `TOWER.INF`, `TOWER1.INF` | 20×20 or 25×25 | level 3 of 3/4 |
+
+Three facts about them are load-bearing for a player:
+
+* **`startingLevelIndex` is the ground floor, and for a house it is the *last*
+  level.** `NOBLE1.MIF` has three levels and enters on the third; `EQUIP1.MIF` has
+two and enters on the first. A house's other floors are above the one you walk into.
+* **The `.MIF` header's `startPoints` are the doorway.** `EQUIP1.MIF`'s is
+  `(1472, 2880)` = cell (row 22, col 11): the foot of the entry corridor, with the shop
+  room beyond it — so a building's arrival point is the data's own, not a guess.
+* **Room sizes are what they are**: `EQUIP1.MIF` decodes to 367 wall cells around one
+  big room and its corridor; `NOBLE1.MIF`'s arrival level to 159 walls, 8 doors and a
+  door in its outer wall.
 
 ## 9. Fonts (**TENTATIVE**)
 
@@ -559,6 +675,11 @@ Shield, Ebony Mail, Spell Breaker, Volendrung. (Masque of Clavicus Vile, Sanguin
 Rose, Skull of Corruption and Savior's Hide are **not** in these banks and are
 consequently not in the table.)
 
+These offers are used twice over: the world map's board draws an artifact job's prose
+from them, and so does the job a **person in the street** offers (`D22`). The artifact is
+read back out of whichever speech was drawn, which is why a job's title can never promise
+one artifact while its words sell another.
+
 ### `template.dat` — the talk templates (**VERIFIED**)
 
 `#NNNNa`-style markers, where the four digits are an id and the trailing letter
@@ -579,6 +700,23 @@ vocabulary is wide (67 distinct words, `%a` … `%u`), which is why
 `arenaText.fillTemplate` matches keys **longest-first** (`%mm` must not be read as
 `%m` + `m`) and drops an unknown word rather than showing a player `%qmn`.
 
+**`&` separates the parts of a record, and the parts are read in order.** A record
+is a lead-in followed by its variations, so the part after a `&` usually *continues
+the sentence*: `#0173` holds "…when you really have to be on the lookout for
+pickpockets.&", "a great time to be in `%cn`, if you're a thief.&", and so on. Splitting
+on `&` gives **2 462 parts**, of which **1 823** start and end a sentence and **639**
+are continuations. Handing a continuation to a player as somebody's opening remark is
+half a line, which is why `game/townsfolk.js` filters to whole sentences.
+
+**`%cn` is a city-state's name, not a province's.** `#0000` has "…it is well known
+that `%cn` is currently at `%st` with its neighbor, `%cn2`" — the powers that war
+with one another in Arena are the city-states (Daggerfall, Sentinel, Wayrest), and
+the province is the region they sit in. Some ids go further and store the city's
+name in full (`#0605`, "We of Evermore welcome you into our walls"), which is what
+the `%cn` lines are the generic form of. So `%cn` is filled from `CITYDATA.64`'s
+settlements and `%cn2` with the nearest *other* one — never with a province, and
+never with a word this project made up.
+
 ### The shopkeeper banks — `muguild.dat`, `tavern.dat`, `equip.dat`, `selling.dat`
 
 NUL/blank-line separated lines, all of them templates for a transaction
@@ -595,6 +733,26 @@ Binary despite the extension: 72 bytes for the guard table, 216 for the class ta
 an unusable stub in this install, so nothing here generates a person's name from
 the game's data. `artfact*.dat`'s `%an` is filled from a table in
 `radiantQuests.js` instead, and labelled AUTHORED where it is.
+
+## 10c. People — the `<set><armour><action>.CFA` family (**VERIFIED**)
+
+Arena's townsfolk, guards and the player come out of the same `.CFA` family the
+monsters do, and the file name is the whole of what the format says about a person:
+
+```
+01PLTWLK.CFA
+ggammmaaa
+|| ||| +-- action: WLK, ATT, BOW, SPL, KIC
+|| +++---- armour writing: UNA, LTR, CHN, PLT, BAR, MAG, MNK
+++-------- set: 01…05 and 11…15
+```
+
+**Measured from the archive:** 89 people files in total, **65** of them walk files —
+ten sets × the seven armour writings (35) plus the five `11`–`15` sets × six (30),
+because **no `11`–`15` set has a `PLT` figure at all**. `game/playerSprite.js` maps a
+character's class onto the writing; `game/townsfolk.js` reads the roster off the
+install and describes a person by it ("a person in chain mail") rather than giving
+them a name, which the data does not provide (§10's `names.dat` row).
 
 ## 10b. What a quest's dungeon holds (**RECONSTRUCTED**)
 

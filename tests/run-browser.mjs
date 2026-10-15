@@ -12,6 +12,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, decodePng, imageStats, findBrowser } from './cdp.mjs';
+import { makeChargenSuite } from './suites/chargen.mjs';
+import { makeCombatSuite } from './suites/combat.mjs';
+import { makeActionCombatSuite } from './suites/actioncombat.mjs';
+import { makeSceneVisualsSuite } from './suites/scenevisuals.mjs';
+import { makeDungeonPlaySuite } from './suites/dungeonplay.mjs';
+import { makeBountiesSuite } from './suites/bounties.mjs';
+import { makeMainQuestSuite } from './suites/mainquest.mjs';
+import { makeTownsfolkSuite } from './suites/townsfolk.mjs';
+import { makeDoorsSuite } from './suites/doors.mjs';
+import { makeWorldSuite } from './suites/world.mjs';
+import { makeRegardSuite } from './suites/regard.mjs';
+import { makeMenuSuite } from './suites/menu.mjs';
+import { makeGearSuite } from './suites/gear.mjs';
+import { makeGuildsSuite } from './suites/guilds.mjs';
+import { makeCommerceSuite } from './suites/commerce.mjs';
+import { makeLivingSuite } from './suites/living.mjs';
+import { makeGeneratedSuite } from './suites/generated.mjs';
+import { makeProgressionSuite } from './suites/progression.mjs';
+import { makeCutsceneSuite } from './suites/cutscene.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SHOTS = path.join(ROOT, 'tests', 'shots');
@@ -55,6 +74,24 @@ function scanlineEdges(png, y) {
   }
   return n;
 }
+/**
+ * Photograph the page into `tests/shots/<name>` and answer what the picture holds.
+ *
+ * A suite that has to check a *look* — is the town darker at night — cannot ask the page: the
+ * page can only report the light it was handed. This is the harness's own PNG reader, handed to a
+ * suite as a function of the page, so a suite measures what is on the screen instead of
+ * re-implementing a decoder of its own.
+ *
+ * @param {{screenshot: (p: string) => Promise<Buffer|Uint8Array>}} page
+ * @param {string} name  a file name in `tests/shots/`
+ * @returns {Promise<{mean: number, stats: object, decoded: object}>} `mean` is luminance, 0..255
+ */
+const brightness = async (page, name) => {
+  const decoded = decodePng(await page.screenshot(path.join(SHOTS, name)));
+  const avg = mean(decoded, 0, 0, decoded.width, decoded.height);
+  return { mean: 0.299 * avg.r + 0.587 * avg.g + 0.114 * avg.b, stats: imageStats(decoded), decoded };
+};
+
 const fmt = (c) => `${c.r.toFixed(0)},${c.g.toFixed(0)},${c.b.toFixed(0)}`;
 
 const results = [];
@@ -280,6 +317,130 @@ async function suiteArenaInterior(page) {
 
   await page.screenshot(path.join(SHOTS, 'm3-dungeon.png'));
 
+  // ── the level's own `*TRIG` triggers (`game/levelTriggers.js`) ───────────
+  // This hall ships with its own trigger cells, and the law was measured off the
+  // bytes before a line was written: two **signed** bytes after the position —
+  // text (a `*TEXT` id in the level's own `.INF`) and sound (a `@SOUND` **slot**,
+  // the number the line itself carries, `"SPLASH.VOC 23"`). `255` reads `-1`.
+  // A real page proves the walk-onto: the splash cell fires its sound, a lore
+  // cell shows its own prose, and neither says anything a second time.
+  const trigState = await page.evalJs('window.__debug.triggers()');
+  check('the hall\'s own triggers were decoded from the level\'s `.TRIG` chunk', (trigState?.cells ?? 0) >= 20,
+    `${trigState?.cells} cells, ${trigState?.list?.length ?? 0} listed`);
+  const splash = trigState?.list?.find((t) => t.row === 69 && t.col === 4);
+  check('the measured splash cell is in the table with its sound slot',
+    splash && splash.soundIndex === 23 && splash.textIndex === -1, JSON.stringify(splash));
+  // Chosen **in the page**: the walkability filter has to read `window.__debug`, and a
+  // callback run on this side would see no `window` at all (`window is not defined`).
+  const proseCell = JSON.parse(await page.evalJs(`(() => {
+    const d = window.__debug;
+    const t = d.triggers().list.find((candidate) => candidate.textIndex >= 0 && (() => {
+      const cell = d.cellAt(candidate.row, candidate.col);
+      return cell && !cell.solid && !cell.chasm;
+    })());
+    return JSON.stringify(t ?? null);
+  })()`));
+  check('the hall has a standing trigger with its own prose', Boolean(proseCell), JSON.stringify(proseCell));
+
+  // **An arrival is not a walk-onto, and neither is a teleport.** The trigger fired on the
+  // level's own spawn frame until this pass, which is the reported "I hear randomly the level
+  // up sound in my computer" — a dungeon's `@SOUND` clips (`DRUMS.VOC` and its kin) went off
+  // the instant a level loaded, and again on every `warp`. Two claims hold the law down: the
+  // count is zero right after boot, and still zero after a warp onto a trigger cell.
+  const atBoot = await page.evalJs('window.__debug.triggers()');
+  check('the level\'s own clips are silent on the frame the level loads', (atBoot?.sound?.fires ?? 0) === 0,
+    JSON.stringify(atBoot?.sound));
+  const soundCell = trigState?.list?.find((t) => t.soundIndex === 23);
+  if (soundCell) {
+    await page.evalJs(`window.__debug.warp(${soundCell.row}, ${soundCell.col}); true`);
+    await new Promise((r) => setTimeout(r, 1200));
+    const warped = await page.evalJs('window.__debug.triggers()');
+    check('and a teleport onto a trigger cell rings nothing either', (warped?.sound?.fires ?? 0) === 0,
+      JSON.stringify({ fires: warped?.sound?.fires, last: warped?.last }));
+  }
+
+  //
+  // …and the step that *does* count is a real one: stand beside the cell, face it and walk
+  // in with `W`, the way a player enters it. The trigger cell's neighbour is chosen in the
+  // page (walkability lives there), and the yaw is the mesher's own mapping — world X is the
+  // row and world Z the column (`mifMesh.js`).
+  const walkIn = async (cell) => {
+    const start = JSON.parse(await page.evalJs(`(() => {
+      const d = window.__debug;
+      const cells = d.triggers().list.map((t) => t.row + ',' + t.col);
+      const at = { row: ${cell.row}, col: ${cell.col} };
+      for (const [dr, dc] of [[0, -1], [0, 1], [-1, 0], [1, 0], [1, -1], [1, 1], [-1, -1], [-1, 1]]) {
+        const row = at.row + dr, col = at.col + dc;
+        const here = d.cellAt(row, col);
+        if (!here || here.solid || here.chasm) continue;
+        const between = d.cellAt(at.row, at.col);
+        if (!between || between.solid) continue;
+        return JSON.stringify({ row, col, dr, dc });
+      }
+      return JSON.stringify(null);
+    })()`));
+    if (!start) return false;
+    await page.evalJs(`window.__debug.warp(${start.row}, ${start.col}); true`);
+    // Face the trigger cell: yaw 0 looks along +Z, and `atan2(dx, dz)` is the scene's own —
+    // with the *walk* direction, which is the neighbour-to-trigger offset `(-dr, -dc)`, not
+    // the offset the neighbour was found by. Facing the found offset walks the player *out*
+    // of the cell: measured on this hall, the player left (76,6) for (76,4) and never fired.
+    const yaw = Math.atan2(-start.dr * 2.5, -start.dc * 2.5);
+    await page.evalJs(`window.__debug.look(${yaw}, 0); true`);
+    await new Promise((r) => setTimeout(r, 250));
+    await page.pressKey('KeyW', true);
+    await new Promise((r) => setTimeout(r, 1800));
+    await page.pressKey('KeyW', false);
+    await new Promise((r) => setTimeout(r, 200));
+    return true;
+  };
+
+  if (proseCell) {
+    const before = await page.evalJs('window.__debug.state().notice');
+    const walked = await walkIn(proseCell);
+    const after = await page.evalJs('window.__debug.triggers()');
+    const noticeAfter = await page.evalJs('window.__debug.state().notice');
+    check('walking into a lore trigger pushes its own prose onto the notice bar',
+      walked && after.fired >= 1 && after.last?.text === 'lore' && Boolean(noticeAfter) && noticeAfter !== before,
+      JSON.stringify({ last: after.last, fired: after.fired, notice: String(noticeAfter).slice(0, 60) }));
+    // Away to a standable, trigger-free cell and back: the same cell says nothing again.
+    const away = JSON.parse(await page.evalJs(`(() => {
+      const d = window.__debug;
+      const cells = d.triggers().list.map((t) => t.row + ',' + t.col);
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          const row = ${proseCell.row} + dr, col = ${proseCell.col} + dc;
+          if (dr === 0 && dc === 0) continue;
+          const cell = d.cellAt(row, col);
+          if (cell && !cell.solid && !cell.chasm && !cells.includes(row + ',' + col)) return JSON.stringify({ row, col });
+        }
+      }
+      return JSON.stringify(null);
+    })()`));
+    if (away) {
+      // Away on foot-legal ground, then **walk back in** — a second real step, not a warp, or
+      // the check would only be re-reading the teleport law it already proved above.
+      await page.evalJs(`window.__debug.warp(${away.row}, ${away.col}); true`);
+      await new Promise((r) => setTimeout(r, 700));
+      await walkIn(proseCell);
+      await new Promise((r) => setTimeout(r, 400));
+      const second = await page.evalJs('window.__debug.triggers()');
+      check('the same trigger cell does not fire twice', second.fired === 1, `fired=${second.fired}`);
+    }
+  }
+
+  if (soundCell) {
+    // A fresh level, so the splash cell is unfired and the walk-in is the only thing that
+    // can ring it — and the clip that rings is chosen by the **slot** the `.INF` names.
+    await page.goto(`http://localhost:${PORT}/?interior=39300577.MIF&arena=${encodeURIComponent(arena)}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 3', { label: 'the hall again', timeoutMs: 90000 });
+    const walked = await walkIn(soundCell);
+    await new Promise((r) => setTimeout(r, 1500));
+    const fired = await page.evalJs('window.__debug.triggers().sound');
+    check('stepping into the splash trigger rings the level\'s own clip, by slot',
+      walked && fired?.fires >= 1 && /SPLASH\.VOC/i.test(fired?.file ?? ''), JSON.stringify(fired));
+  }
+
   // Level switching must rebuild the mesh and the collider, not just relabel.
   await page.evalJs('window.__debug.loadLevelAndSettle(1)');
   await page.waitFor('window.__debug.state().grounded === true', { label: 'the player settles on level 2', timeoutMs: 5000 })
@@ -289,6 +450,279 @@ async function suiteArenaInterior(page) {
     `level ${second?.level} ${second?.quads} quads, inf ${second?.inf}`);
   check('switching level puts the player on the new floor', second?.grounded === true,
     `grounded=${second?.grounded} y=${second?.feet?.[1]?.toFixed?.(2)} spawn=${JSON.stringify(second?.spawn)}`);
+
+  // ── water, from the original's own chasm rules ─────────────────────────────
+  // `ArenaChasmUtils`: a wet or lava chasm may be swum in, a lava one damages, a dry one
+  // is neither. The Imperial Dungeons hold 264 wet chasm cells, 118 of them open water —
+  // and the level the suite has been walking is no longer that one, so this goes back.
+  await page.goto(`http://localhost:${PORT}/?interior=START.MIF&arena=${encodeURIComponent(arena)}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', { label: 'START.MIF again', timeoutMs: 90000 });
+  const pool = await page.evalJs(`(() => {
+    const st = window.__debug.state();
+    for (let r = 0; r < st.size[0]; r++) for (let c = 0; c < st.size[1]; c++) {
+      const cell = window.__debug.cellAt(r, c);
+      if (cell && cell.chasm === 'wet' && !cell.solid) { window.__debug.teleportCell(r, c); return { row: r, col: c }; }
+    }
+    return null;
+  })()`);
+  check('the level has open water to stand in', Boolean(pool), JSON.stringify(pool));
+  await new Promise((r) => setTimeout(r, 700));
+  const wading = await page.evalJs('window.__debug.water()');
+  check('standing in a wet chasm is standing in water',
+    wading?.chasm === 'wet' && wading.submerged === true, JSON.stringify(wading));
+  // A flat plane at the surface (the first version of the chasm) leaves the feet *at* the
+  // floor plane with the water painted on it; a pool puts them below it, on the bed.
+  check('and the player is standing in it: feet below the surface, still grounded',
+    wading.feetY < wading.surface - 0.2 && wading.grounded === true,
+    `feet ${wading.feetY?.toFixed?.(2)} of surface ${wading.surface}`);
+  check('wading is slower than walking',
+    Number(wading?.speedScale) > 0 && Number(wading.speedScale) < 1, String(wading?.speedScale));
+  check('the HUD says the water is slow to cross',
+    /wading/.test(await page.evalJs('document.getElementById("combat").textContent')), '');
+  // …and it is not a trap: the player walks out over the bank and the mode ends.
+  //
+  // **Facing the bank first.** This block used to hold `W` in whatever direction the camera
+  // happened to look, which passed only while the level's arrival (and with it the yaw the
+  // scene opens on) was the one this pool's far side lined up with. Once the arrival became the
+  // file's own header point, `W` walked *along* the pool instead of out of it: measured, the
+  // player stayed submerged with `feetY 2.05` for the full 3.5 s. The pool is not a trap — at
+  // the same cell, turned to the nearest dry cell three cells away, the same held `W` is out in
+  // 750 ms — so the law is checked the way a player would: find the bank, face it, walk.
+  await page.evalJs(`(() => {
+    const d = window.__debug;
+    const at = { row: ${pool?.row ?? 0}, col: ${pool?.col ?? 0} };
+    let best = null;
+    for (let r = at.row - 4; r <= at.row + 4; r++) {
+      for (let c = at.col - 4; c <= at.col + 4; c++) {
+        const cell = d.cellAt(r, c);
+        if (!cell || cell.solid || cell.chasm) continue;
+        const distance = Math.abs(r - at.row) + Math.abs(c - at.col);
+        if (!best || distance < best.distance) best = { row: r, col: c, distance };
+      }
+    }
+    if (best) d.look(Math.atan2((best.row + 0.5) * 2.5 - (at.row + 0.5) * 2.5,
+      (best.col + 0.5) * 2.5 - (at.col + 0.5) * 2.5), 0);
+    return Boolean(best);
+  })()`);
+  await new Promise((r) => setTimeout(r, 300));
+  await page.evalJs('window.__debug.input("KeyW", true)');
+  for (let i = 0; i < 14; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if ((await page.evalJs('window.__debug.water().chasm')) === null) break;
+  }
+  await page.evalJs('window.__debug.input("KeyW", false)');
+  await new Promise((r) => setTimeout(r, 300));
+  const ashore = await page.evalJs('window.__debug.state()');
+  const outOfWater = await page.evalJs('window.__debug.water()');
+  check('the player can walk out of the water again',
+    outOfWater.chasm === null && ashore.grounded === true && Number(outOfWater.speedScale) === 1,
+    `${JSON.stringify(outOfWater)} grounded=${ashore.grounded} y=${ashore.feet?.[1]?.toFixed?.(2)}`);
+
+  // ── the weapon in the player's hands (Arena's own first-person swing) ──────
+  //
+  // The game's default view is the first person, and until this the only picture of a blow
+  // was on the third-person avatar. What is checked here is that Arena's *own* weapon sheet
+  // is the one drawn, that its frames run the way the original's state table runs them, that
+  // the drawn frame is really on the screen (pixels, not a flag), and that a weapon whose art
+  // this install does not ship is reported rather than drawn as something else.
+  await page.goto(`http://localhost:${PORT}/?interior=START.MIF&arena=${encodeURIComponent(arena)}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 3', { label: 'a fresh dungeon for the weapon', timeoutMs: 90000 });
+  await page.evalJs('window.__debug.setView("first")');
+  const sheathed = await page.evalJs('window.__debug.weaponView()');
+  check('a weapon starts the level put away', sheathed?.state === 'sheathed' && sheathed.drawn === false && sheathed.frame === null,
+    JSON.stringify({ state: sheathed?.state, frame: sheathed?.frame, drawn: sheathed?.drawn }));
+  check('and the first person is where it will be drawn', (await page.evalJs('window.__debug.combat().view')) === 'first', '');
+  check('the sheet is the one Arena names for the weapon in hand',
+    sheathed?.file === 'SWORD.CIF' && sheathed?.loaded === 'SWORD.CIF' && sheathed?.family === 'blade',
+    `${sheathed?.weapon} → ${sheathed?.family} → ${sheathed?.file} (loaded ${sheathed?.loaded})`);
+  check('the sheet carries the state table\'s frames 0–32',
+    sheathed?.sheetFrames?.length === 33 && sheathed.sheetFrames[0] === 0 && sheathed.sheetFrames[32] === 32,
+    `${sheathed?.sheetFrames?.length} frames`);
+  const empty = await page.evalJs('window.__debug.weaponPixels()');
+  check('nothing is painted on the weapon layer while it is sheathed', empty.pixels === 0, `${empty.pixels} pixels`);
+
+  // The control: two frames with the weapon away, so the swing's own change can be told
+  // apart from the world moving behind it.
+  const shotAway1 = await page.screenshot(path.join(SHOTS, 'm6-weapon-sheathed.png'));
+  await new Promise((r) => setTimeout(r, 400));
+  const shotAway2 = await page.screenshot(path.join(SHOTS, 'm6-weapon-sheathed-2.png'));
+
+  // A real key press, not a function call: `F` is what a player presses.
+  await page.pressKey('KeyF');
+  await page.pressKey('KeyF', false);
+  const drawing = await page.evalJs('window.__debug.weaponView()');
+  check('a blow draws the weapon first, as the original unsheathes it',
+    drawing?.state === 'unsheathing' && drawing?.drawn === true && [30, 31, 32].includes(drawing.frame),
+    JSON.stringify({ state: drawing?.state, frame: drawing?.frame }));
+  check('and the swing is the overhead chop when the player is standing still',
+    drawing?.direction === 'down', String(drawing?.direction));
+
+  // Let the draw and the swing run, then catch the drawn hold: the resting blade is the one
+  // frame that is on screen for long enough to be screenshotted twice.
+  await new Promise((r) => setTimeout(r, 900));
+  const holding = await page.evalJs('window.__debug.weaponView()');
+  check('the swing ends on the drawn hold, with the blade resting on screen',
+    holding?.state === 'idle' && holding?.frame === 32 && holding?.drawn === true,
+    JSON.stringify({ state: holding?.state, frame: holding?.frame }));
+  const drawn = await page.evalJs('window.__debug.weaponPixels()');
+  check('the drawn frame is really painted, not just selected',
+    drawn.pixels > 1000 && drawn.colors > 4 && drawn.bounds,
+    `${drawn.pixels} pixels, ${drawn.colors} colours, bounds ${JSON.stringify(drawn.bounds)}`);
+  // …and at the screen position the frame's own header names, under the law measured off the
+  // install's sheets (`game/weaponView.js` `placeWeapon`): Arena's display was 320×200, the
+  // resting blade's own box is (284, 68, 35×79), and the *margin* the art leaves is what
+  // carries over — its right edge one art pixel off the right of the screen, its bottom on
+  // the line where the original's status area began (147), which in the port is the bottom
+  // edge of the view band. Both axes take ONE scale. (This check used to expect each axis
+  // stretched to the window and the art pinned to the window's bottom edge — the stretching
+  // and the mid-screen float the player reported, and the rule they replaced.)
+  const vp = await page.evalJs('JSON.stringify({ w: window.innerWidth, h: window.innerHeight })').then(JSON.parse);
+  const scale = Math.min(vp.w / 320, vp.h / 200);
+  // The status line as the scene computes it — the view band's bottom edge — because the
+  // art's own row is measured *from that line*.
+  const statusLine = Math.round(147 * scale);
+  const want = {
+    x: Math.round(vp.w - (320 - 284) * scale),
+    y: Math.round(statusLine - (147 - 68) * scale),
+    w: Math.round(35 * scale),
+    h: Math.round(79 * scale),
+  };
+  check('the blade is drawn where the frame\'s own header says, on Arena\'s 320×200 screen',
+    holding.onScreen.x === want.x && holding.onScreen.y === want.y && holding.onScreen.w === want.w && holding.onScreen.h === want.h,
+    `on screen ${JSON.stringify(holding.onScreen)} vs ${JSON.stringify(want)} at ${vp.w}×${vp.h}`);
+
+  // The picture the player sees, not the layer's own report: the weapon's rectangle must
+  // change between a sheathed frame and a drawn one, while the world behind it stands still.
+  const shotDrawn = await page.screenshot(path.join(SHOTS, 'm6-weapon.png'));
+  const box = holding.onScreen;
+  const changed = (a, b) => {
+    const pad = 4;
+    const x0 = Math.max(0, box.x - pad), y0 = Math.max(0, box.y - pad);
+    const x1 = Math.min(a.width, box.x + box.w + pad), y1 = Math.min(a.height, box.y + box.h + pad);
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const o = (y * a.width + x) * 4;
+        if (Math.abs(a.data[o] - b.data[o]) + Math.abs(a.data[o + 1] - b.data[o + 1]) + Math.abs(a.data[o + 2] - b.data[o + 2]) > 24) n++;
+      }
+    }
+    return n;
+  };
+  const behind = changed(decodePng(shotAway1), decodePng(shotAway2));
+  const onScreen = changed(decodePng(shotAway2), decodePng(shotDrawn));
+  check('the weapon is in the frame the player is looking at, not only in its own layer',
+    onScreen > 1500 && onScreen > 20 * behind,
+    `${onScreen} pixels changed where the blade is, against ${behind} while the world stood still`);
+
+  // The direction of a blow is the way the player is pushing: forward-left is the down-left
+  // sweep (Arena's own frames 5–9), and it plays while the keys are held.
+  //
+  // The simulation is **paused** across this block, so the swing is driven by `stepWeapon`
+  // alone: a swing is 5/16 of a second, and two round trips to the page can outlast it on a
+  // busy machine, which made these checks pass or fail on the load of the host. Pausing
+  // also keeps the real key press the thing under test — the handler runs either way.
+  await page.evalJs('window.__debug.pause(true)');
+  await page.evalJs('window.__debug.input("KeyW", true); window.__debug.input("KeyA", true)');
+  await page.pressKey('KeyF');
+  await page.pressKey('KeyF', false);
+  const sweeping = await page.evalJs('window.__debug.weaponView()');
+  check('a blow while moving forward-left is the down-left sweep',
+    sweeping?.direction === 'downLeft', JSON.stringify({ direction: sweeping?.direction, state: sweeping?.state }));
+  await page.evalJs('window.__debug.stepWeapon(0.25)');
+  const sweepFrame = await page.evalJs('window.__debug.weaponView()');
+  check('and its frames are that sweep\'s own, 5–9',
+    sweepFrame.state === 'downLeft' && sweepFrame.frame >= 5 && sweepFrame.frame <= 9,
+    JSON.stringify({ state: sweepFrame.state, frame: sweepFrame.frame }));
+  await page.evalJs('window.__debug.input("KeyW", false); window.__debug.input("KeyA", false)');
+
+  // Standing still again, the weapon puts itself away — and the layer goes empty.
+  await page.evalJs('window.__debug.stepWeapon(0.5)');
+  const resting = await page.evalJs('window.__debug.weaponView()');
+  check('the swing runs out into the drawn hold', resting.state === 'idle' && resting.frame === 32, JSON.stringify({ state: resting.state, frame: resting.frame }));
+  await page.evalJs('window.__debug.stepWeapon(2.1)');
+  const sheathing = await page.evalJs('window.__debug.weaponView()');
+  check('and it sheathes itself after the hold', sheathing.state === 'sheathing' || sheathing.state === 'sheathed', sheathing.state);
+  await page.evalJs('window.__debug.stepWeapon(0.5)');
+  const away = await page.evalJs('window.__debug.weaponView()');
+  const cleared = await page.evalJs('window.__debug.weaponPixels()');
+  check('and then nothing of it is on the layer at all',
+    away.state === 'sheathed' && away.frame === null && cleared.pixels === 0, `${away.state}, ${cleared.pixels} pixels`);
+
+  // First person draws the weapon, third person draws the player's own sprite instead — and
+  // the rig keeps its own clock either way, so a blow still has a picture, just the avatar's.
+  // The layer belongs to the first person; the third person puts the avatar's own sprite on
+  // the screen instead, and the weapon layer is emptied by the next paint.
+  await page.evalJs('window.__debug.pause(false)');
+  await page.evalJs('window.__debug.setView("third")');
+  const third = await page.evalJs(`(async () => {
+    await new Promise((r) => setTimeout(r, 250));
+    return { wv: window.__debug.weaponView(), px: window.__debug.weaponPixels(), anim: window.__debug.animation() };
+  })()`);
+  check('the third person draws the avatar instead of the weapon layer',
+    third.wv.drawn === false && third.px.pixels === 0 && /\.CFA#\d+$/.test(third.anim.player ?? ''),
+    `drawn=${third.wv.drawn}, ${third.px.pixels} pixels on the weapon layer, avatar ${third.anim.player}`);
+  // …and coming back to the first person puts the weapon on the screen again. The blow is
+  // retried while the game's own swing cooldown refuses it (0.55 s of *game* time, which a
+  // page driven one evaluation at a time takes longer than that to spend).
+  await page.evalJs('window.__debug.setView("first")');
+  const backFirst = await page.evalJs(`(async () => {
+    let strike = null;
+    for (let i = 0; i < 30; i++) {
+      strike = window.__debug.strike();
+      if (strike.ok) break;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    let px = { pixels: 0 };
+    for (let i = 0; i < 20 && px.pixels === 0; i++) {
+      await new Promise((r) => setTimeout(r, 60));
+      px = window.__debug.weaponPixels();
+    }
+    return { strike, px };
+  })()`);
+  check('and the weapon layer is back with the first person, drawn on the screen',
+    backFirst.px.pixels > 1000, `strike ${JSON.stringify(backFirst.strike)}, ${backFirst.px.pixels} pixels`);
+
+  // A weapon whose sheet this install does not ship: a flail has no art here, and the game
+  // says which file is missing rather than drawing a sword for it.
+  const flail = await page.evalJs('window.__debug.setWeapon("flail")');
+  check('a flail is mapped to Arena\'s flail sheet', flail?.file === 'FLAIL.CIF' && flail?.family === 'flail', `${flail?.file} ${flail?.family}`);
+  check('and this install has no art for it, which the report says',
+    flail?.missing === 'FLAIL.CIF' && flail?.loaded === null, `loaded ${flail?.loaded}, missing ${flail?.missing}`);
+  await page.pressKey('KeyF');
+  await page.pressKey('KeyF', false);
+  await page.evalJs('window.__debug.stepWeapon(0.4)');
+  const flailPixels = await page.evalJs('window.__debug.weaponPixels()');
+  const flailHud = await page.evalJs('document.getElementById("combat").textContent');
+  check('so swinging it draws nothing at all', flailPixels.pixels === 0, `${flailPixels.pixels} pixels`);
+  check('and the HUD says the install has no such sheet',
+    /no FLAIL\.CIF/.test(flailHud) && /first-person art/.test(flailHud), '');
+  const back = await page.evalJs('window.__debug.setWeapon("longsword")');
+  check('putting the sword back restores its own art', back?.loaded === 'SWORD.CIF' && back?.missing === null, `${back?.loaded}`);
+
+  // ── lava, in the one place the archive has it ──────────────────────────────
+  // `IMPPAL.MIF` level 4 is the Imperial Palace's lava lake (470 cells, and every lava cell
+  // in the game): the level the main quest ends on.
+  await page.goto(`http://localhost:${PORT}/?interior=IMPPAL.MIF&level=3&arena=${encodeURIComponent(arena)}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', { label: 'the palace lake', timeoutMs: 90000 });
+  const lavaCell = await page.evalJs(`(() => {
+    const st = window.__debug.state();
+    for (let r = 0; r < st.size[0]; r++) for (let c = 0; c < st.size[1]; c++) {
+      const cell = window.__debug.cellAt(r, c);
+      if (cell && cell.chasm === 'lava') { window.__debug.teleportCell(r, c); return { row: r, col: c }; }
+    }
+    return null;
+  })()`);
+  check('the palace level 4 has a lava lake', Boolean(lavaCell), JSON.stringify(lavaCell));
+  await new Promise((r) => setTimeout(r, 400));
+  const lavaIn = await page.evalJs('window.__debug.water()');
+  const healthBefore = await page.evalJs('window.__debug.player().health');
+  await new Promise((r) => setTimeout(r, 2600));
+  const healthAfter = await page.evalJs('window.__debug.player().health');
+  check('standing in lava is standing in it', lavaIn?.chasm === 'lava' && lavaIn.submerged === true, JSON.stringify(lavaIn));
+  check('and lava burns: the health goes down while the player stands there',
+    healthAfter < healthBefore, `${healthBefore} → ${healthAfter} in 2.6 s`);
+  check('the HUD names the hazard and its rate',
+    /lava is burning you/.test(await page.evalJs('document.getElementById("combat").textContent')), '');
 
   const glWarnings = page.consoleMessages().filter((m) => /INVALID_OPERATION|INVALID_VALUE|GL_INVALID|GL_OUT_OF_MEMORY/.test(m.text));
   check('no WebGL misuse warnings', glWarnings.length === 0, glWarnings.length ? `${glWarnings.length}× ${glWarnings[0].text}` : '');
@@ -334,13 +768,29 @@ async function suiteArenaCity(page) {
   check('the blocks are real city block files', (city?.blocks ?? []).every((n) => /^(EQ|MG|NB|TP|TV|TS|BS)BD\d+[A-D]\.MIF$/.test(n)),
     `${city?.blocks?.length} blocks, e.g. ${city?.blocks?.slice(0, 3).join(', ')}`);
   // A skeleton has no `INFO`, so the INF can only have come from the location.
-  check('the textures came from the location INF, not the map', /^TCN\.INF$/.test(st?.inf ?? ''), `inf=${st?.inf}`);
-
-  check('the assembled city decoded into real geometry', (st?.quads ?? 0) > 3000, `${st?.quads} quads, ${st?.tris} triangles`);
+  check('the textures came from the location INF, not the map', /^TCN\.INF$/.test(st?.inf ?? ''), `inf=${st?.inf}`);    check('the assembled city decoded into real geometry', (st?.quads ?? 0) > 3000, `${st?.quads} quads, ${st?.tris} triangles`);
   check('the city is far more built than its skeleton', (st?.stats?.wall ?? 0) > 3000, JSON.stringify(st?.stats));
+  // ── the storeys above the ground floor ────────────────────────────────────
+  //
+  // An Arena city block keeps its buildings' upper floors in `MAP2`, as a mass with a
+  // height class (one to three voxel layers). The port read that layer only as "there is a
+  // ceiling here" and drew every building one storey tall with a lid on it; the storeys
+  // pass draws the mass (`game/mifMesh.js`). "Some buildings are taller than others" is
+  // the part that must hold — a city whose every cell came out the same height would mean
+  // the height class is being thrown away again.
+  check('the city\'s buildings have upper floors, and they are not all the same height',
+    (st?.upperStoreys?.boxes ?? 0) > 500 && (st?.upperStoreys?.layers ?? 0) > (st?.upperStoreys?.boxes ?? 0),
+    `storeys=${JSON.stringify(st?.upperStoreys)}`);
+  check('every upper floor is roofed', (st?.upperStoreys?.roofs ?? 0) === (st?.upperStoreys?.boxes ?? -1),
+    `${st?.upperStoreys?.roofs} roofs for ${st?.upperStoreys?.boxes} boxes`);
   check('building entrances are menu edges', (st?.stats?.edge ?? 0) > 0, `edges=${st?.stats?.edge}`);
   check('the city has open sky over its streets', st?.openSky === true && (st?.stats?.ceilinged ?? 0) > 0,
     `openSky=${st?.openSky} ceilinged=${st?.stats?.ceilinged}`);
+  // …and the sky is Arena's own: the install's mountains on the horizon and its clouds
+  // above them, over the climate's gradient (`game/arenaSky.js`), not a flat colour.
+  check('the horizon over the city is the install\'s own mountains and clouds',
+    (st?.sky?.mountains ?? 0) > 0 && (st?.sky?.clouds ?? 0) > 0 && /^T/.test(st?.sky?.climate ?? ''),
+    `sky=${JSON.stringify(st?.sky)}`);
   check('every sub-mesh has its texture (no untextured surface)', (st?.missingTextures ?? ['?']).length === 0,
     `missing: ${(st?.missingTextures ?? []).join(', ')}`);
   check('the player is standing on the city ground', st?.grounded === true, `grounded=${st?.grounded} y=${st?.feet?.[1]} spawn=${JSON.stringify(st?.spawn)}`);
@@ -378,6 +828,20 @@ async function suiteArenaCity(page) {
   const bands = bandMeans(decoded);
   check('the top of the city frame is sky (blue-dominant)', bands.top.b > bands.top.r + 10 && bands.top.b > 60,
     `top rgb ${fmt(bands.top)}`);
+  // …and the sky is the install's own, not a flat wash: a bare vertical gradient puts ONE
+  // colour across a row, while Arena's clouds put many. Measured on this frame, every row
+  // of the top third carries several shades. (`game/arenaSky.js`)
+  const rowColours = (y) => {
+    const set = new Set();
+    for (let x = 0; x < decoded.width; x++) {
+      const o = (y * decoded.width + x) * 4;
+      set.add((decoded.data[o] << 16) | (decoded.data[o + 1] << 8) | decoded.data[o + 2]);
+    }
+    return set.size;
+  };
+  const skyRows = [0.04, 0.09, 0.14, 0.19].map((f) => rowColours(Math.floor(decoded.height * f)));
+  check('the sky over the city carries the install\'s clouds, not one flat colour',
+    skyRows.every((n) => n > 4), `colours across the sky rows: ${skyRows.join(', ')}`);
 
   // ── walking into a building ──────────────────────────────────────────────
   const target = await page.evalJs(`(() => {
@@ -409,6 +873,33 @@ async function suiteArenaCity(page) {
       `z=${after.feet[2].toFixed(2)}, wall face at ${wallFace.toFixed(2)}`);
     check('the player did not fall through the city ground', after.feet[1] > 1.5 && after.feet[1] < 3.5, `y=${after.feet[1].toFixed(2)}`);
   }
+
+  // ── the weather, in the air ──────────────────────────────────────────────
+  //
+  // Arena's four weather states are in the level's own `.INF` **filename** — `N` clear,
+  // `R` overcast, `W` rain, `S` snow — and the port read only three of them until this
+  // pass: `TCW.INF` came out clear (`game/arenaSky.js`). Snow is the harder of the two to
+  // get wrong, because it is the one that has to build a whole render pass: the twin
+  // project's precipitation volume (`engine/render/precipitation.js`), drawn over the
+  // world with the level's own weather driving it.
+  await page.goto(`http://localhost:${PORT}/?city&weather=snow&seed=20232&${q}`);
+  await page.waitFor('window.__ready === true', { label: 'the city in snow', timeoutMs: 60000 });
+  const snowing = await page.evalJs('window.__debug.state()');
+  check('a snowy settlement uses its own snow INF', /^TCS\.INF$/.test(snowing?.inf ?? ''), `inf=${snowing?.inf}`);
+  check('and the sky it draws is the snowy one', snowing?.sky?.weather === 'S', JSON.stringify(snowing?.sky));
+  check('snow falls: the precipitation pass is built and drawing',
+    snowing?.weather === 'snow' && (snowing?.precipitation?.particles ?? 0) > 0,
+    `weather=${snowing?.weather} ${JSON.stringify(snowing?.precipitation)}`);
+  const snowyShot = decodePng(await page.screenshot(path.join(SHOTS, 'm4-city-snow.png')));
+  const snowyTop = bandMeans(snowyShot).top;
+  // The snow tweak mixes the climate's gradient toward a flat sky and dims it
+  // (`WEATHER_TWEAKS.S`: mix 0.62, dim 0.94), so the same city's sky is measurably *less*
+  // blue in a snowfall than in the clear. This is the one claim that says the weather
+  // reached the sky and not only the air.
+  check('a snowing sky is dimmer than the same city\'s clear one',
+    snowyTop.b < bands.top.b && snowyTop.b > 60, `snow ${fmt(snowyTop)} vs clear ${fmt(bands.top)}`);
+  check('the snow pass raised nothing', (await page.evalJs('window.__debug.errors.length')) === 0,
+    `${await page.evalJs('window.__debug.errors.length')} errors`);
 
   // ── the same seed is the same city, and a different seed is not ──────────
   await page.goto(`http://localhost:${PORT}/?city&seed=99&${q}`);
@@ -499,6 +990,34 @@ async function suiteWorldMap(page) {
   check('every piece stage names its province and a real .MIF', chain?.slice(1, 9).every((s) => s.province && /^\d{8}\.MIF$/.test(s.mif ?? '')),
     chain?.slice(1, 9).map((s) => `${s.title}=${s.mif}`).join(' '));
 
+  // ── fast travel, for real ────────────────────────────────────────────────
+  //
+  // **The check that would have caught the reported bug.** Everything above reads what the map
+  // *says* — `travelUrl` is a string this suite asked for and can always produce — while the
+  // journey itself was the one line nothing ran, and that line was wrong: `travel`'s parameter
+  // is called `location`, which **shadows `window.location`**, so its `location.href = url` set
+  // a `href` property on a plain marker object and the page never went anywhere. Fast travel
+  // from the world map did nothing at all, which is the player's report verbatim: "when you
+  // create a new character it opens the map and you cant even travel anywhere".
+  //
+  // So this travels — through `__debug.travel`, which is the marker-click path — and then asks
+  // the page what it is standing in. The second half of the claim is the marker set before the
+  // journey: a live Arena folder is a `FileList` in this page's memory and **cannot survive a
+  // page load**, so a travel that navigated would ask the player for their game data again.
+  // A marker still set afterwards is what proves the scene was rebuilt in place.
+  await page.evalJs('window.__stillTheSamePage = 1');
+  const offered = await page.evalJs('window.__debug.travelUrl("Daggerfall")');
+  check('the map offers a real travel URL for a city it knows', /location=Daggerfall/.test(offered ?? ''), String(offered));
+  const journey = await page.evalJs('window.__debug.travel("Daggerfall")');
+  check('travelling names where it is going', journey?.to === 'Daggerfall', JSON.stringify(journey));
+  await page.waitFor('window.__debug?.scene === "interior" || (window.__debug?.pageErrors ?? []).length > 0', { label: 'the arrival', timeoutMs: 60000 });
+  const arrived = await page.evalJs('({ scene: window.__debug?.scene ?? null, search: location.search, samePage: window.__stillTheSamePage === 1, errors: (window.__debug?.pageErrors ?? []).slice(0, 3) })');
+  check('travelling from the map really arrives at the place it named',
+    arrived?.scene === 'interior' && /location=Daggerfall/.test(arrived?.search ?? ''), JSON.stringify(arrived).slice(0, 220));
+  check('and the journey happened in this page, so a picked Arena folder survives it',
+    arrived?.samePage === true, JSON.stringify(arrived).slice(0, 220));
+  check('the arrival raised no errors', (arrived?.errors ?? []).length === 0, (arrived?.errors ?? []).join(' | ').slice(0, 300));
+
   check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
   const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
   check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
@@ -530,8 +1049,18 @@ async function suiteRadiant(page) {
   check('Arena\'s talk templates loaded', lib?.talkTemplates === 613, `talkTemplates=${lib?.talkTemplates}`);
 
   // ── the board ────────────────────────────────────────────────────────────
-  check('only dungeons the install can open are offered', (await page.evalJs('window.__debug.radiant().enterableDungeons')) === 16,
-    `enterable=${await page.evalJs('window.__debug.radiant().enterableDungeons')} of 144 dungeon records`);
+  // **The property, not the number.** This used to assert exactly sixteen, because only
+  // sixteen of Arena's 144 dungeon records ship a `.MIF` of their own. The port now
+  // assembles a level for any of the other 128 out of the install's own dungeon pieces
+  // (`game/dungeonPlan.js`), so the honest invariant is: the offerable set is never empty,
+  // it is never larger than the map's dungeon records, and it is *all* of them only when
+  // the pieces are installed — with the pieces missing it must fall back to the sixteen.
+  const board = await page.evalJs('window.__debug.radiant()');
+  check('only dungeons the install can open are offered',
+    (board?.enterableDungeons ?? 0) >= 16
+    && (board?.enterableDungeons ?? 0) <= (board?.dungeonRecords ?? 0)
+    && (board?.enterableDungeons === 16 || board?.dungeonPieces === true),
+    `enterable=${board?.enterableDungeons} of ${board?.dungeonRecords} dungeon records, pieces=${board?.dungeonPieces}`);
   const offers = await page.evalJs('window.__debug.radiantRefresh()');
   check('the board posts work', offers?.length >= 2, `${offers?.length} offers: ${offers?.map((o) => o.kind).join(', ')}`);
   check('every posting aims at a place the game can open', offers?.every((o) => /^\d{8}\.MIF$/.test(o.targetMif ?? '') || o.kind === 'deliver'),
@@ -562,7 +1091,16 @@ async function suiteRadiant(page) {
   check('the work cannot be done from somewhere else', JSON.parse(wrongPlace).ok === false, JSON.parse(wrongPlace).reason);
   const arriving = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('arrive', { where: ${JSON.stringify(active.target)} }))`);
   check('reaching the target is recorded', JSON.parse(arriving).ok === true, active.target);
-  const done = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: ${JSON.stringify(active.target)} }))`);
+  const done = await page.evalJs(`JSON.stringify((() => {
+    let result;
+    const active = window.__debug.radiant().active;
+    if (active.kind === 'slay') {
+      for (const encounterId of active.combat.ids) result = window.__debug.radiantEvent('killed', {
+        where: active.target, questId: active.id, monster: active.combat.monster, encounterId,
+      });
+    } else result = window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: active.target });
+    return result;
+  })())`);
   check('the job is finished at its own target', JSON.parse(done).ok === true, `${finish} at ${active.target}`);
   const early = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('return', { where: ${JSON.stringify(active.target)} }))`);
   check('the reward is not paid away from the giver', JSON.parse(early).ok === false, JSON.parse(early).reason);
@@ -682,7 +1220,66 @@ async function suiteStory(page) {
   check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
 }
 
-const SUITES = { testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity, worldmap: suiteWorldMap, radiant: suiteRadiant, story: suiteStory };
+const SUITES = {
+  testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity,
+  worldmap: suiteWorldMap, radiant: suiteRadiant, story: suiteStory,
+  // Character creation lives in its own module: it is long, it is a flow rather
+  // than a scene check, and keeping it here would bury the other suites.
+  chargen: makeChargenSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The fight is its own flow too: it needs a real key, a real click and a real monster.
+  combat: makeCombatSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  actioncombat: makeActionCombatSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  scenevisuals: makeSceneVisualsSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
+  dungeonplay: makeDungeonPlaySuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  bounties: makeBountiesSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // And the whole main quest is its own flow: eighteen page loads, one `E` key per beat,
+  // and the ending. It is the suite that proves the game can be finished.
+  mainquest: makeMainQuestSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The town's people: a city is not a dungeon, and talking is its own interaction.
+  townsfolk: makeTownsfolkSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // And the buildings themselves: a sign over a doorway, the room behind it, the keeper
+  // in it, and the street the player comes back out onto.
+  doors: makeDoorsSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The chasm's own surface — the harbour and a lava lake, drawn from the install's own
+  // fields and checked by pixels — and where the first-person weapon stands.
+  world: makeWorldSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // Who knows the player: the regard ledger, the hand-in a person pays for, and the street
+  // that turns on somebody who cuts one of its own down.
+  regard: makeRegardSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // `Escape`: the pause menu, and the one button in the game that throws a character away
+  // (New Game, which has to go back through creation **in this page** — the player's folder
+  // cannot survive a navigation).
+  menu: makeMenuSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The pack, the spellbook and casting: the third of the game a player touches every minute,
+  // and the one a player reported missing ("there is no magic or inventory").
+  gear: makeGearSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The guilds: membership through a real keeper conversation, standing earned by real
+  // completed work, the saved ledger, and a hostile town refusing the stranger. The rank
+  // LAW behind it is the twin's own (`tests/unit/guild.test.mjs`); this is where it is
+  // true on screen.
+  guilds: makeGuildsSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The shop's counter: the visit's own stock and its haggle — the pure law's face in a page.
+  commerce: makeCommerceSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The living world: the town's clock, the hours its trades keep, the day its people live,
+  // and the watch. **It was written and never registered** — a suite nothing runs is a suite
+  // that has never once been green, so it is listed here with the rest.
+  living: makeLivingSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng, brightness }),
+  // The dungeons the install does not ship: 128 of Tamriel's 144 dungeon records are
+  // *assembled* out of the pieces this install does have (`game/dungeonPlan.js`), and this is
+  // the only suite that ever enters one. It is the reported defect's own suite — "you find
+  // yourself blocked off as soon as you enter, or part of the dungeon leads off the map" —
+  // and it is here rather than in the unit tests because the level a player meets is the
+  // level the *decoder*, the mesher and the collider built, not the voxels the pass wrote.
+  generated: makeGeneratedSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The level-up: the other half of the experience the fight has been paying since the
+  // monsters learned UESP's EExp rule. A real `F`, a real threshold, the number keys a
+  // player has, and the character a reload loads.
+  progression: makeProgressionSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The install's own movies: the FLIC reader every other suite has never called, played on
+  // a page — Arena's art, the file's own pacing, a key to skip, and an honest refusal for a
+  // name the install does not ship. `src/scenes/cutscenePlayer.js` is the caller.
+  cutscene: makeCutsceneSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
+};
 
 async function main() {
   if (!findBrowser()) {
@@ -696,8 +1293,18 @@ async function main() {
   const page = await launch({ width: 960, height: 600 });
   try {
     for (const name of names) {
-      if (!SUITES[name]) { console.log(`unknown suite: ${name}`); continue; }
+      if (!SUITES[name]) { check(`known suite: ${name}`, false, 'unknown suite requested'); continue; }
       console.log(`\n── ${name} ──`);
+      // **A suite starts from a clean save.** The suites share one browser profile for the
+      // whole run, and the game writes what the player wields back to the save file when a
+      // weapon changes (`__debug.setWeapon` is a shop's hand-off, and the shop's hand-off
+      // persists). The `world` suite ends by wielding a mace and then a *flail* — a weapon
+      // this install ships no art for — so the suite that ran next booted its dungeon with a
+      // flail in hand and its checks ("the sheet is the one Arena names for the weapon in
+      // hand", "the drawn frame is really painted") failed on a state no player ever sees:
+      // the weapon the previous suite left behind. Measured, not guessed: passing one suite
+      // alone passed, passing `world` before it failed.
+      try { await page.evalJs('try { localStorage.clear(); } catch (e) { null; }'); } catch { /* no page yet */ }
       try {
         await SUITES[name](page);
       } catch (e) {

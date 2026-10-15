@@ -16,7 +16,8 @@ import { decodeType08 } from '../../src/arena/decompress.js';
 import { decryptInf, parseInfText } from '../../src/arena/infFile.js';
 import { parseImg } from '../../src/arena/image.js';
 import { decodeLevel } from '../../src/game/mifLevel.js';
-import { ARENA_TEXTURE_ARCHIVE, buildLevelMesh } from '../../src/game/mifMesh.js';
+import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, CHASM_DEPTH, buildLevelMesh } from '../../src/game/mifMesh.js';
+import { STEP_OFFSET } from '../../src/engine/player/motor.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 
 const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
@@ -188,11 +189,18 @@ test('buildLevelMesh emits correctly wound, collidable geometry', async () => {
   }
   assert.equal(wrong, 0, `${wrong} triangles are wound against their own normal`);
 
-  // The collider is the same triangle soup, so geometry and collision cannot drift.
+  // The collider is the same triangle soup, so geometry and collision cannot drift:
+  //
+  //     collider quads = drawn quads − drawn-but-not-solid + collision-only quads
+  //
+  // Every quad is accounted for, which is a stronger claim than "the collider is a subset
+  // of the mesh" was — and the collision-only quads are the floors under solid boxes, an
+  // invisible quad each, which is the price of no cell being bottomless (see below).
   assert.ok(built.collider.indices.length > 0);
   assert.equal(built.collider.positions.length % 3, 0);
-  assert.ok(built.collider.indices.length <= built.model.indices.length,
-    'the collision soup can only be a subset of the drawn geometry');
+  assert.equal(built.stats.colliderTris / 2,
+    built.stats.quads - built.stats.drawnNotSolid + built.stats.colliderOnlyQuads,
+  'every drawn quad and every invisible one is accounted for in the collision soup');
 
   // Non-colliding decor must be excluded from the soup. A wooden arch with its
   // collider bit clear (0x9 with bit 0x100 set) is the documented case; this map
@@ -212,6 +220,139 @@ test('buildLevelMesh emits correctly wound, collidable geometry', async () => {
   assert.equal(decor.collider.indices.length, bare.collider.indices.length,
     'a non-solid arch must add nothing to the collision soup');
   assert.ok(decor.model.indices.length > bare.model.indices.length, 'but it must still be drawn');
+});
+
+test('main-story vertical textures are upright and read left-to-right on every front face', async () => {
+  for (const name of ['START.MIF', '39300577.MIF', '41649375.MIF', 'IMPPAL.MIF']) {
+    const mif = await data.mif(name);
+    for (const raw of mif.levels) {
+      const inf = await data.inf(raw.info);
+      const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+      const built = buildLevelMesh(level);
+      let faces = 0;
+      for (const mesh of [built.model, ...built.doors.map(door => door.model)]) {
+        const { positions: p, normals: n, uvs: uv } = mesh;
+        for (let base = 0; base < p.length / 3; base += 4) {
+          if (Math.abs(n[base * 3 + 1]) > 0.01) continue;
+          let du = 0, dv = 0;
+          const rightX = -n[base * 3 + 2], rightZ = n[base * 3];
+          const meanU = [0,1,2,3].reduce((s, j) => s + uv[(base+j)*2], 0) / 4;
+          const meanV = [0,1,2,3].reduce((s, j) => s + uv[(base+j)*2+1], 0) / 4;
+          for (let j = 0; j < 4; j++) {
+            const i = base + j;
+            du += (p[i*3] * rightX + p[i*3+2] * rightZ) * (uv[i*2] - meanU);
+            dv += p[i*3+1] * (uv[i*2+1] - meanV);
+          }
+          assert.ok(du > 0 && dv > 0, `${name}: face ${base/4} mirrored or inverted (${du}, ${dv})`);
+          faces++;
+        }
+      }
+      assert.ok(faces > 100, `${name} exercises dungeon walls`);
+    }
+  }
+});
+
+test('a chasm is a pool below the surface, and shallow enough to walk out of', async () => {
+  // The original draws a chasm as a bed below the surface with a bank around it
+  // (`ArenaChasmUtils`: a wet or lava chasm may be swum in). The Imperial Dungeons hold
+  // 264 wet-chasm cells — the water the player reported as a flat black plane — and this
+  // checks the three things that make it read as water instead.
+  const mif = await data.mif('START.MIF');
+  const level = mif.levels[0];
+  const inf = await data.inf(level.info.toUpperCase());
+  const decoded = decodeLevel(level, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+  const built = buildLevelMesh(decoded);
+  const chasms = decoded.cells.filter((c) => c.floor.chasm);
+  assert.ok(chasms.length > 100, `${chasms.length} chasm cells in START.MIF`);
+
+  // One bed per chasm cell, and the surface above it is open — a pool is not a floor with
+  // a sliver of geometry in it.
+  assert.equal(built.stats.chasmBeds, chasms.length, 'every chasm cell gets exactly one bed');
+  // A **door** is in this list of exceptions and not in the boxes': the cells that get no
+  // surface floor are the boxes that hide their own, and a door hides nothing — the
+  // threshold under a doorway is drawn, because the door swings off it (`mifMesh.js`).
+  const surfaceFloorCells = decoded.cells.filter((c) => !c.floor.chasm
+    && !(c.solid && ['wall', 'transparent', 'diagonal'].includes(c.kind))).length;
+  assert.equal(built.stats.floorQuads, surfaceFloorCells, 'no chasm cell is given a surface floor');
+
+  // The depth is the motor's own step offset or less, so the pool can never trap a player.
+  assert.ok(CHASM_DEPTH <= STEP_OFFSET, `a chasm is ${CHASM_DEPTH} m deep, the motor steps ${STEP_OFFSET} m`);
+
+  // Every bed vertex sits exactly `CHASM_DEPTH` under the floor, every bank vertex climbs
+  // from the bed to the surface, and both are in set collision: the geometry and the
+  // collider are one triangle soup, so a pool cannot be drawn somewhere it cannot be felt.
+  const surface = decoded.floorY * CELL_SIZE;
+  const bed = surface - CHASM_DEPTH;
+  const { positions, normals, indices } = built.model;
+  // Every *quad* is two triangles over four vertices, so the sides can be read off the
+  // index buffer: a bed quad has four vertices at the bed height and a normal that points
+  // up, a bank quad has two at the bed and two at the surface with a level normal — and
+  // that span is the depth exactly, which is the whole point of the constant.
+  let beds = 0, banks = 0;
+  const yOf = (vertex) => positions[vertex * 3 + 1];
+  for (let t = 0; t < indices.length; t += 3) {
+    const quad = [indices[t], indices[t + 1], indices[t + 2]];
+    if (t % 6) continue;                                       // one pass per quad
+    const four = [...quad, indices[t + 3], indices[t + 4], indices[t + 5]];
+    const ys = [...new Set(four.map(yOf))];
+    const normal = [normals[quad[0] * 3], normals[quad[0] * 3 + 1], normals[quad[0] * 3 + 2]];
+    if (ys.length === 1 && Math.abs(ys[0] - bed) < 1e-6 && normal[1] > 0.99) beds++;
+    if (ys.length === 2 && Math.abs(Math.min(...ys) - bed) < 1e-6
+      && Math.abs(Math.max(...ys) - surface) < 1e-6 && Math.abs(normal[1]) < 0.01) banks++;
+  }
+  assert.equal(beds, chasms.length, 'every chasm cell has one upward-facing bed');
+  assert.equal(banks, built.stats.chasmWalls, 'and the banks it needs, each spanning the depth');
+  assert.ok(indices.length > 0 && built.collider.indices.length > 0, 'the pool is collidable');
+});
+
+test('no cell of a level is bottomless', async () => {
+  // The worst bug this project has had: a cell could hold *nothing* at or below its own
+  // floor height once the mesher had skipped the floor of a solid box (the box hides it),
+  // so a player who ended up inside one — by a teleport, by a level's own start point, by
+  // a monster's shove — fell through the world and never landed. Measured on the real maps
+  // before the fix: 1 509 bottomless cells in `START.MIF` (1 495 walls and 14 doors — a
+  // solid box's floor is skipped, and so is its cap when the level's MAP2 ceilings it),
+  // and 4 793 in `39300577.MIF`.
+  for (const [mifName, mapType] of [['START.MIF', 'interior'], ['39300577.MIF', 'interior']]) {
+    const mif = await data.mif(mifName);
+    const level = mif.levels[0];
+    const inf = await data.inf(level.info.toUpperCase());
+    const decoded = decodeLevel(level, inf, { width: mif.width, depth: mif.height, mapType });
+    const built = buildLevelMesh(decoded);
+
+    // Every solid box gets a collision-only floor, no more and no fewer — a **door**
+    // excepted, since its floor is the drawn threshold of a doorway rather than a hidden
+    // slab under a wall (and its own triangles are the door's, `built.doors`, not the
+    // level's: `mifMesh.js`'s door bundles).
+    const boxes = decoded.cells.filter((c) => c.solid && !c.floor.chasm
+      && ['wall', 'transparent', 'diagonal'].includes(c.kind) && c.yOffset <= 1e-4).length;
+    assert.equal(built.stats.colliderOnlyQuads, boxes, `${mifName}: collision floors under solid boxes`);
+
+    // And so every cell has something level to stand on at or below the floor plane: a
+    // ceiling or a box's cap is *above* it and cannot hold a player up.
+    const S = CELL_SIZE;
+    const walkable = decoded.floorY * S + 1e-3;
+    const covered = new Uint8Array(decoded.width * decoded.depth);
+    const { positions, indices } = built.collider;
+    for (let t = 0; t < indices.length; t += 3) {
+      const [a, b, c] = [indices[t], indices[t + 1], indices[t + 2]];
+      const ys = [positions[a * 3 + 1], positions[b * 3 + 1], positions[c * 3 + 1]];
+      if (ys[0] > walkable || Math.abs(ys[0] - ys[1]) > 1e-6 || Math.abs(ys[0] - ys[2]) > 1e-6) continue;
+      const xs = [positions[a * 3], positions[b * 3], positions[c * 3]];
+      const zs = [positions[a * 3 + 2], positions[b * 3 + 2], positions[c * 3 + 2]];
+      for (let row = Math.floor(Math.min(...xs) / S); row <= Math.floor((Math.max(...xs) - 1e-6) / S); row++) {
+        for (let col = Math.floor(Math.min(...zs) / S); col <= Math.floor((Math.max(...zs) - 1e-6) / S); col++) {
+          if (row < 0 || col < 0 || row >= decoded.depth || col >= decoded.width) continue;
+          covered[row * decoded.width + col] = 1;
+        }
+      }
+    }
+    const missing = [];
+    for (let i = 0; i < covered.length; i++) {
+      if (!covered[i]) missing.push(`row ${Math.floor(i / decoded.width)} col ${i % decoded.width} (${decoded.cells[i].kind})`);
+    }
+    assert.deepEqual(missing.slice(0, 5), [], `${mifName}: ${missing.length} cells have nothing under them`);
+  }
 });
 
 test('MIF dimensions and cell scale are sane', async () => {
@@ -280,6 +421,55 @@ test('IMG decoding handles the raw 64x64 wall form and headered forms', async ()
   assert.ok(rawWalls > 5, `expected raw 4096-byte wall images, saw ${rawWalls}`);
   assert.ok(headered > 20, `expected headered images, saw ${headered}`);
   void source;
+});
+
+test('a city block\'s upper floors are mass Arena stores, and are drawn as storeys', async () => {
+  // **The buildings were one storey tall because the decoder threw this away.** A `MAP2`
+  // voxel is not just "there is a lid here": it carries a height class (1…4 voxel layers)
+  // and its own texture, and in a city that mass *is* the building above its ground floor.
+  // Measured over the install's block `.MIF`s: 356 of 368 hold more than one layer.
+  const inf = await data.inf('TCN.INF');
+  const mif = await data.mif('BSBD13B.MIF');
+  const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'city' });
+
+  const stocked = level.cells.filter((c) => c.upperLayers > 0);
+  const tall = level.cells.filter((c) => c.upperLayers > 1);
+  const layers = stocked.reduce((n, c) => n + c.upperLayers, 0);
+  assert.ok(stocked.length > 20, `only ${stocked.length} cells carry mass above the ground floor`);
+  assert.ok(tall.length > 0, 'this block should hold at least one cell taller than one storey');
+  assert.ok(layers > stocked.length, `the mass should be more than one layer per cell, saw ${layers} over ${stocked.length} cells`);
+  assert.ok(stocked.every((c) => c.ceiling && c.ceilingTexture >= 0), 'every mass cell is also a ceiling, with art');
+
+  // Drawn: the flag adds geometry and the roofs stand above the ceiling line.
+  const flat = buildLevelMesh(level, { upperStoreys: false });
+  const built = buildLevelMesh(level, { upperStoreys: true });
+  assert.equal(built.stats.upperBoxes, stocked.length, 'one box per cell that holds mass');
+  assert.equal(built.stats.upperLayers, layers, 'and one drawn layer per layer of mass');
+  assert.equal(built.stats.roofQuads, stocked.length, 'and one roof per box');
+  assert.ok(built.model.indices.length > flat.model.indices.length, 'the storeys must be drawn');
+  // Every storey quad is non-colliding: the mass starts a full storey above the floor, so
+  // the player can never touch it, and the collision soup is left exactly as it was.
+  assert.equal(built.collider.indices.length, flat.collider.indices.length,
+    'the upper floors must add nothing to the collision soup');
+  assert.equal(built.stats.drawnNotSolid - flat.stats.drawnNotSolid, built.stats.upperBoxes * 5,
+    'each box is four sides and one roof, all drawn and none solid');
+  let highest = -Infinity;
+  for (let i = 1; i < built.model.positions.length; i += 3) highest = Math.max(highest, built.model.positions[i]);
+  assert.ok(highest >= (level.ceilingY + 2) * CELL_SIZE,
+    `the tallest roof should be two storeys above the ceiling, saw y=${highest}`);
+
+  // A dungeon is the control: its `MAP2` is the stone above a ceiling, so the flag must
+  // change nothing at all there.
+  const dungeonInf = await data.inf('HALLS1.INF');
+  const dungeonMif = await data.mif('39300577.MIF');
+  const dungeon = decodeLevel(dungeonMif.levels[0], dungeonInf, {
+    width: dungeonMif.width, depth: dungeonMif.height, mapType: 'interior',
+  });
+  const dungeonFlat = buildLevelMesh(dungeon, { upperStoreys: false });
+  const dungeonBuilt = buildLevelMesh(dungeon, { upperStoreys: true });
+  assert.equal(dungeonBuilt.model.indices.length, dungeonFlat.model.indices.length,
+    'an interior draws no upper storeys');
+  assert.equal(dungeonBuilt.stats.upperBoxes, 0);
 });
 
 /** Byte offset of a four-character MIF chunk tag. */

@@ -246,6 +246,16 @@ export async function buildCityLevel(opts) {
     name: skeleton.name ?? '',
     info: '',                       // a city's INF comes from the location, not the map
     numf: skeleton.numf ?? 0,
+    // **The assembled level carries its own size.** The skeleton's planes do
+    // (`mif.levels[0]` has no width either — the `.MIF` header does), but everything
+    // that reads a level's planes *back* indexes them `row * width + col`, and the
+    // wilderness does exactly that: `reviseCityQuarter` reads the live city to build
+    // the settlement's quarter of the country, and without these two fields its index
+    // came out `NaN`, every lookup `undefined`, and the quarter was written **empty** —
+    // so the country outside a city had no wall in it at all: walk out of the gate and
+    // the settlement vanished behind you. Caught by standing in `TOWN1`'s gate, walking
+    // into the wilds and finding grass where the wall should be.
+    width, depth,
     flor, map1, map2,
     flat: skeleton.flat ?? null,
     inns: skeleton.inns ?? null,

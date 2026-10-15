@@ -52,7 +52,10 @@ export const MAX_TEXTURE_SLOT = 16;
  * @property {InfVoxelTexture[]} voxelTextures  the ordered floor+wall table
  * @property {string[]} flatTextures
  * @property {InfFlat[]} flats
- * @property {string[]} sounds
+  * @property {{file:string, index:number}[]} sounds  `@SOUND` lines: the filename and
+ *                  the **slot number** the line itself carries (`"CLANK.VOC 4"`), the
+ *                  number a `TRIG` cell's sound byte names. Measured against
+ *                  `halls1.inf`–`halls3.inf` from the install their own bytes point at.
  * @property {(number|null)[]} boxCaps   `*BOXCAP` n -> voxelTextures index
  * @property {(number|null)[]} boxSides
  * @property {(number|null)[]} menus
@@ -158,7 +161,16 @@ export function parseInfText(text, name = '') {
     if (section === 'floors') floor = parseFloorLine(line, inf, floor, () => { sawCeiling = true; });
     else if (section === 'walls') wall = parseWallLine(line, inf, wall);
     else if (section === 'flats') flat = parseFlatLine(line, inf, flat);
-    else if (section === 'sound') inf.sounds.push(line.toUpperCase());
+    else if (section === 'sound') {
+      // Every line is `SOUNDNAME.VOC <slot>` — the slot number the line carries is
+      // what a `TRIG` cell's sound byte refers to (measured against the install's
+      // own `halls1.inf`–`halls3.inf`). A malformed line keeps its filename at slot
+      // -1 rather than being dropped, so a level its bytes name is still readable.
+      const space = line.lastIndexOf(' ');
+      const index = space >= 0 ? Number.parseInt(line.slice(space + 1).trim(), 10) : NaN;
+      const file = (space >= 0 ? line.slice(0, space) : line).trim().toUpperCase();
+      inf.sounds.push({ file, index: Number.isFinite(index) ? index : -1 });
+    }
     else if (section === 'text') txt = parseTextLine(line, txt, flushText);
   }
   flushText();

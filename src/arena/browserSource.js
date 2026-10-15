@@ -146,13 +146,18 @@ export function pickArenaFolder(opts = {}) {
       onProgress(`found ${source.files.size} files`);
       finish(source);
     });
-    // Cancelling a file picker fires no event in most browsers; the caller's
-    // overlay offers a retry, so a dismissed dialog simply never resolves.
-    window.addEventListener('focus', () => {
-      setTimeout(() => {
-        if (!settled && (!input.files || !input.files.length)) finish(null);
-      }, 1000);
-    }, { once: true });
+
+    // **A dismissed dialog, and nothing else.** The first version of this armed a
+    // `focus` listener with a one-second timeout that resolved with `null` when the
+    // input still had no files — on the theory that a window which had stopped being
+    // blurred must have been left by the picker. It fires if the page so much as
+    // regains focus while the dialog is *open*, and one second later it cancelled a
+    // selection the player was still making: the overlay said "No folder chosen. Reload
+    // to try again", so a player who spent longer than a second finding their `ARENA`
+    // folder could not run the game at all. Current browsers fire `cancel` on the input
+    // when the dialog is dismissed, which is the honest signal; a browser without it
+    // simply never resolves, and the overlay offers the picker again.
+    input.addEventListener('cancel', () => finish(null));
 
     input.click();
   });

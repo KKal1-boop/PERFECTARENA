@@ -37,7 +37,7 @@
 //   MAP1   the most-significant *nibble* picks the kind:
 //          0x8  an entity (flat, NPC, door trigger) — no geometry
 //          0x9  transparent wall (arch)  texture = (id & 0xFF) − 1
-//          0xA  edge (fence, gate, sign) texture = (id & 0x3F) − 1, face = (id & 0xC0) >> 4,
+//          0xA  edge (fence, gate, sign) texture = (id & 0x3F) − 1, face = (id & 0xC0) >> 6,
 //               height = (id & 0xE00) >> 9, collides when bit 0x100 is set
 //          0xB  door                     texture = (id & 0x3F) − 1, kind = (id & 0xC0) >> 4
 //          0xC  undocumented             — treated as air
@@ -74,7 +74,7 @@ export const CHASM_WET = 0x0d;
 export const CHASM_LAVA = 0x0e;
 
 /**
- * `(id & 0xC0) >> 4` of a 0xA voxel → a face of the cell, in world axes.
+ * `(id & 0xC0) >> 6` of a 0xA voxel → a face of the cell, in world axes.
  * Index 0 is "north" as Arena labels it, which is −X in world space.
  */
 export const EDGE_FACES = Object.freeze([
@@ -107,10 +107,14 @@ export const DOOR_KINDS = Object.freeze(['swinging', 'sliding', 'raising', 'spli
  * @property {number} ySize          box height in metres (0 = up to the ceiling)
  * @property {number} facing         0..3 for edges and diagonals, -1 otherwise
  * @property {string|null} doorKind
+ * @property {'up'|'down'|null} stair  the stairway this wall is, if it is one
  * @property {boolean} solid         blocks the player?
  * @property {number} entityFlatIndex  MAP1 0x8 voxels' flat index, or -1
  * @property {boolean} ceiling
  * @property {number} ceilingTexture index, or -1
+ * @property {number} upperLayers    storeys of **mass above** the ceiling line (MAP2's height
+ *   class, 0 when the cell has none) — the building's upper floors, in the original's own data
+ * @property {boolean} upperRaised   true when MAP2's voxel is a raised box rather than a wall
  * @property {number} rawFlor
  * @property {number} rawMap1
  * @property {number} rawMap2
@@ -137,7 +141,11 @@ export const DOOR_KINDS = Object.freeze(['swinging', 'sliding', 'raising', 'spli
  *
  * @param {import('../arena/mifFile.js').MifLevel} level
  * @param {import('../arena/infFile.js').InfFile} inf
- * @param {{width:number, depth:number, mapType?:'interior'|'city'|'wilderness'}} opts
+ * @param {{width:number, depth:number, mapType?:'interior'|'city'|'wilderness', startPoints?:{x:number,y:number}[]}} opts
+ *   `startPoints` overrides the level's own start points (Arena keeps them in the `.MIF`
+ *   header, one set per *file* rather than per level) — a building entered through the
+ *   street door arrives at the `.MIF`'s own start point, which is the bottom of its entry
+ *   corridor, and a caller that wants the plain spiral simply leaves this out.
  * @returns {ArenaLevel}
  */
 export function decodeLevel(level, inf, opts) {
@@ -172,6 +180,7 @@ export function decodeLevel(level, inf, opts) {
       decodeFlor(cell, inf);
       decodeMap1(cell, inf, tables, mapType);
       decodeMap2(cell, inf, hasMap2);
+      cell.stair = stairKindOf(cell, inf);
 
       cells[i] = cell;
       stats[cell.kind] = (stats[cell.kind] ?? 0) + 1;
@@ -181,7 +190,8 @@ export function decodeLevel(level, inf, opts) {
     }
   }
 
-  const startPoints = (level.startPoints ?? []).map((p) => ({ x: p.y / ARENA_UNITS, z: p.x / ARENA_UNITS }));
+  const startPoints = (opts.startPoints ?? level.startPoints ?? [])
+    .map((p) => ({ x: p.y / ARENA_UNITS, z: p.x / ARENA_UNITS }));
   const spawn = pickSpawn(cells, width, depth, startPoints, floorY);
 
   return {
@@ -199,8 +209,9 @@ function makeCell(x, z) {
     kind: 'air',
     sideTexture: -1, capTexture: -1, bottomTexture: -1,
     yOffset: 0, ySize: 0, facing: -1, doorKind: null, solid: false,
+    stair: null,
     entityFlatIndex: -1,
-    ceiling: false, ceilingTexture: -1,
+    ceiling: false, ceilingTexture: -1, upperLayers: 0, upperRaised: false,
     rawFlor: 0, rawMap1: 0, rawMap2: 0,
   };
 }
@@ -256,6 +267,54 @@ function decodeFlor(cell, inf) {
   if (flat > 0) cell.floor.flatIndex = flat - 1;
 }
 
+/**
+ * Is this raw MAP1 voxel a **wall** — the `most === least` block the mesher draws solid?
+ *
+ * **The one reading of a voxel.** This is `decodeMap1`'s own wall branch lifted out, because a
+ * second copy of it grew in `game/dungeonPlan.js` and the two disagreed: that copy also demanded
+ * the voxel's high nibble be `0`, and the pieces this install ships build their walls out of
+ * **nibble 1 and 3** cells (`0x1717`, `0x1a1a`, `0x3b3b` — the decoder reaches their `most ===
+ * least` branch without ever looking at the nibble). So the copy found no wall at all in a real
+ * dungeon: `dungeonPlan.commonWallVoxel` answered `0` for every assembled level, the boundary
+ * pass sealed nothing, and `stampExit` refused every real wall.
+ *
+ * @param {number} id  a raw `MAP1` value
+ * @returns {boolean}
+ */
+export function isWallVoxel(id) {
+  if (!id) return false;                                   // air
+  const nibble = (id & 0xf000) >> 12;
+  // The shapes the decoder answers before it ever tests `most === least`: an entity (`0x8`, art
+  // on the floor), an arch (`0x9`), a fence or sign (`0xa`), a door (`0xb`), the undocumented
+  // air (`0xc`) and a diagonal (`0xd`) are all *not* a plain wall whatever their bytes say.
+  if (nibble >= 0x8 && nibble <= 0xd) return false;
+  if ((id & 0x8000) !== 0) return false;
+  return ((id & 0x7f00) >> 8) === (id & 0x007f);
+}
+
+/**
+ * Could a player stand in this cell, read off the **raw** voxels alone?
+ *
+ * `decodeLevel`'s own answer (`!cell.solid || cell.kind === 'door'`, and never on a chasm), for
+ * a caller that has not decoded the level yet — the dungeon assembler works on voxels, and this
+ * is the same reading the mesher, the collider and the player will get.
+ *
+ * @param {number} id     a raw `MAP1` value
+ * @param {{chasm?: boolean}} [opts]  the `FLOR` layer's own verdict for the cell
+ * @returns {boolean}
+ */
+export function rawPassable(id, opts = {}) {
+  if (opts.chasm) return false;
+  if (!id) return true;                                    // air
+  const nibble = (id & 0xf000) >> 12;
+  if (nibble === 0x8) return true;                         // art on the floor, not a wall
+  if (nibble === 0x9) return (id & 0x0100) === 0;          // an arch is solid only with 0x100 set
+  if (nibble === 0xa) return (id & 0x0100) === 0;          // a fence or a sign is solid only so
+  if (nibble === 0xb) return true;                         // a door, which the player opens
+  if (nibble === 0xc) return true;                         // the decoder's own air
+  return false;                                            // diagonal, raised, wall: solid
+}
+
 /** MAP1: the one geometry-bearing layer. */
 function decodeMap1(cell, inf, tables, mapType) {
   const id = cell.rawMap1;
@@ -287,7 +346,12 @@ function decodeMap1(cell, inf, tables, mapType) {
     const offsetUnits = mapType === 'interior' ? baseOffset * 8 : baseOffset * 32 - 8;
     cell.yOffset = offsetUnits / ARENA_UNITS;
     cell.ySize = 0;                                    // 0 = reaches the ceiling
-    cell.facing = (id & 0x00c0) >> 4;
+    // The face is bits 6–7, so the value is 0…3 and indexes `EDGE_FACES` directly. It was
+    // decoded as `(id & 0xC0) >> 4`, which yields 0/4/8/12, and only 0 is a face: the
+    // mesher's `EDGE_FACES[cell.facing] ?? EDGE_FACES[0]` then drew **three of the four
+    // orientations as north**. Measured on the real blocks — `EQBD9A.MIF`'s sign sits at
+    // face 4 (east) — so a shop's sign hung on the wrong wall of its doorway.
+    cell.facing = (id & 0x00c0) >> 6;
     cell.solid = (id & 0x0100) !== 0;
     return;
   }
@@ -344,20 +408,83 @@ function decodeMap1(cell, inf, tables, mapType) {
   cell.solid = true;
 }
 
+/**
+ * Is this cell a **stairway**, and which way does it go?
+ *
+ * The `.INF` says which of its own voxel textures means "up" and which means "down"
+ * (`@WALLS`'s `*LEVELUP`/`*LEVELDOWN` directives, parsed as `levelUpIndex`/`levelDownIndex`),
+ * and the map data then uses those textures at the stairways — so a stair is a **wall cell
+ * whose side texture is the INF's own stair art**, and reading it off the texture is the
+ * original's own rule.
+ *
+ * Measured over the install, that is exactly what the cells are: `NOBLE1`'s upper floor
+ * carries `CASU.IMG` at (9,1) and its ground floor `CASD.IMG` where it comes back down,
+ * `TAVERN1` `ISUP.IMG` at (7,1) and `ISDN.IMG` below it, `BS1` and `MAGE1` the same pair,
+ * and the Halls of Colossus `STAIRUP.IMG`/`STAIRDWN.IMG` — **at the same cell in the two
+ * levels it joins** (level 0 has seven `STAIRDWN` cells at exactly the cells level 1 has
+ * seven `STAIRUP` ones). The last level's own up-stair leads out of the building or out of
+ * the dungeon, which is why `START.MIF`'s single stair is `GATE.IMG` — the Imperial
+ * Dungeons' way out to the world — and why the cities' own `*LEVELUP` art is a gate.
+ *
+ * `down` is the higher level index and `up` the lower one: a file's levels are stored
+ * top-down and its `startingLevelIndex` is the **ground floor** (`NOBLE1` starts on its
+ * third level, 2, and its stair at index 2 is an up one).
+ *
+ * @param {LevelVoxel} cell
+ * @param {import('../arena/infFile.js').InfFile|null} inf
+ * @returns {'up'|'down'|null}
+ */
+export function stairKindOf(cell, inf) {
+  if (cell.kind !== 'wall' || cell.sideTexture < 0 || !inf) return null;
+  if (inf.levelUpIndex !== null && cell.sideTexture === inf.levelUpIndex) return 'up';
+  if (inf.levelDownIndex !== null && cell.sideTexture === inf.levelDownIndex) return 'down';
+  return null;
+}
+
 /** MAP2: whether there is a ceiling over this cell, and its texture. */
 function decodeMap2(cell, inf, hasMap2) {
   if (!hasMap2) {
     // Without MAP2 the INF's ceiling covers the whole level, unless the INF says
     // this is an outdoor dungeon.
     if (inf && !inf.ceiling.outdoorDungeon) {
+      // The INF's own ceiling texture, or **voxel texture 0** when its `@FLOORS`
+      // section has no `*CEILING` line at all — which is the case in `START.INF`, the
+      // Imperial Dungeons. That file left every ceiling quad without a material and
+      // the mesher's `group(null)` dropped all 2 500 of them, so the game opened onto
+      // a black void instead of a ceiling. OpenTESArena's ceiling builder does exactly
+      // this fallback (`MapGeneration.cpp`: `ceiling.textureIndex.value_or(0)`), and
+      // one texture later in this same install — `HALLS1.INF` — sets index 0 too.
       cell.ceiling = true;
-      cell.ceilingTexture = voxelIndexOf(inf, inf.ceiling.textureIndex ?? null);
+      cell.ceilingTexture = voxelIndexOf(inf, inf.ceiling.textureIndex ?? 0);
     }
     return;
   }
   if (!cell.rawMap2) return;
   cell.ceiling = true;
   cell.ceilingTexture = voxelIndexOf(inf, (cell.rawMap2 & 0x007f) - 1);
+  // ── THE STOREYS ABOVE ─────────────────────────────────────────────────────
+  //
+  // MAP2 is not only "there is a lid here": its voxel carries a **height class**
+  // (`map2HeightClass`, OpenTESArena's `ArenaLevelUtils::getMap2VoxelHeight`), which is
+  // how many voxel layers of solid mass this cell holds above the playable layer. In a
+  // city that mass *is the building*: a `BSBD*`/`NBBD*`/`EQBD*` block's ground floor is
+  // in MAP1 and its upper floors and tower are in MAP2, one to three layers thick. The
+  // measurement is unambiguous — of the install's 368 block `.MIF`s, **356 carry mass
+  // taller than one layer**, 13 292 voxels of class 2 and 1 624 of class 3
+  // (`tools/tmp-map2.mjs`). A decoder that reads MAP2 only as "ceiling yes/no" throws
+  // exactly that away, which is why every city building came out one storey tall with a
+  // flat lid on it however much mass the data put above it.
+  //
+  // The voxel's own texture is the mass's own texture (the same `(id & 0x7F) - 1` the
+  // ceiling uses), so a storey is drawn with the art the block asked for.
+  // **The nibble is not a kind.** MAP2 has no entity/door/fence nibbles the way MAP1 does:
+  // its `(id & 0x3F)` is an INF texture index, so bits 12–13 are part of the *texture* and
+  // a guard that read them as a kind threw every real block away (measured: `0x2B2B` failed
+  // `(id & 0xF000) === 0`, so all 368 blocks decoded to zero storeys). What separates the
+  // two forms is the one thing MAP2 does encode: a plain mass has `most === least`, and a
+  // raised box's two bytes are a `*BOXSIDE`/`*BOXCAP` slot pair.
+  cell.upperLayers = map2HeightClass(cell.rawMap2);
+  cell.upperRaised = ((cell.rawMap2 & 0x7f00) >> 8) !== (cell.rawMap2 & 0x7f);
 }
 
 /**

@@ -11,9 +11,25 @@ const SRC = process.env.ENGINE_SRC || 'C:/arenaproject/daggerfall/src';
 const DST = path.resolve('src/engine');
 const ROOT = new URL('../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
-// Entry modules for Milestone 2 (the booted path). More are added as milestones need them.
+// ⚠ A FULL RUN IS NOT SAFE WHILE ANYTHING UNDER src/engine/ IS FORKED. The promise in
+// `docs/ARCHITECTURE.md` — `src/engine/` is verbatim Daggerfall and Arena-specific work
+// lives in `src/arena/`, `src/game/` and `src/scenes/` — was broken early and has stayed
+// broken: `render/renderer.js` alone carries ~1 900 lines of PERFECTARENA work (the CUT1
+// cutout uniform and its sub-mesh flag, the Arena texture record rules, the billboard
+// passes). Copying over it silently deletes all of that. Run `git diff --stat src/engine`
+// first and copy modules one at a time (`--only=render/precipitation.js`) unless the fork
+// has been moved out; the list below is the *closure this project wants*, not a set of
+// files that are still identical to the twin's.
+const ONLY = process.argv.find((a) => a.startsWith('--only='))?.slice('--only='.length) ?? null;
+
+// Entry modules for Milestone 2 (the booted path), plus the ports added since: more are
+// added as milestones need them. `render/precipitation.js` (AUDIT 58's rain and snow) is
+// the first of the twin's *renderers* rather than its base engine — it compiles its own
+// program through `glProgram.js` and imports nothing else, so Arena can drive it from its
+// own weather letters (`game/arenaSky.js`).
 const ENTRIES = [
   'render/renderer.js',
+  'render/precipitation.js',
   'render/skyRenderer.js',
   'world/mat4.js',
   'world/quat.js',
@@ -79,7 +95,7 @@ function visit(rel) {
   }
 }
 
-for (const e of ENTRIES) visit(e);
+for (const e of ONLY ? [ONLY] : ENTRIES) visit(e);
 
 console.log(`closure: ${seen.size} modules`);
 console.log(`vite-only constructs: ${globs.size ? [...globs].join(', ') : 'none'}`);
@@ -87,6 +103,11 @@ console.log(`bare/unresolved imports: ${bare.size ? [...bare].join(', ') : 'none
 console.log(`missing files: ${missing.size ? [...missing].join(', ') : 'none'}`);
 
 if (check) process.exit(0);
+
+if (ONLY && !seen.size) {
+  console.error(`--only=${ONLY}: nothing resolved (is the path relative to daggerfall/src?)`);
+  process.exit(1);
+}
 
 let copied = 0;
 for (const rel of seen) {
@@ -102,5 +123,8 @@ console.log(`copied ${copied} modules into src/engine/`);
 const headFile = path.join(SRC, '..', 'buildTag.js');
 let tag = 'unknown';
 try { tag = fs.readFileSync(headFile, 'utf8').trim().slice(0, 200); } catch { /* none */ }
+if (ONLY) {
+  console.log(`(--only: provenance not rewritten)`);
+} else
 fs.writeFileSync(path.join(DST, 'PROVENANCE.md'),
   `# Engine provenance\n\nCopied verbatim from \`c:/arenaproject/daggerfall/src\` by\n\`tools/copy-engine.mjs\`. The daggerfall tree is read-only; do not edit\n\`src/engine/\` by hand — re-run the copy tool and put Arena-specific changes in\n\`src/arena/\`, \`src/game/\` or \`src/scenes/\`.\n\nEntry modules requested:\n\n${ENTRIES.map((e) => `- \`${e}\``).join('\n')}\n\nClosure size: ${seen.size} modules.\n\nbuildTag.js first line: \`${tag.split('\n')[0]}\`\n`);

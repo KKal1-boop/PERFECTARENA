@@ -38,18 +38,24 @@ const FOG_COLOR = new Float32Array([0.62, 0.68, 0.78]);
 /** DOM key code -> motor input field. */
 const KEYMAP = { KeyW: 'forward', KeyS: 'back', KeyA: 'strafeLeft', KeyD: 'strafeRight', Space: 'jump', ShiftLeft: 'run', ShiftRight: 'run', ControlLeft: 'crouch' };
 
-/** @param {KeyboardEvent|{code:string}} e @param {Set<string>} keys */
-function keyDown(e, keys) { if (e?.code) keys.add(e.code); }
+/** @param {KeyboardEvent|{code:string}} e @param {Set<string>} keys @param {Set<string>} pressed */
+function keyDown(e, keys, pressed) { if (e?.code) { if (!e.repeat && !keys.has(e.code)) pressed.add(e.code); keys.add(e.code); } }
 function keyUp(e, keys) { if (e?.code) keys.delete(e.code); }
 
 /**
  * Read the held-key set into the motor's input contract.
- * @param {Set<string>} keys
+ *
+ * `forward`/`strafe` are signed axes, so `S` is `forward: −1` — the boolean form the
+ * first version used meant `S` moved nothing (the movement code has no `back` arm).
+ * `crouch` is a **press edge**: the motor toggles the stance whenever the flag is set,
+ * and a held key flipped crouch/stand every 0.10 s. See the note in `scenes/interior.js`.
+ *
+ * @param {Set<string>} keys @param {Set<string>} pressed
  */
-function inputOf(keys) {
+function inputOf(keys, pressed) {
   const strafe = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
   return {
-    forward: keys.has('KeyW'),
+    forward: (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0),
     back: keys.has('KeyS'),
     strafe,
     up: keys.has('KeyE'),
@@ -57,7 +63,7 @@ function inputOf(keys) {
     jump: keys.has('Space'),
     run: keys.has('ShiftLeft') || keys.has('ShiftRight'),
     sneak: keys.has('ControlLeft'),
-    crouch: keys.has('KeyC'),
+    crouch: pressed.has('KeyC'),
     autoRun: false,
   };
 }
@@ -104,10 +110,12 @@ export async function bootTestMap(canvas, renderer, params, status) {
 
   const cam = { yaw: 0, pitch: 0 };
   const keys = new Set();
+  /** Keys that went down since the last step — the motor wants press edges. */
+  const pressed = new Set();
   const identityMat = identity();
 
   // ── input wiring ──────────────────────────────────────────────────────────
-  addEventListener('keydown', (e) => { keyDown(e, keys); if (e.code === 'Space') e.preventDefault(); releaseOnAnyKey(); });
+  addEventListener('keydown', (e) => { keyDown(e, keys, pressed); if (e.code === 'Space') e.preventDefault(); releaseOnAnyKey(); });
   addEventListener('keyup', (e) => keyUp(e, keys));
   addEventListener('blur', () => keys.clear());
   const releaseOnAnyKey = () => { if (document.pointerLockElement !== canvas) requestLook(canvas); };
@@ -157,7 +165,7 @@ export async function bootTestMap(canvas, renderer, params, status) {
     }),
     teleport: (x, y, z) => { motor.spawn(x, y, z); },
     look: (yaw, pitch = 0) => { cam.yaw = yaw; cam.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch)); },
-    input: (code, down = true) => { if (down) keys.add(code); else keys.delete(code); },
+    input: (code, down = true) => { if (down) { if (!keys.has(code)) pressed.add(code); keys.add(code); } else keys.delete(code); },
     keys: () => Array.from(keys),
     spawnPoint: () => spawn.slice(),
     /** Run the simulation forward without waiting for frames. */
@@ -182,10 +190,11 @@ export async function bootTestMap(canvas, renderer, params, status) {
   /** Advance the simulation by `dt` seconds of real time, fixed-step. */
   function step(dt) {
     lookFilter.tick(dt, cam);
-    const input = inputOf(keys);
+    const input = inputOf(keys, pressed);
     acc += Math.min(dt, MAX_FRAME_DT);
     let guard = 0;
     while (acc >= FIXED_DT && guard++ < 8) { motor.update(FIXED_DT, input, cam.yaw, cam.pitch); acc -= FIXED_DT; }
+    pressed.clear();   // the edges are this frame's (see inputOf)
     dbg.seconds += dt;
     dbg.frame++;
   }

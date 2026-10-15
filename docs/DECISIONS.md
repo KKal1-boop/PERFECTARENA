@@ -421,6 +421,228 @@ stem. `ITEMS` — a fetch quest's trinket — is **authored**, because Arena's
 equipment names live in `A.EXE` (D11); it is labelled AUTHORED in the source and in
 FORMATS. Logged as S20–S22 in PROGRESS.md.
 
+## D22 — Work is given by people, and by the board, from one generator and one state machine
+
+**Decision.** A settlement's people are job givers. Whoever the player speaks to (`T`) answers
+with a job drawn from the world data, the talk panel shows its prose, its purse and its
+deadline, and a button takes it. The offer is `personOffer` in `game/radiantQuests.js` — the
+same `generateQuest` the world map's board calls — keyed by **the person's own cell and the
+settlement's seed**, and the accept runs through **the same `applyRadiantEvent`** the board's
+button does. The board stays where it is: the map is still where a player *looks* for work,
+and the street is where it is *given*.
+
+**Rationale.** The request this project exists to answer names "radiant quests given by NPCs"
+as a feature, and the project had every part of it except the hand-off: a generator that
+cannot name a place the game cannot open, Arena's own artifact speeches, a state machine that
+refuses work done in the wrong place, and a town full of people who could only recite lines
+from `template.dat`. Making the generator reachable from a conversation is the smallest change
+that turns "a board" into "somebody asks you".
+
+**Alternatives rejected.**
+
+* **A separate quest system for people.** Two systems would drift — two idea of "one job at a
+  time", two rewards, two deadlines — and the project has one calendar and one journal. Sharing
+  the state machine means a street job and a board job are the *same* object, and a test can
+  drive either through the same events.
+* **Every conversation offering a job, always.** The panel says who is holding work instead:
+  the rules are one job at a time and a job is taken once, and a person who re-offers a job the
+  player already has in hand reads as a bug, not as generosity.
+* **Rerolling the offer each time.** Determinism is the safety net everywhere else in `game/`
+  (a save file is a seed, a test can name an offer) and it matters more here: a stranger whose
+  work changes when the player walks away and comes back is not a person with a problem, it is a
+  slot machine.
+
+**What is reconstructed.** The *voice* is the person's only by adjacency: the offer's prose is
+Arena's own where a bank of it exists (`artfact*.dat`, 372 offers) and this project's words
+where it does not, and the panel says which. What a person *looks like* still comes from their
+armour word, and they have no name (S30) — so an offer is "from the person in chain mail in
+Daggerfall", which is as far as the data goes.
+
+---
+
+## D23 — The world's opinion of the player is the twin's own law, ported
+
+**Decision.** A person's regard for the player is a number in a save, and the *law* that moves
+it is copied from the twin Daggerfall project rather than invented here:
+`daggerfall/src/systems/livingWorld/relations.js` — its thresholds (`FRIEND_AT` 40,
+`ENEMY_AT` −40, `HOSTILE_AT` −70), its easing (`EASE_PER_DAY` 0.5, and never across zero), its
+event table (`talk` +3 **once a day**, `job` +25, `gift` +8, `helped` +20, `saved` +35,
+`struck` −45, `crime` −15, `slain` −75), and its cap-and-forget rule (`PEOPLE_MAX`, the
+faintest and longest-unseen first, *as the regard stands* rather than as it was last written —
+the bug its own audit found). The record is plain JSON (`game/regard.js`) beside the character
+in `localStorage`, and the world map's board panel is the "who knows you" page the twin keeps
+in `livingWorld/people.js`.
+
+**Rationale.** Two projects share an engine here, and a rule that both games need is worth
+having **one** of. Daggerfall's living world is the twin's most-developed system (sixteen
+documented passes over it), its numbers are cited to the bible that set them, and a "friend"
+that means the same thing in both games is worth more than a bespoke number that means nothing
+anywhere. What is *not* copied is the identity: the twin keys a regard by a **census id**
+minted from a town's seed, and this port has no census — Arena ships no name tables (S30) — so
+a person here is `place#row,col` (`regard.personId`), the place they stand in and the cell they
+were placed on, which is already what the town's people and their jobs are keyed by.
+
+**Alternatives rejected.**
+
+* **Port the twin's `LivingWorld` module wholesale** (census, day plans, town paths, trips,
+the watch). It is 30-odd modules and its whole substrate — a persistent resident population
+with households, trades and a road network — is Daggerfall's data, which Arena does not have.
+What *is* portable is the part that is only arithmetic, and that is what was taken. The rest
+is item 2 and 4 of TWINS.md's ledger.
+* **A guild-reputation system instead** (the twin's `factionRep`/`guilds` shape). Reputation
+with an institution is not the same object as one person's opinion of a face, and the brief's
+request is about the *people* who give work: the man who asked is the man who should remember.
+* **Making the ledger part of the character record.** It is a separate save key because a
+street has no character in hand when it writes it, and because a new character should meet a
+world that has never heard of them.
+
+**Consequences, each of which the code owns rather than hides.** `strike()` falls on a
+**townsperson** when nothing else is in front (`strikeFolk`); a victim who falls gives every
+witness `slain`, so a murder in the street turns the town hostile; `stepHostileFolk` makes the
+hostile ones close and swing, with damage from the armour word in their file's name
+(`townsfolk.FIGHT_WORDS` — **this project's numbers, labelled as such**, scaled against
+`monsters.js`). The hand-in closed a real hole: `applyRadiantEvent`'s `return` had no caller in
+the game at all, so a finished job's purse was unreachable in normal play; a job given by a
+person is now paid by that person, and one posted on the board is paid by the town that posted
+it. Half of the twin's event table (`gift`, `helped`, `saved`) has nothing in this game to fire
+it yet, and is logged as S38.
+
+---
+
+## D21 — A building is entered through the sign over its door
+
+**Decision.** In a settlement the `0xA` edge that carries a **shop sign** is a doorway:
+stand in it and press `E` and the game loads the interior `.MIF` the `.INF`'s own `*MENU`
+slot names — `EQUIP<n>` for an equipment sign, `TAVERN<n>` for the tavern's, `MAGE<n>`,
+`TEMPLE<n>`, `NOBLE<n>` and `BS<n>` for the houses. Inside, the player arrives at the
+building's **own start point** (the `.MIF` header's), one of the install's people keeps
+the place, and `E` on the cell they arrived at puts them back on the street cell they went
+in by. Nothing else in the game changed: a dungeon's fences, gates and bookstands are
+edges too, and none of them opens.
+
+**Rationale.** The signs had been decoded and drawn since Milestone 4 and nothing read
+them, so the largest thing a city was missing was itself — you could walk Daggerfall's
+streets and not open a single door. Everything needed was already in the data set: the
+`.INF` names what each sign means, the block `.MIF`s draw them, and `GLOBAL.BSA` ships
+**eight interiors of each kind** with their own `.INF`s. There was no need to invent a shop.
+
+**What the data decides, and what is reconstructed.**
+
+* **The shop kind is the sign's**, read out of the `.INF`'s `*MENU` table
+  (FORMATS §8c): slot 0 is the equipment sign, 1 the tavern, 2 the Mages Guild, 3 the
+temple, 4–6 the houses, 9 a noble house — and a slot binds *both* its own index and the
+next one, because the blocks draw `T_TEQ.IMG` at index 6 where the table names
+`T_DEQ.IMG` at 5. **The sign wins over the block's own code**, deliberately: `EQ` blocks
+carry 137 equipment signs *and* 16 tavern signs, so a door in an equipment block can lead
+to a tavern, and the sign is what the player can see.
+* **The houses' laundry sign is a shop too**, though no `*MENU` slot binds it: the art's
+own name (`TLAUNDRY`, `TLAUNDR1/2`) says so, and it stands on `BS` blocks.
+* **Which of the eight interiors is RECONSTRUCTED** (D11/D5 — the table is in `A.EXE`):
+  the block's own number picks it, `1 + ((variation − 1 + rotation) % 8)` from `EQBD9A.MIF`,
+  so two equipment shops in one city are usually different rooms. The archive holds eight
+  of each, so 13 equipment blocks must squash onto them, and this is the draw that does it.
+* **Arriving at the `.MIF`'s start point is not a reconstruction** — `EQUIP1.MIF`'s is the
+  foot of the entry corridor — and neither is `startingLevelIndex`: a house arrives on its
+  **third** level because that is the ground floor in these files.
+
+**Consequences.** The round trip is two page loads, exactly as the game already changes
+place (`M` for the world map), and the city the player comes back to is the *same* city
+because a city is deterministic in its seed: `back` carries the whole page they left, with
+`at` set to the doorway cell, and `?at=row,col` stands them there. A building has **no
+monsters** (a shop with a keeper and four rats in it was the first run's behaviour, and it
+read as a bug) and its keeper speaks their trade's own bank — `equip.dat`, `tavern.dat`,
+`muguild.dat` — filtered to whole sentences that want no item and no price; a temple, a
+noble house and a house have no bank of their own and say so (`SHOP_KINDS[kind].bank` is
+`null`) rather than borrowing one.
+
+**Rejected: entering a building in place.** Swapping the scene's `.MIF` under the same page
+would need `cityRequest`, the quest's objective, the town's people and the lighting to be
+re-derived mid-session, and the return trip has to rebuild the city anyway — a page load is
+both simpler and honest about what has happened. **Rejected: keying the interior off the
+block type.** The laundry sign stands in equipment blocks as well as house blocks, and a
+door whose sign says *tavern* must not open an equipment store.
+
+## D20 — A town is for talking to: unnamed people, and the game's own lines
+
+**Decision.** Every settlement is populated with people drawn from the install's own
+`.CFA` walk files (65 of them), standing on street cells, deterministic in the place's
+seed — and `T` speaks to whoever is nearest. What they say is `template.dat`'s prose,
+filtered to **whole sentences**; **they are not given names**, and a city no longer holds
+any monsters.
+
+**Rationale.** With the main quest finishable, the largest thing missing from Arena was
+its towns: a city-state you could walk through but not talk to is a level, not a place.
+The two halves of a conversation were already in the folder and unused — Arena's own
+people art, and 811 lines of its own talk — so the work was to find what could be said
+*truthfully* rather than to write dialogue.
+
+**Three rules make the talk honest.**
+
+1. **Whole sentences only.** `&` separates a record into parts, and most parts after the
+   first continue the sentence before them: "…lookout for pickpockets.&" / "a great time
+   to be in `%cn`, if you're a thief.&". Taking whole records produced greetings like
+   "have been constructing some interior woodwork at the palace&", which is half a
+   sentence and reads as a bug. Of the file's 2 462 parts, 1 823 are whole sentences.
+2. **Only what can be filled.** `%cn` and `%cn2` are the only `%`-words this project can
+   supply from data it has, and `%cn` is a **city-state's** name (FORMATS §10a), so a
+   person can be asked about the city they are standing in and nothing else. 14 lines
+   qualify; when a line's substituted form is still broken it is refused, not shown.
+3. **No invented names.** A person is "a person in chain mail", read off their file's own
+   armour word. Arena's name generator needs `NAMES.DAT`'s tables, which this install
+   does not ship (480 bytes of `EMPTY`-padded save slots, FORMATS §10), so a name could
+   only be a word this project made up — the one thing a talk system should not do.
+
+**Rejected: monsters in a town.** A city was populated with a couple of wandering
+creatures "for danger". With people about, the first thing that happened in Daggerfall
+was a spider biting a shopkeeper — Arena's cities are patrolled and fights there are a
+crime, so a settlement now has townsfolk and no monsters, and `dangerOf({city: true})`
+says so. **Rejected: a dialog tree.** The topic list lives in `A.EXE` (D11); two
+questions, answered with the game's own lines, is what the data supports without
+inventing a conversation the original never had.
+
+**Consequences.** `townsfolk` — its own browser suite — asserts the roster, the street
+placement, the corpus counts, that `T` opens a panel whose line is a *whole* sentence of
+Arena's prose with no `%` in it, that the click on "Ask about Daggerfall" answers with
+Daggerfall, and that a dungeon still has monsters and no people. The suite found two real
+bugs: a `let townsfolk` declared below the first `loadLevel`, whose temporal dead zone
+blanked the whole page, and people who were *uploaded* but never *drawn* — `liveBatches`
+still batched monsters only, so the check read "14 files uploaded" while the street was
+empty. Both are now checks of their own (`state().figures` is the frame's own count).
+
+## D19 — The finale is played as three beats, from the walkthrough's own facts
+
+**Decision.** The Imperial Palace's last level holds the finale, in the order UESP's
+walkthrough describes it: the **mithril key**, which opens the **Jewel of Fire**'s
+magically locked cell, and then the Emperor's freedom. The Jewel and the key lie in two
+different chambers, derived from the level; the ending is Arena's closing *text*, over
+a dark panel, rather than its `.FLC` cutscene.
+
+**Rationale.** The main quest is the brief, and the last three beats are the ones a
+player remembers. UESP gives the facts that make them a sequence: the Jewel sits in a
+locked cell on the fourth and final level, opened by a mithril key found elsewhere on
+the same island (or by the Skeleton's Key). That is a *puzzle*, and a state machine
+that could not represent "the key, but not yet the Jewel" could not say what the player
+still had to do — hence two flags, where Arena's save file carries one `HasKeyItem`.
+
+The rooms' own coordinates do not survive into the data: UESP puts the key at `26,25`
+and the Jewel at `20,24`, and the bottom level of the `IMPPAL.MIF` this project ships
+and decodes has **no chasm cell at all**, so the lava lake the walkthrough describes is
+not in that map and those coordinates would name a wall. Rather than pretend to a room
+it cannot find, the level is searched the way every other objective is (S22): the
+deepest reachable cell is the Jewel's chamber, and the key lies in the deepest cell at
+least twelve cells away from it. Logged as S24.
+
+**Rejected: the cutscene.** `END01.FLC` is in the folder and its frames are exactly
+what a player who finished Arena in 1994 saw — but the `.FLC` codec is not decoded
+(FORMATS), and playing a guessed decode of the ending would be worse than the words of
+it, credited to UESP. **Rejected: ending the game on a notice line.** The one moment
+that deserves a page of its own got one, with the player's own record under it.
+
+**Consequences.** `mainquest` — a browser suite, every step through a real `E` key and
+the palace's real `]` key — plays the whole quest from the escape to the Emperor, and
+asserts the two finale chambers are different, the four levels, the descent hint, the
+ending on screen, and that a finished quest is still finished after a page load.
+
 ## D16 — `localStorage` behind one module, and the cell grid read the mesh's way
 
 **Decision.** Everything that survives a page load goes through `game/save.js`:
@@ -455,3 +677,139 @@ from `CITYDATA.64`'s per-location records — so `?city=town&seed=99` is a real 
 town, but not yet "Daggerfall, on the 3rd of Morning Star". That is Milestone 5's
 world-map work, and the pieces it needs (the terrain image's classes, the province
 rectangles, the per-location seeds) are listed in PROGRESS.md's risks.
+
+## D17 — Who draws the player, and who is drawn as a person
+
+**Decision.** The player and every creature are drawn from `GLOBAL.BSA`'s `.CFA`
+sprite sets, as camera-facing billboards, and the **palette for them is
+`DAYTIME.COL` — not `PAL.COL`**.
+
+**Rationale.** `PAL.COL` is the palette the walls are decoded with, and reaching for
+it was the obvious thing. It is wrong: under it every creature came out as a patchwork
+of unrelated hues — a skeleton in green and purple. `tools/cfa-dump.mjs` renders the
+same decoded frame under each palette Arena ships (`PAL.COL`, `DAYTIME.COL`,
+`DREARY.COL`, `CHARSHT.COL`) and one of them is obviously right for a *creature*: the
+skeleton is bone-white, the goblin is a green swamp-thing, the rat is brown. Four
+palettes, 340 `.CFA` files, and the answer came from looking at one of them under all
+four rather than from a document.
+
+The `.CFA` container itself was a small reverse-engineering job of its own
+(FORMATS §11): a ten-word header whose **second field is the height and third the
+width** — `field[1] × field[2]` is the same pixel count either way, so the giveaway is
+a human figure, `01PLTWLK.CFA`, reading 102 × 27 in file order: 27 wide, 102 tall.
+Every creature's frames then decode to exactly `height × width` pixels, and the RLE is
+Arena's own Type-08 scheme, reused from `decompress.js`.
+
+**Consequences.** The third-person view is the same machinery with the player's own
+sprite, chosen by class (`01CHNWLK.CFA` for a warrior, `01LTRWLK.CFA` for an acrobat),
+so switching to it proves the class table, the archive and the billboard path at once.
+A creature whose art is missing from the install is left out of the fight rather than
+drawn as a black box. `?sprites=dreary` selects the dim twin for a night scene.
+
+## D18 — Combat is one formula, with the genre's shape and the project's numbers
+
+**Decision.** A blow is `resolveAttack({attacker, defender, weapon, material, random})`:
+`A.EXE`'s to-hit table is not available (D11), so the roll is the one the community
+documentation describes for Arena's era — a level-weighted chance against the
+class's own skill — and the damage comes from the weapon and material tables in
+`game/combat.js`, each labelled with its `source`.
+
+**Rationale.** The alternative is a combat system with no damning failures: either
+invent everything silently, or build nothing. What a fight *feels* like is mostly
+whether the numbers are consistent — the same character with the same weapon should
+hit harder than an unarmed one, a Lich should be a wall, and a rat should fall to one
+blow. The monster table is not authored at all: it is read off the archive's sprite
+sets, with hit points inside UESP's range for each kind (checked per monster, in unit
+tests and again in the browser), and experience from the same source. Where a number
+*is* the project's own, `HIT_FORMULA_NOTE` says so on the HUD: the panel tells the
+player which figures are Arena's and which are a reconstruction.
+
+**Rejected: a real-time action model with no rolls** — Arena's fights are a
+level-vs-level roll and pretending otherwise would make the character sheet (D5)
+pointless, since a level-1 character would fight as well as a level-20 one.
+**Rejected: scripting the monsters' positions per level** — they are drawn from the
+level's own seed, so a dungeon is the same fight when you come back.
+
+**Consequences.** `game/encounters.js` places monsters in cells that are walkable and
+away from the arrival point; they sleep until the player is within 34 units and then
+close to reach. A player at zero health wakes at the way in, which is what the game's
+own save system implies and is logged as a simplification (S25) rather than dressed up
+as a death screen.
+
+## D24 — The town's people walk to the places their own day names
+
+**Decision.** A townsperson's movement is **the goal their day plan names**, walked over the
+level's own streets. `game/livingWorld.js`'s `streetGoal` answers *where* — the door of their
+trade (`TRADE_DOOR`), the place the hour sends them (`PLACE_DOOR`: the tavern, the temple, the
+Mages Guild, the market), their own home cell, or a wanderer's beat — and
+`game/townPaths.js` answers *how*, with the twin's own A* over a walkable grid of the level the
+collider was built from, kept in a **path book** that answers by the two ends of a walk and
+searches inside a per-frame budget (`PATH_CELLS_PER_FRAME = 6000`, `PATH_ASKS_PER_FRAME = 64`).
+The walk is kept on the person (`person.route`) and walked to its end; only then is the goal
+asked for again.
+
+**Rationale.** The first fix for "npcs dont move around" gave every person a random neighbour
+cell, and it produced the other half of the report: a street of people pacing on the spot, none
+of them going anywhere a player could follow or care about. A destination is what makes a town
+read as a place rather than a crowd — the smith crosses the square to his own shop at seven, the
+priest walks to the temple, the drunk goes home at closing. The *shape* of this is the twin's
+(`livingWorld/townPaths.js`, `livingWorld/dayPlan.js`); Arena's cities ship no navigation grid
+of their own, so the grid is derived from the level the game already has — every cell the player
+can stand on, plus the doorways, which is exactly the paving a resident could use.
+
+**Rejected: a random walk with a longer leash.** A person drifting further is still a person
+going nowhere; the destination is the feature.
+**Rejected: a per-frame A* per person.** A town's morning is a hundred people changing their
+minds at once; the book's budget is what keeps that from being a hitch (measured: the busiest
+frame of a real city's morning spent **46** of its 6000 cells).
+**Rejected: a wanderer drawing from every door in the settlement.** A city's wanderer then set
+off for the far side of it — a walk of seventy cells, eighty seconds of a player's time, and
+near streets left empty because everybody was somewhere else walking.
+**Rejected: drawing from the twelve doors *nearest* the wanderer's home.** Still not a stroll:
+a real city's doors are sparse (54 over 128×128 cells in Daggerfall), so "the twelve nearest"
+can be thirty cells away, and the running game showed exactly that — wanderers mid-route from
+`(2,14)` to `(9,51)`. A **beat is a place, not a shop**: with the level's own grid in hand
+(the scene hands `streetGoal` the very grid the walk is planned over, `opts.nav`) a wanderer
+draws a **standable cell within `WANDER_STEPS` = 6 of their home** — a few paces across their
+own end of the street — falling back to the door draw and then to their own cell when the grid
+says there is nowhere to stand. It is never the cell they are standing on: the draw is
+deterministic, so a beat that is their own paving stone would be a person who never walks again
+for the rest of the day. (Before this, `living` measured wanderers at 2 cells of travel —
+`(47,124) → (45,125)` — against 21 and 37 cells for the two door-based rules.)
+
+**Consequences.** `streetGoal` reads the person's **home**, never where they are standing, so a
+goal does not move as they walk towards it; an arrival updates `place` and the person idles for
+their own `TOWN_WAIT_MIN…MAX`. A keeper (`person.shop`) never walks — a shopkeeper who wandered
+off would leave the counter empty — and someone being spoken to stands and faces the player,
+abandoning the step they were on rather than snapping back to a cell centre. A person the regard
+ledger has turned **hostile** has dropped their day (`stepHostileFolk` marks them and this pass
+leaves them alone): without that, the street's own man kept his route and outran his own advance,
+because the town's walk is 3.3 m a second and a charge is slower.
+
+## D25 — A building's company: the install's roster first, a minimum for the rooms it leaves empty
+
+**Decision.** Who is inside a building is the `.INF`'s own list where the data names anyone, and
+a **minimum per kind** (`BUILDING_FOLK`: a house 3, a noble house 3, a temple 4, a guild hall 3)
+where it names nobody or one. The top-up is drawn from the building's own seed, so the same
+family is at home in the same house on every visit, and it skips a cell somebody already stands
+on. Equipment stores and taverns are deliberately absent from the table: their own `INF` already
+names their keeper *and* their patrons, and adding a crowd the install did not name would be this
+port inventing a shopkeeper's customers.
+
+**Rationale.** `BS*.MIF` names **nobody** — a house is a home, not a business — so the room the
+laundry sign over a door opens used to be an empty one with a single man in it who had nothing to
+do with the place. A home has a family in it, and a temple's `INF` names its priest and stops
+there: one man praying in an empty hall. Where the data speaks, it is followed; where it is
+silent, the room is filled, and the fill is deterministic.
+
+**Rejected: topping every building up to a crowd.** The install's own rosters are the better
+authority — a smithy with one smith at his counter is what the data says a smithy is — and
+inventing customers for it would be dressing up a guess as content.
+**Rejected: placing the top-up people in the room's free cells by index.** Two billboards in one
+cell is one person with two heads, so the cells already occupied are skipped.
+
+**Consequences.** A house's own people are townspeople and walk about the room (its keeper being
+the first of them, who stands); `state().shops` now reports the building's own **kind** and
+whether its doors are **open** at this hour, and the keeper is *asked* for by the flag on the
+person rather than read off `townsfolk[0]` — which was only ever the keeper by luck once a room's
+company stopped being exactly one person.

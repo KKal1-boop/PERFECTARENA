@@ -40,7 +40,22 @@
 
 import { ArenaRandom } from './arenaRandom.js';
 import { fillTemplate } from '../arena/arenaText.js';
+import { DUNGEON_BLOCKS_MIF } from './dungeonPlan.js';
 import { stageMif } from './questData.js';
+import { personId } from './regard.js';
+import { MONSTERS as BESTIARY } from './monsters.js';
+
+/** Authored bounty contract. Original Arena monster art/stats, three actual combat targets. */
+export function slayProgress(quest) {
+  if (quest?.kind !== 'slay') return null;
+  const named = MONSTERS.find(m => `${m.name}s` === quest.subject || m.cfa === quest.combat?.monster);
+  const kind = BESTIARY.find(m => m.sprite?.replace(/0$/, '') === named?.cfa);
+  if (!kind) return null;
+  const required = Math.max(1, Math.min(6, Math.floor(Number(quest.combat?.required) || 3)));
+  const ids = Array.from({ length: required }, (_, i) => `${quest.id}#${i}`);
+  const defeated = [...new Set((quest.combat?.defeated ?? []).filter(id => ids.includes(id)))];
+  return { monster: kind.id, required, defeated, ids };
+}
 
 /**
  * Arena's artifacts — every one of them a phrase that appears in `artfact1.dat`
@@ -160,7 +175,30 @@ export const DEFAULT_TABLES = Object.freeze({ artifacts: ARTIFACTS, monsters: MO
  * @property {number} reward      gold
  * @property {number} tier
  * @property {number} offeredOn   the in-world day the offer was made
+ * @property {string|null} [giverId]     the person who asked, by place-and-cell (`regard.js`)
+ * @property {string|null} [giverPerson] how they read to the player (`a person in chain mail`)
+ * @property {string|null} [giverArmour] the armour word out of their file's name
  */
+
+/**
+ * The settlements a quest may name: the country's own places, minus the records
+ * `CITYDATA` leaves anonymous.
+ *
+ * Arena's city table is a fixed 32 slots per province, and a province that does
+ * not use all of them ships the unused ones as empty records — **31 of them in
+ * this install**, invisible on the map and with no name at all. They are real
+ * rows with real coordinates, so anything that draws a settlement at random out
+ * of `world.settlements()` can land on one: a delivery whose "Carry word to"
+ * names nowhere, and a journal line that says `Travel to  — ...`. Measured by
+ * `tests/unit/radiant.test.mjs`, which sweeps every kind over many seeds and
+ * requires a name every time.
+ *
+ * @param {import('./worldMap.js').WorldMap} world
+ * @returns {object[]}
+ */
+export function namedSettlements(world) {
+  return world.settlements().filter((s) => Boolean(s.name));
+}
 
 /**
  * Turn a world location into the `{name, global, mif, province}` shape a quest
@@ -185,10 +223,11 @@ function targetOf(location, province) {
  * install actually has.
  *
  * This is the reason `radiant` can never strand a player in a place the game
- * cannot open. Only 16 of Arena's 144 dungeon records ship as files — the two
- * quest dungeons of each province — because the rest are generated from their seed
- * at run time. Rather than pretend otherwise, the board only ever offers work in
- * the dungeons that are there.
+ * cannot open. Only 16 of Arena's 144 dungeon records ship as a map file — the two
+ * quest dungeons of each province — and the other 128 are the map's random dungeons,
+ * which the original generates. The port assembles those from the install's own
+ * dungeon pieces (`game/dungeonPlan.js`), so every one of the 144 is enterable and the
+ * board draws its work from all of them (`enterableFromListing`).
  *
  * @param {import('./worldMap.js').WorldMap} world
  * @param {(location: object) => boolean} enterable
@@ -218,13 +257,24 @@ export async function discoverLooseMifs(source) {
 /**
  * A predicate for `enterableDungeons` built from a loose-file listing.
  *
+ * Two ways a dungeon can be opened, and the second is what makes **all 144** of them
+ * destinations rather than sixteen:
+ *
+ *   * its own `.MIF` is in the folder (the two named quest dungeons of each province), or
+ *   * the install's dungeon *pieces* are — `RANDOM1.MIF`, from which `game/dungeonPlan.js`
+ *     assembles a level for any dungeon whose own map the original generated rather than
+ *     shipped. The other 128 records are exactly those, so a job can now aim at any dungeon
+ *     on the map instead of the same sixteen.
+ *
  * @param {Set<string>} loose
  * @returns {(location: object) => boolean}
  */
 export function enterableFromListing(loose) {
+  const blocks = typeof DUNGEON_BLOCKS_MIF === 'string' && loose.has(DUNGEON_BLOCKS_MIF);
   return (location) => {
     const mif = stageMif(location);
-    return Boolean(mif && loose.has(mif.toUpperCase()));
+    if (mif && loose.has(mif.toUpperCase())) return true;
+    return blocks;
   };
 }
 
@@ -262,7 +312,7 @@ export function generateQuest(opts) {
   const monster = tables.monsters[random.nextBelow(tables.monsters.length)];
   const trinket = tables.items[random.nextBelow(tables.items.length)];
   const artifact = tables.artifacts[random.nextBelow(tables.artifacts.length)];
-  const settlements = world.settlements();
+  const settlements = namedSettlements(world);
   const elsewhere = settlements.filter((s) => s.provinceID !== giver.provinceID || s.name !== giver.name);
   const recipient = elsewhere.length ? elsewhere[random.nextBelow(elsewhere.length)] : giver;
 
@@ -290,9 +340,14 @@ export function generateQuest(opts) {
       // could promise the Ebony Blade while the text sells the Staff of Magnus.
       // Only speeches that name one of `ARTIFACTS` are eligible, and the unit test
       // proves every one of those names is really in the banks.
+      // Only speeches that name one of `ARTIFACTS` **and** read whole once filled: a lecture
+      // that loses a word to a dropped `%` is not prose a player should be handed.
       const named = tables.artifacts.length ? library.artifactOffers
         .map((o) => ({ offer: o, artifact: tables.artifacts.find((a) => o.text.includes(a.name)) }))
-        .filter((entry) => entry.artifact) : [];
+        .filter((entry) => entry.artifact
+          && !/\bthe\s+%nt\b/i.test(entry.offer.text)
+          && offerReadsWhole(fillTemplate(entry.offer.text, artifactValues(world, giver, seed, entry.artifact, target))))
+        : [];
       const pick = named.length ? named[random.nextBelow(named.length)] : null;
       const offer = pick?.offer ?? null;
       const chosen = pick?.artifact ?? artifact;
@@ -305,7 +360,19 @@ export function generateQuest(opts) {
         subject: chosen.name,
         tier: chosen.tier,
         dataText: Boolean(offer),
-        source: offer ? `Arena: ${offer.bank}` : 'authored'
+        source: offer ? `Arena: ${offer.bank}` : 'authored',
+        // **The purse the speech names.** Arena's recruiting speeches quote a price out of
+        // `%oap` (the asking price) or `%nap` (half of it), and a speech that says "I'd
+        // rather have 550 gold" while the journal promises 180 is the panel contradicting
+        // itself in the game's own words. Measured over the install: of the 372 artifact
+        // offers, **48** name the full price, **142** name half, and none names both — so
+        // whichever word the speech uses is the number the player is agreeing to.
+        price: !offer ? null
+          : /%oap/.test(offer.text) ? values.oap
+            : /%nap/.test(offer.text) ? values.nap : null,
+        // *Which* word priced it, so the panel and the tests can tell a speech that asked for
+        // a price from one that only described the place.
+        priceWord: !offer ? null : /%oap/.test(offer.text) ? 'oap' : /%nap/.test(offer.text) ? 'nap' : null,
       };
       break;
     }
@@ -315,7 +382,7 @@ export function generateQuest(opts) {
         text: `Word in ${giver.name} is that ${target.name}, out in ${target.province}, has gone bad. `
           + `${monster.name === 'daedra' ? 'Daedra' : `${monster.name[0].toUpperCase()}${monster.name.slice(1)}s`} `
           + `have taken the lower halls and travellers are being turned back at the door. `
-          + `Clear them out and ${giver.name} will pay.`,
+          + `Defeat three of them in the lair and return; ${giver.name} will pay.`,
         subject: `${monster.name}s`,
         tier: monster.tier,
         dataText: false,
@@ -366,10 +433,20 @@ export function generateQuest(opts) {
   // world's own scale, with slack for a bad road.
   const there = world.travel(away.global, target.global);
   const days = Math.max(4, Math.round(there.days * 2.4) + 2);
-  // Gold from distance and danger, in the game's own order of magnitude.
-  const reward = Math.round((18 + there.days * 9 + prose.tier * 45) / 5) * 5;
+  // Gold from distance and danger, in the game's own order of magnitude — **unless the
+  // offer's own prose already named a price**, which Arena's artifact speeches do. The
+  // player is accepting the words on the panel, so the words are what is paid.
+  const reward = Math.round((Number.isFinite(prose.price) && prose.price > 0
+    ? prose.price
+    : 18 + there.days * 9 + prose.tier * 45) / 5) * 5;
 
-  return { ...common, title: prose.title, text: prose.text, dataText: prose.dataText, source: prose.source, subject: prose.subject, tier: prose.tier, days, reward };
+  return {
+    ...common,
+    title: prose.title, text: prose.text, dataText: prose.dataText, source: prose.source,
+    subject: prose.subject, tier: prose.tier, priceWord: prose.priceWord ?? null,
+    days, reward,
+    ...(kind === 'slay' ? { combat: { monster: monster.cfa, required: 3, defeated: [] } } : {}),
+  };
 }
 
 /**
@@ -407,6 +484,146 @@ export function buildBoard(opts) {
 }
 
 /**
+ * The job one person in a settlement has to offer.
+ *
+ * Arena's side work reaches the player through *somebody* — a tavern keeper, a
+ * guildmaster, a stranger with a problem — and this project's board is the world map's
+ * version of that. This is the street's version: whoever the player speaks to in a
+ * settlement answers with a job drawn from the same world, aimed at a dungeon the install
+ * can really open.
+ *
+ * Deterministic in **the person's own cell and the settlement's seed**, which is the
+ * whole safety net: the same stranger always has the same work, a second visit does not
+ * reroll them, and a test can name the offer. Two people with the same job are possible
+ * (there are five kinds and 613 talk ids, not 613 jobs) — what matters is that nobody's
+ * offer changes under the player's feet.
+ *
+ * ## Who gave it
+ *
+ * The offer carries the **person** as well as the settlement (`giverId`, `giverPerson`),
+ * and that is what makes a job a favour rather than a posting: the reward is paid by the
+ * person who asked (`applyRadiantEvent`'s `return`), talking to them is how it is handed
+ * in, and doing it is what moves their regard (`game/regard.js`). The id is the same
+ * place-and-cell key the regard ledger uses, so the man who asked for the work is the man
+ * who remembers it was done.
+ * *
+ * @param {object} opts
+ * @param {import('./worldMap.js').WorldMap} opts.world
+ * @param {import('../arena/arenaText.js').ArenaLibrary} opts.library
+ * @param {object} opts.giver      the settlement the person stands in
+ * @param {{place: {row: number, col: number}}} opts.person  how a person is addressed here
+ * @param {number} [opts.day]
+ * @param {object[]} [opts.dungeons]  the enterable dungeons (see `enterableDungeons`)
+ * @param {RadiantTables} [opts.tables]
+ * @returns {RadiantQuest|null} null when this person has nothing to offer
+ */
+export function personOffer(opts) {
+  const { world, library, giver, person, day = 1, dungeons = [], tables = DEFAULT_TABLES } = opts;
+  if (!world || !library || !giver || !person?.place) return null;
+  // **The cell they were placed on** (`home`), never the one they happen to be standing on:
+  // the town's people walk, and a stranger who steps next door mid-conversation must hand
+  // back the same job, keyed to the same person, as the one the panel was selling (the
+  // browser suite caught exactly this when the cache was keyed by the standing cell).
+  const cell = person.home ?? person.place;
+  const seed = ((((giver.citySeed ?? 0) >>> 0) * 31)
+    + (Number(cell.row) || 0) * 7919
+    + (Number(cell.col) || 0) * 131 + 7) >>> 0;
+  // A kind whose subject the install cannot open is not offered to anybody: the same rule
+  // `buildBoard` applies, for the same reason — a job that names a place the game cannot
+  // enter is worse than no job.
+  const kinds = RADIANT_KINDS.filter((k) => !k.needsDungeon || dungeons.length);
+  if (!kinds.length) return null;
+  const kind = kinds[seed % kinds.length];
+  try {
+    const offer = generateQuest({ world, library, kind: kind.id, seed, giver, day, dungeons, tables });
+    // Who is asking, in the two forms the game needs: the id the regard ledger is keyed by
+    // and the phrase the panel and the journal show the player. `home` is the cell they
+    // were *placed* on — the cell they walk from, not the one they were standing on when
+    // the conversation began, which is what keeps the id (and so the job) the same on
+    // every visit to the town.
+    const giverId = personId(giver.name, cell);
+    return {
+      ...offer,
+      giverId,
+      giverPerson: typeof person.description === 'string' ? person.description : null,
+      giverArmour: typeof person.armour === 'string' ? person.armour : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The completed job **this person** is waiting to pay for, or null.
+ *
+ * The mirror of `handInAtPlace`, and the reason both exist: a job's reward is owed by
+ * whoever gave it. A job a person handed over is paid by that person and by nobody else
+ * (`applyRadiantEvent`'s `return` checks the same id); a job off the world map's board has
+ * no person behind it and is the town's.
+ *
+ * @param {RadiantState} state
+ * @param {string|null} personId  `game/regard.js`'s key for a person
+ * @returns {RadiantQuest|null}
+ */
+export function handInWith(state, personId) {
+  const active = state?.active;
+  if (!active?.completed || !active.giverId || !personId) return null;
+  return active.giverId === personId ? active : null;
+}
+
+/**
+ * The completed job a **town** owes for, or null.
+ *
+ * Only a job with no person behind it — one posted on the world map's board — belongs to
+ * the settlement it was taken in, so a player who finished a stranger's errand is not paid
+ * by the first town they walk into.
+ *
+ * @param {RadiantState} state
+ * @param {string|null} where  the settlement the player is standing in
+ * @returns {RadiantQuest|null}
+ */
+export function handInAtPlace(state, where) {
+  const active = state?.active;
+  if (!active?.completed || active.giverId) return null;
+  const name = typeof where === 'string' ? where.trim().toLowerCase() : '';
+  return name && active.giver.toLowerCase() === name ? active : null;
+}
+
+/**
+ * Does an offer read as a whole sentence once it has been filled?
+ *
+ * Arena's artifact banks are multi-sentence paragraphs, and this project can fill the words
+ * that name **things it has** — the speaker, the artifact, the place, the land, the price —
+ * and cannot fill the ones that name things it has not (`%tn`, `%pcf`, `%ct` are forms of
+ * address and idiom whose meaning lives in `A.EXE`). `fillTemplate` *drops* a word it is not
+ * given and tidies the punctuation behind it, which is where the danger is: a dropped word
+ * leaves a sentence that looks whole and is not — "Everything I know about finding the bow
+ * can be bought for 550 gold pieces" is fine, but "I'll tell you where to go, `%pcf`"
+ * becomes "I'll tell you where to go," and a preposition that wanted a noun becomes "to,".
+ *
+ * So an offer is *eligible* only if it survives being filled: no `%` word left, no preposition
+ * left before a comma or a stop, no double space, no space before punctuation. The pool is
+ * large (372 offers in this install, several per artifact) so refusing the ones that cannot be
+ * said costs nothing a player can notice, and it is the same rule `game/townsfolk.js` already
+ * applies to the talk corpus: a line is shown only when it is whole.
+ *
+ * @param {string} text  a *filled* offer
+ * @returns {boolean}
+ */
+export function offerReadsWhole(text) {
+  const filled = String(text ?? '').replace(/[ \t]+/g, ' ');
+  if (filled.length < 40) return false;
+  // A word with nothing to fill it.
+  if (/%[a-z0-9]{1,4}\b/i.test(filled)) return false;
+  // A preposition or article that lost its noun.
+  if (/\b(?:the|a|an|of|to|in|for|with|from|at|on|by|about|that|your|my)\s*[,.;:!?]/i.test(filled)) return false;
+  if (/\s[,.;:!?]/.test(filled)) return false;
+  if (/[,;:]\s*[.]/.test(filled)) return false;
+  if (/\s{2,}/.test(filled)) return false;
+  return true;
+}
+
+/**
  * The `%`-words the artifact banks use, filled in for one player in one place.
  *
  * The banks' vocabulary is wide (`%a`, `%adn`, `%amn`, `%bа`, …) and every word is
@@ -414,6 +631,18 @@ export function buildBoard(opts) {
  * a player — who is speaking, what they look like to the speaker, what it costs, and
  * where they are. Anything else is dropped by `fillTemplate`, which tidies the
  * punctuation behind it.
+ *
+ * **The two that were dropped and should not have been.** `%amn` is the *place* a speech
+ * is selling — "The place is called the `%amn`, and I will inscribe it onto your map" —
+ * and it appears in **36** of the banks' offers; with nothing to fill it, the sentence
+ * reached the player as "The place is called the,". `%lp` is the speaker's own land ("his
+ * thick `%lp` accent"), and the speaker is standing in the town the job is given in, so
+ * that province is the honest fill. Both are names the game already has.
+ *
+ * `%cn`/`%cn2` are the **speaker's** country and its neighbour, not the target's: the
+ * banks' lines read "The Necromancers of `%cn` have been offering me thousands of gold",
+ * which is where the speaker lives — it was filled with the *target's* province, so a job
+ * in another province had a speech claiming its villainy was local.
  *
  * @param {import('./worldMap.js').WorldMap} world
  * @param {object} giver
@@ -430,8 +659,16 @@ function artifactValues(world, giver, seed, chosen, target) {
     oap: price, nap: Math.round(price / 2),
     g: price, g2: Math.round(price / 2), g3: Math.round(price / 4),
     i: chosen.name, mt: chosen.name,
-    cn: target.province, cn2: giver.province,
-    nt: 'the tavern', t: 'tavern',
+    // The place the speech is selling, and the land the one selling it is standing in.
+    amn: target.name,
+    lp: giver.province ?? target.province,
+    cn: giver.province ?? target.province, cn2: target.province,
+    // `%nt` is the place the speaker will be found in, and the banks use it two ways: bare
+    // ("back in %nt already", "I'll be at %nt for three more days") and behind an article
+    // ("in the shadows of the %nt"). The town's own name fills the first and cannot fill the
+    // second — "into the Daggerfall" is not a sentence — so `ntIsTheTown` below drops the
+    // templates of the second form rather than putting a wrong word in them.
+    nt: giver.name ?? 'the tavern', t: 'tavern',
     u: 'gold', st: 'gold', r: 'the road',
   };
 }
@@ -493,7 +730,10 @@ export function applyRadiantEvent(state, event, ctx = {}) {
       const offer = ctx.offer ?? null;
       if (!offer) return refuse('no offer was named');
       if (active) return refuse(`"${active.title}" is still unfinished`);
-      next.active = offer;
+      const progress = slayProgress(offer);
+      if (offer.kind === 'slay' && !progress) return refuse('this bounty names no known creature');
+      next.active = { ...offer, completed: false,
+        ...(progress ? { combat: { ...offer.combat, ...progress, defeated: [] } } : {}) };
       next.offers = state.offers.filter((o) => o.id !== offer.id);
       next.log.push(`Accepted: ${offer.title} (${offer.reward} gold, ${offer.days} days).`);
       return { ok: true, state: next };
@@ -513,23 +753,41 @@ export function applyRadiantEvent(state, event, ctx = {}) {
       if (!active) return refuse('no job is in hand');
       const wanted = active.kind === 'rescue' ? 'rescue' : active.kind === 'deliver' ? 'deliver' : active.kind === 'slay' ? 'killed' : 'found';
       if (event !== wanted) return refuse(`"${active.title}" is not finished by ${event}`);
-      if (where && where.toLowerCase() !== active.target.toLowerCase()) {
+      if (!where || where.toLowerCase() !== active.target.toLowerCase()) {
         return refuse(`that has to happen at ${active.target}`);
       }
-      next.active = { ...active, completed: true };
+      if (active.completed) return refuse('this job is already finished');
+      if (event === 'killed') {
+        const progress = slayProgress(active);
+        if (!progress || ctx.questId !== active.id || ctx.monster !== progress.monster
+          || !progress.ids.includes(ctx.encounterId)) return refuse('defeat the contracted creatures in their lair');
+        if (progress.defeated.includes(ctx.encounterId)) return refuse('that creature was already counted');
+        const defeated = [...progress.defeated, ctx.encounterId];
+        next.active = { ...active, combat: { ...progress, defeated }, completed: defeated.length >= progress.required };
+        next.log.push(`Hunt: ${defeated.length}/${progress.required} ${active.subject} defeated at ${active.target}.`);
+        if (!next.active.completed) return { ok: true, state: next };
+      } else next.active = { ...active, completed: true };
       next.log.push(`${active.kind === 'slay' ? 'Cleared' : 'Recovered'}: ${active.subject} at ${active.target}. Return to ${active.giver}.`);
       return { ok: true, state: next };
     }
     case 'return': {
       if (!active) return refuse('no job is in hand');
       if (!active.completed) return refuse(`"${active.title}" is not finished yet`);
-      if (where && where.toLowerCase() !== active.giver.toLowerCase()) {
+      if (!where || where.toLowerCase() !== active.giver.toLowerCase()) {
         return refuse(`the reward waits in ${active.giver}`);
+      }
+      // A job that came from a **person** is paid by that person: standing in their town
+      // is not enough, and the caller says who it is standing in front of (`ctx.personId`,
+      // out of `game/regard.js`). Without that, the whole point of work being *given* — that
+      // you go back and the one who asked remembers it — would be lost.
+      if (active.giverId && ctx.personId !== active.giverId) {
+        return refuse(`the reward waits with ${active.giverPerson ?? 'the one who asked'}`);
       }
       next.active = null;
       next.taken = state.taken + 1;
       next.gold = state.gold + active.reward;
-      next.log.push(`Completed: ${active.title}. ${active.reward} gold.`);
+      next.log.push(`Completed: ${active.title}. ${active.reward} gold`
+        + `${active.giverPerson ? ` from ${active.giverPerson} in ${active.giver}` : ''}.`);
       return { ok: true, state: next, gold: active.reward };
     }
     case 'abandon': {
@@ -565,9 +823,14 @@ export function radiantObjective(state) {
   const active = state.active;
   if (!active) return null;
   if (!active.completed) {
-    return `${active.kind === 'deliver' ? 'Deliver to' : 'Travel to'} ${active.target} — ${active.title}.`;
+    const progress = slayProgress(active);
+    const hunt = progress ? ` Defeat ${active.subject}: ${progress.defeated.length}/${progress.required}.` : '';
+    return `${active.kind === 'deliver' ? 'Deliver to' : 'Travel to'} ${active.target} — ${active.title}.${hunt}`;
   }
-  return `Return to ${active.giver} for ${active.reward} gold.`;
+  // *Who* pays, by name of what they are rather than of who they are (Arena's people have
+  // no names in this install — S30): the person who asked, when the job came from one.
+  const from = active.giverPerson ? `${active.giverPerson} in ${active.giver}` : active.giver;
+  return `Return to ${from} for ${active.reward} gold.`;
 }
 
 /**
@@ -585,11 +848,14 @@ export function radiantLog(state) {
         target: state.active.target,
         targetMif: state.active.targetMif,
         giver: state.active.giver,
+        giverId: state.active.giverId ?? null,
+        giverPerson: state.active.giverPerson ?? null,
         subject: state.active.subject,
         reward: state.active.reward,
         days: state.active.days,
         daysLeft: Math.max(0, state.active.days - (state.day - state.active.offeredOn)),
         completed: Boolean(state.active.completed),
+        combat: slayProgress(state.active),
       }
       : null,
     objective: radiantObjective(state),

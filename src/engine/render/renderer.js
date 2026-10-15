@@ -14,6 +14,19 @@ import { FOG_GLSL } from './fogGlsl.js';   // AUDIT 68 S17-fog-glsl-dup: fogFact
 // then. The imports hoist and the leaves have no imports of their own, so
 // this is already guaranteed - the lines stand where they read as the rule.
 import { buildProgram } from './glProgram.js';   // AUDIT 68 S17-gl-program-dup: the one compile and link
+// PERFECTARENA: THE INTERIOR LIGHTING LAWS, re-exported where a scene already gets its
+// renderer from. They are pure numbers, not GL state: the classic world shaders this file
+// builds already carry everything an interior needs - `uAmbient` (the warm floor),
+// `uPointLights[16]`/`uPointColors[16]` (braziers and lanterns, with the squared-linear
+// falloff `pointLightFalloff` restates), `uTrilight`, and the five fog modes
+// (`fogFactorAtDistance` is the JS twin of the GLSL in fogGlsl.js). Nothing in this class
+// changed with them, which is the point: an interior was already LIT, and what a scene
+// could not know was how much of each uniform to ask for. See glProgram.js.
+export {
+  POINT_LIGHTS_MAX, pointLightFalloff, wrapDiffuse, WRAP_GLSL,
+  EMISSIVE_ART, isEmissiveArt, INTERIOR_FOG_MODE, INTERIOR_FOG_COLOR,
+  fogFactorAtDistance, interiorFog,
+} from './glProgram.js';
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;
@@ -47,6 +60,14 @@ in vec2 vUV;
 in vec3 vWorldPos;
 uniform sampler2D uTex;
 uniform sampler2D uEmissionTex;
+// PERFECTARENA CUT1: the CUTOUT PANEL. 0 is DFU's law and the world's default - a
+// classic wall's index-0 texels are black paint, mortar or a night sky, and clipping
+// them turned mortar runs into slits (INCIDENT 2026-09-04, below). 1 is for the art
+// that really is a picture on a hole: Arena's 0xA edge panels (shop and tavern
+// signs, washing lines) and 0x9 transparent walls (hedges, garden walls, banners),
+// whose tiles are 20-94% palette index 0 all around the picture. Their sub-meshes
+// carry cutout: true; this is the uniform that honours it.
+uniform float uCutout;
 uniform vec3 uLightDir;
 uniform vec3 uAmbient;
 uniform vec3 uAmbientSky;     // BA1: Unity's AmbientMode.Trilight - sky for a normal facing up, ground facing down,
@@ -103,9 +124,11 @@ void main() {
   if (amMode >= 3) { if (vWorldPos.y <= uClipY) discard; }
   else if (vWorldPos.y > uClipY) discard;
   vec4 tex = texture(uTex, vUV);
-  // INCIDENT 2026-09-04: no alpha clip here - DaggerfallDefault.shader is
-  // RenderType Opaque with no clip(); the mortar runs of a wall texture
-  // are palette index 0 and were being discarded as cutouts.
+  // INCIDENT 2026-09-04: no alpha clip on an ordinary wall - DaggerfallDefault.shader
+  // is RenderType Opaque with no clip(); the mortar runs of a wall texture are palette
+  // index 0 and were being discarded as cutouts. PERFECTARENA CUT1 keeps that law for
+  // every mesh that is not born a cutout panel (see uCutout above).
+  if (uCutout > 0.5 && tex.a < 0.5) discard;
   vec3 n = normalize(vNormal);
   float diff = max(dot(n, uLightDir), 0.0);
   diff *= cloudShadowAt(vWorldPos);   // VC4: the cloud's shadow on the sun term
@@ -1677,6 +1700,8 @@ export class Renderer {
     this.uLight3Scale = gl.getUniformLocation(this.program, 'uLight3Scale');
     this.uLight3Color = gl.getUniformLocation(this.program, 'uLight3Color');
     this.uTex = gl.getUniformLocation(this.program, 'uTex');
+    this.uCutout = gl.getUniformLocation(this.program, 'uCutout');   // CUT1: the cutout panel switch
+    this._cutoutUp = null;   // CUT1: the last value this program was given (see drawMesh)
     this.uEmissionTex = gl.getUniformLocation(this.program, 'uEmissionTex');
     this.uEmissionColor = gl.getUniformLocation(this.program, 'uEmissionColor');
     this.uPointCount = gl.getUniformLocation(this.program, 'uPointCount');
@@ -5514,6 +5539,13 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       }
       this._bindEmission(sm._evEmis);   // PERF-TEX: skipped when it is already the one on the unit, which it usually is
       this._bindTex0(tex);   // PERF-TEX3: a bundle whose sub-meshes repeat an archive re-bound the same texture every time
+      // CUT1: the panel switch, one uniform per sub-mesh and only when it changes. A
+      // classic bundle never sets it; a level's sign/banner/hedge buckets do.
+      const cut = sm.cutout ? 1 : 0;
+      if (this._cutoutUp !== cut) {
+        gl.uniform1f(this.uCutout, cut);
+        this._cutoutUp = cut;
+      }
       if (wire) {
         const range = wireMesh.ranges[smi];
         gl.drawElements(gl.LINES, range.count, gl.UNSIGNED_INT, range.start * 4);

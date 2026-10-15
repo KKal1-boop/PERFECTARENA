@@ -19,6 +19,7 @@
  * @property {number} step          index into the chain's stages
  * @property {number} pieces        how many Staff pieces are held, 0…8
  * @property {boolean} mapKnown     whether the current piece's dungeon is known
+ * @property {boolean} mithrilKey   the key that opens the Jewel of Fire's cell
  * @property {boolean} hasKeyItem   the Jewel of Fire, in the finale
  * @property {boolean} ended        the confrontation is over
  * @property {string[]} log         the journal, newest last
@@ -34,6 +35,7 @@ export function createQuestState() {
     step: 0,
     pieces: 0,
     mapKnown: false,
+    mithrilKey: false,
     hasKeyItem: false,
     ended: false,
     log: [],
@@ -43,7 +45,7 @@ export function createQuestState() {
 
 /** The events the machine understands. */
 export const QUEST_EVENTS = Object.freeze([
-  'enter', 'escaped', 'foundClue', 'foundPiece', 'staffAssembled', 'jewelOfFire', 'won',
+  'enter', 'escaped', 'foundClue', 'foundPiece', 'staffAssembled', 'mithrilKey', 'jewelOfFire', 'won',
 ]);
 
 /**
@@ -52,9 +54,18 @@ export const QUEST_EVENTS = Object.freeze([
  * `enter` records that the player reached the current stage's location; `escaped`
  * leaves the opening dungeon; `foundClue` is the parchment/map that reveals a
  * piece's dungeon; `foundPiece` is the piece itself; `staffAssembled` fires when
- * the eighth piece completes the Staff; `jewelOfFire` is the last key item; `won`
- * ends it. Anything out of order is refused rather than silently applied, so a
- * scripted run cannot "complete" the quest by firing events in the wrong sequence.
+ * the eighth piece completes the Staff; `mithrilKey` and `jewelOfFire` are the
+ * finale's two key items, in that order; `won` ends it. Anything out of order is
+ * refused rather than silently applied, so a scripted run cannot "complete" the
+ * quest by firing events in the wrong sequence.
+ *
+ * The finale's order is not invented: UESP's walkthrough of *The Imperial Palace*
+ * has the Jewel of Fire sitting in a **magically locked cell** on the fourth and
+ * final level, opened either by a mithril key found in the island's northwestern
+ * room or by the Skeleton's Key. Arena's own save file carries one `HasKeyItem`
+ * flag; this machine gives the key and the Jewel one each, because the cell door
+ * is the thing the player has to solve and a state that cannot represent "the key
+ * but not yet the Jewel" could not say so.
  *
  * @param {QuestState} state
  * @param {string} event
@@ -103,8 +114,17 @@ export function applyQuestEvent(state, event, ctx = {}) {
       next.log.push('The Staff of Chaos is whole. Jagar Tharn cannot hide behind it.');
       break;
     }
+    case 'mithrilKey': {
+      if (stage?.kind !== 'finale') return refuse(state, 'there is no such key outside the Imperial Palace');
+      if (state.pieces < 8) return refuse(state, 'Jagar Tharn holds the palace until the Staff is whole');
+      if (state.mithrilKey) return refuse(state, 'you already carry the mithril key');
+      next.mithrilKey = true;
+      next.log.push('Found the mithril key. Jagar Tharn has locked the Jewel of Fire away.');
+      break;
+    }
     case 'jewelOfFire': {
       if (state.pieces < 8) return refuse(state, 'the Jewel is useless without the whole Staff');
+      if (!state.mithrilKey) return refuse(state, 'the cell is magically locked — the mithril key opens it');
       if (state.hasKeyItem) return refuse(state, 'the Jewel of Fire is already held');
       next.hasKeyItem = true;
       next.log.push('The Jewel of Fire is in hand. The Emperor\'s prison can be opened.');
@@ -141,7 +161,12 @@ export function currentObjective(state, chain) {
   const stage = chain.stages[state.step];
   if (!stage) return 'The quest is complete.';
   if (state.step === 0) return `Escape ${stage.title}.`;
-  if (stage.kind === 'finale') return `Return to ${stage.title} with the whole Staff.`;
+  if (stage.kind === 'finale') {
+    if (state.ended) return 'The Arena is at peace.';
+    if (!state.mithrilKey) return `Descend to the bottom of ${stage.title} and find the mithril key.`;
+    if (!state.hasKeyItem) return 'Carry the mithril key to the Jewel of Fire, and take it.';
+    return 'Touch the Staff of Chaos to the Jewel of Fire, and free the Emperor.';
+  }
   if (!state.mapKnown) return `Learn where piece ${stage.piece} lies.`;
   return `Recover piece ${stage.piece} of the Staff from ${stage.title}.`;
 }
@@ -158,6 +183,7 @@ export function questLog(state, chain) {
     pieces: state.pieces,
     mapKnown: state.mapKnown,
     hasJewel: state.hasKeyItem,
+    hasMithrilKey: state.mithrilKey,
     ended: state.ended,
     entries: state.log,
     visited: state.visited,
@@ -186,5 +212,6 @@ export function deserializeQuestState(saved) {
     ended: Boolean(source.ended),
     log: Array.isArray(source.log) ? source.log.map(String) : fresh.log,
     visited: Array.isArray(source.visited) ? source.visited.map(String) : fresh.visited,
+    mithrilKey: Boolean(source.mithrilKey),
   };
 }
