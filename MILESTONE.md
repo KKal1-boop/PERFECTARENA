@@ -266,3 +266,30 @@ node .scratch/nightprobe.mjs                             # the 10:00 / 23:00 / 0
   is this project's own choice against Arena's unarmed opening.
 * Eleven more of the owner's reports (D-12, D-13, D-16 … D-21, D-23, D-24) are recorded
   with what is known and no fix yet.
+
+## 2026-10-16 (later) — D-25: the creature that vibrated while it walked
+
+The owner, playing both games: "ENEMIES FLIP LEFT AND RIGHT FOR NO REASON WHEN THEY MOVE".
+Two causes, both in `game/actorAnimation.js`, both measured before and after with
+`node .scratch/flipprobe.mjs` (one creature closing on a still player, sixty frames a
+second, the scene's own one-axis-at-a-time stepping):
+
+| run | sharp heading turns (>40°) | mirror flips |
+|---|---|---|
+| before | 259 in 300 frames | 258 in 300 frames |
+| after | **1** | **0** |
+
+1. **The heading came from a single frame.** A diagonal approach that clips anything on one
+   axis advances along the other one that frame, so the displacement alternates `(dx,0)` /
+   `(0,dz)` and the yaw swung a quarter turn every frame — the billboard's *view* flickered
+   with the mirror. The heading is now taken from the travel accumulated since the last one
+   (`FACING_METRES` = 0.3 m).
+2. **A creature walking straight at the player has no side.** The mirrored half was
+   `sin(heading − angle to eye)`, which is zero head-on, so the flag flipped with no noise at
+   all. It is now decided with a deadband and remembered per actor (`mirrorFor`,
+   `MIRROR_DEADBAND` = 0.2 rad), so a creature passing the player's shoulder still turns over
+   once and a creature walking at the camera does not.
+
+**Commands:** `npm test` → **423/423, exit 0**; `node tests/run-browser.mjs actioncombat
+combat townsfolk` → **118/118**; `living dungeonplay` → **45/45**. The two new pins were
+mutation-checked: single-frame heading → 150 sharp turns, deadband removed → 138 flips.

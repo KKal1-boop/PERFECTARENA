@@ -103,7 +103,7 @@ import {
   cityDoors, serviceGreeting, serviceGreetings, shopForInteriorFile, shopSignKinds,
 } from '../game/shops.js';
 import { MONSTERS, monsterById } from '../game/monsters.js';
-import { actorFrame, actorMirrored, stepActorAnimation } from '../game/actorAnimation.js';
+import { actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
 import { CombatFx, fitAttackToGround, insideAttack } from '../game/combatFx.js';
 import { nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
 import { CombatFxPass } from '../engine/render/combatFxPass.js';
@@ -8915,7 +8915,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         : actor.talkingArt
           ? Math.floor(dbg.seconds * TALK_FRAMES_PER_SECOND) % frames
           : actorFrame(actor, frames, { attack: actor.attack });
-      const mirrored = !actor.attack && !actor.death && actorMirrored(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2]);
+      // **Which side of them the eye is on, decided with a deadband and remembered.** A
+      // creature walking straight at the player sits on a knife edge (`mirrorFor`), and the
+      // bare sine flipped the billboard left and right frame after frame — the owner's
+      // "ENEMIES FLIP LEFT AND RIGHT FOR NO REASON WHEN THEY MOVE" (2026-10-16).
+      const mirrored = !actor.attack && !actor.death && mirrorFor(actor, eye[0], eye[2]);
       actor.renderFrame = `${file}#${frame}`;
       actor.renderMirrored = mirrored;
       const key = `${file}#${frame}:${mirrored ? 1 : 0}`;
