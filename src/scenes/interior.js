@@ -7571,7 +7571,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // …and which of those batches had somebody who *really moved* this frame. A walk
       // cycle belongs to walking, so a batch showing a frame other than its first one has
       // to be in this list; that is the rule a test holds the game to.
-      moving: [...spriteSets.values()].filter((s) => s.live > 0 && s.moved).map((s) => s.file),
+      //
+      // **`crowd`, not `live`.** A sheet the player and a townsman share (`05CHNWLK.CFA` is both
+      // the player's own back view in chain mail and townsman five's walk) has its `live` set back
+      // to zero when the player's own figures are taken out of the crowd count, which used to
+      // drop a moving townsman from this list and make his walk frame look like a batch animating
+      // on the spot. `crowd` counts only the town's folk and the creatures, so the law reads true
+      // whoever the player is (D-08).
+      moving: [...spriteSets.values()].filter((s) => s.crowd > 0 && s.moved).map((s) => s.file),
       // How many of the town's people are mid-step, which is how "they move around" is
       // told apart from "they stand still and the art plays anyway".
       walking: townsfolk.filter((p) => p.walking).length,
@@ -8796,7 +8803,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (!group) groups.set(key, group = { set, frame, mirrored, actors: [] });
       group.actors.push(actor);
     }
-    for (const set of spriteSets.values()) { set.live = 0; set.moved = false; }
+    // **Two counters, because one sheet can be two things at once.** `live` is "how many
+    // figures this batch is drawing this frame", and the player's own two sets are set back to
+    // zero at the end of this function because they are drawn by name below rather than as part
+    // of the crowd. `crowd` is "how many of those are the town's folk and the creatures", and it
+    // is never zeroed for the player: a person and the player can share **one `.CFA`** (a
+    // person's sheet is `<index><armour><action>.CFA` — `05CHNWLK.CFA` is townsman five in chain
+    // — and the player's own back view is `<view><armour><action>.CFA` with view `05`, so a
+    // player in chain and that townsman resolve to one string and one uploaded set), and zeroing
+    // the shared count hid a walk that had really happened. Measured 2026-10-15: the single
+    // stray of forty-six drawn batches was `05CHNWLK.CFA#3`, the player's own sheet, drawn for
+    // the crowd at a walk frame while `moving` could not see anybody in it move
+    // (`docs/DEFECTS.md` D-08).
+    for (const set of spriteSets.values()) { set.live = 0; set.crowd = 0; set.moved = false; }
     const drawnFrames = [];
     for (const [key, group] of groups) {
       const { set, frame, mirrored, actors } = group;
@@ -8812,6 +8831,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       renderer.moveBillboardBatch(batch, actors.map((actor) => [actor.world.x, actor.world.y, actor.world.z]));
       batch.indexCount = actors.length * 6;
       set.live += actors.length;
+      set.crowd += actors.length;
       set.moved ||= actors.some((actor) => actor.motion?.moving);
       set.batch.record = `${set.file}#${frame}`;
       drawnFrames.push(batch.record);

@@ -194,6 +194,40 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     check('and the town is alive: people really walk from cell to cell',
       walked.length > 0 || animB.walking > 0,
       `${walked.length} of ${folkB.length} people moved in 1.2 s, ${animB.walking} mid-step`);
+    // ── the file a person and the player can share ────────────────────────────────
+    //
+    // **A townsman and the player can be the same file, and that is not a nickname.** The
+    // archive names a person's sheet `<index><armour><action>.CFA` — `05CHNWLK.CFA` is person
+    // five in chain mail — and the player's own back view is named `<view><armour><action>.CFA`
+    // with view `05` (`playerSpriteFile`, `BACK_VIEW`), so a player in chain and townsman five
+    // resolve to **one string and therefore one uploaded set**. `liveBatches` marks the player's
+    // own two sets as *not the crowd* by zeroing their count, and on a shared file that erases
+    // the crowd's count with it: the batch is drawn on a walk frame while the seam reports nobody
+    // in it moving, which is precisely the shape the check above calls stray. Measured on
+    // 2026-10-15, the one stray of forty-six batches was `05CHNWLK.CFA#3` — a file that was not
+    // in `moving`. This pins the law that fixes it: whatever the player happens to be wearing, a
+    // walk frame drawn for the town's folk must be reported as moving.
+    // The law is the stray one, applied to that file: **a sheet drawn at a walk frame for the
+    // crowd must be reported moving** — a sheet merely *present* at its standing frame (`#0`) is
+    // no evidence of anything, so the pin looks only at non-zero frames. (Its first draft demanded
+    // `moving` for any shared sheet at all, and failed on a townsman standing still in the
+    // player's own armour — the assertion was wrong, not the game.)
+    const shared = await page.evalJs(`(() => {
+      const d = window.__debug;
+      const player = d.combat().playerSprite;
+      const anim = d.animation();
+      const mine = (anim.figures ?? []).filter((r) => player && r.startsWith(player + '#'));
+      return JSON.stringify({
+        player,
+        drawn: mine,
+        walking: mine.filter((r) => !/#0$/.test(r)),
+        moving: Boolean(player) && anim.moving.includes(player),
+      });
+    })()`);
+    const sharedFile = JSON.parse(shared ?? 'null');
+    check('a sheet the player and a townsman share is still a crowd sheet: its walk is reported as moving',
+      Boolean(sharedFile?.player) && (sharedFile.walking.length === 0 || sharedFile.moving),
+      `player's own sheet ${sharedFile?.player}; drawn among the town at ${JSON.stringify(sharedFile?.drawn ?? [])}; reported moving ${sharedFile?.moving}`);
 
     // ── a person answers in their own art ─────────────────────────────────────────
     //
