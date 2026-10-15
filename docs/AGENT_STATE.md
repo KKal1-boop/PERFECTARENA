@@ -2,14 +2,15 @@
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported a long list; it is written up as **D-12 … D-25 in
-`docs/DEFECTS.md` with their own section** and is now the work list. **D-01a, D-15 and D-25 are
-closed.**
+`docs/DEFECTS.md` with their own section** and is now the work list. **D-01a, D-15, D-20 and D-25
+are closed.**
 
 LAST GREEN: unit **`423/423`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) at the
-D-25 commit `50da1f0`. Browser, all run this pass: `actioncombat combat townsfolk` **118/118** ·
-`living dungeonplay` **45/45** · `townsfolk city living` **133/133** (same pass, D-01a) ·
-`audit` **15/23** (red on purpose; every red is the wilderness — D-01b/D-02a). The `townsfolk`
-suite's one long-standing red (D-08) is fixed (`cefb8a6`).
+D-20 commit `7be9d77`. Browser, all run this session: `combat actioncombat` **60/60** (after
+D-20) · `actioncombat combat townsfolk` **118/118** and `living dungeonplay` **45/45** (after
+D-25) · `townsfolk city living` **133/133** (after D-01a) · `audit` **15/23** (red on purpose;
+every red is the wilderness — D-01b/D-02a). The `townsfolk` suite's one long-standing red
+(D-08) is fixed (`cefb8a6`).
 
 IN PROGRESS: nothing half-edited. Working tree clean except `docs/` edits of this pass.
 
@@ -19,6 +20,10 @@ WHAT THIS PASS PROVED (full detail: `docs/AUDIT-2026-10-15.md`, `docs/DEFECTS.md
   own `*ITEM` people records. Both fixed. Measured (`.scratch/nightprobe.mjs`): 10:00 → 48 people,
   44 out, 41 walking, 16 on a route; **23:00 → 4 out and walking, 44 indoors**; 06:00 → 9 priests
   walking to worship. The audit's own S-A night check went green for the first time.
+* **D-20 closed (`7be9d77`) — the held heavy sprayed the player.** Fourteen amber particles out
+  of the player every 0.12 s for the whole of a hold, and a notice in design jargon. The spray is
+  gone (the tell is the drawn weapon's wind-up plus one plain line), the mechanic is reported
+  (`defence.charge`), and a landed blow is now **blood** instead of amber sparks.
 * **D-25 closed (`50da1f0`) — enemies flipped left and right while they moved.** Two causes: the
   heading was read off a single frame of the scene's own one-axis-at-a-time stepping (a quarter
   turn a frame), and the mirrored half was `sin(angle)` which is zero for anybody walking at the
@@ -32,19 +37,16 @@ WHAT THIS PASS PROVED (full detail: `docs/AUDIT-2026-10-15.md`, `docs/DEFECTS.md
   `{stonegolem:1, ghoul:1, goblin:1, firedaemon:1, vampire:1}` → `{lizardman:1, orc:2, wolf:1, rat:1, goblin:1}`.
 
 NEXT 3 STEPS (the owner's list, cheapest-loudest first):
-0. **D-20 — "hold left click and yellow particles come out of me" + the notice** (the held
-   heavy's tell). The gate is already "an *armed* heavy" (`interior.js`, `defence.charging`), so
-   what a player sees is the port's own tell design; the owner wants Arena's presentation (blood,
-   not sparks) and no developer-voice notice. Settle the art trade-off, then make the tell the
-   weapon's own wind-up — and check `tests/unit/combatfx.test.mjs` and the `dbg.chargeBursts`
-   check in `actioncombat` before removing anything.
-0b. **D-14 — the first-person weapon in hand.** The sheets and the state machine are right and
+0. **D-21 — no fog in dungeons.** `renderer.setFog('exp2', fogDensity, …)` is called per level
+   from a day-scene density; a dungeon's own is not read. One file, one number, one screenshot
+   metric (band luminance) — the cheapest remaining item on the list.
+1. **D-14 — the first-person weapon in hand.** The sheets and the state machine are right and
    `equipThing` does reset the rig, so the report ("always the dagger") is not yet reproduced:
    probe what the rig draws for each of `fists → dagger → longsword → war-axe → mace → staff`
    **through the real equip path**, and check the *starting* weapon (Arena starts you unarmed /
    per class; this port's `placeholderPlayer` carries a longsword and items.js's starting kit a
-   dagger). Also D-16 (loot pile too big) and D-21 (no dungeon fog) are one-file reads.
-1. **D-12/D-13 — the start of the game.** Whether `INTRO.FLC` is played at all after `?chargen`,
+   dagger).
+2. **D-12/D-13 — the start of the game.** Whether `INTRO.FLC` is played at all after `?chargen`,
    and whether the start dungeon's mirrored look is a data or a camera issue (compare
    `START.MIF`'s own flat layout — `tools/lib/mapascii.mjs` — with what the port draws).
 
@@ -52,8 +54,8 @@ Then the two big ones the list names and the phases already own: **D-01b/D-02a**
 creatures in the country — the audit's four remaining reds) and **D-22** (P3/P4: the wilderness is
 a 128×128 window, not a country — the owner: "you teleport around and cant even get out of a city").
 
-OPEN DEFECTS (top): D-12 · D-13 · D-14 · D-16 · D-17 · D-18 · D-19 · D-20 · D-21 · D-01b ·
-D-02a · D-22 · D-23 · D-24 · D-03 (coverage) · D-05 (P3) · D-06/D-07 (names outside this checkout).
+OPEN DEFECTS (top): D-12 · D-13 · D-14 · D-16 · D-17 · D-18 · D-19 · D-21 · D-01b · D-02a ·
+D-22 · D-23 · D-24 · D-03 (coverage) · D-05 (P3) · D-06/D-07 (names outside this checkout).
 Full list: `docs/DEFECTS.md`. O-01 stands (a live page whose clock is moved answers no probe).
 
 DO-NOT-REPEAT (paid for already):
