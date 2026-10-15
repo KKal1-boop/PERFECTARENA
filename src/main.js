@@ -245,8 +245,38 @@ function destinationParams(params) {
   return out;
 }
 
+/**
+ * Count the documents this tab has loaded — the audit's own instrument (S-E).
+ *
+ * A place in this port is a page load (see the header's note on `?location=` and S35 in
+ * `docs/PROGRESS.md`): walking through a city gate, a shop door or a dungeon stair assigns
+ * `location.href`, so **nothing in memory survives it** — which is why the world is kept in a
+ * save file rather than in a live object, and why a probe that means to measure "is the world
+ * persistent and seamless?" needs this number. `sessionStorage` is per tab and survives
+ * navigations, so a document can answer "how many page loads did this session cost?" — and it
+ * is read from the page rather than counted by the test, because a test that counts its own
+ * `goto()` calls is counting itself, not the game.
+ *
+ * `navigations` is 0 in the first document of a tab and +1 per page load after it, so P3 (the
+ * seamless world runtime) is done when a scripted city → country → shop → dungeon walk leaves
+ * it exactly where it started.
+ */
+function installPageLoadCounter() {
+  let boots = null;
+  try {
+    boots = Number(sessionStorage.getItem(BOOTS_KEY) || 0) + 1;
+    sessionStorage.setItem(BOOTS_KEY, String(boots));
+  } catch { /* a browser with storage switched off still boots; the counter reads null */ }
+  window.__debug.boots = boots;
+  window.__debug.navigations = boots === null || !Number.isFinite(boots) ? null : boots - 1;
+}
+
+/** One per tab: how many documents this tab has loaded (`installPageLoadCounter`). */
+const BOOTS_KEY = 'arena.boots';
+
 async function boot() {
   installErrorTrap();
+  installPageLoadCounter();
   const canvas = document.getElementById('c');
   const params = new URLSearchParams(location.search);
   const status = (msg) => { document.title = `PERFECTARENA — ${msg}`; };

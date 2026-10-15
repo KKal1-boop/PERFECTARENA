@@ -31,6 +31,7 @@ import { makeLivingSuite } from './suites/living.mjs';
 import { makeGeneratedSuite } from './suites/generated.mjs';
 import { makeProgressionSuite } from './suites/progression.mjs';
 import { makeCutsceneSuite } from './suites/cutscene.mjs';
+import { makeAuditSuite } from './suites/audit.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SHOTS = path.join(ROOT, 'tests', 'shots');
@@ -1279,6 +1280,11 @@ const SUITES = {
   // a page — Arena's art, the file's own pacing, a key to skip, and an honest refusal for a
   // name the install does not ship. `src/scenes/cutscenePlayer.js` is the caller.
   cutscene: makeCutsceneSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
+  // The AUDIT: the five symptoms the owner reported, measured. It is **red on purpose** where
+  // the game falls short — every failure is a `D-` row in `docs/DEFECTS.md` and a number in
+  // `docs/AUDIT-*.md`. Do not "fix" a red here by relaxing it; fix the game, or re-state the
+  // row with the evidence (session brief §14, and the five laws at the top of it).
+  audit: makeAuditSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng, brightness }),
 };
 
 async function main() {
