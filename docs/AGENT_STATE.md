@@ -4,9 +4,11 @@ PHASE: **P0 — reality audit** (session brief §8). The audit exists and has be
 ITEM: P0.1 baseline commit ✅ · P0.2 audit suite + audit doc ✅ (`tests/suites/audit.mjs`,
 `docs/AUDIT-2026-10-15.md`) · P0.3 the cheap certain fixes ← **next**.
 
-LAST GREEN: unit `412/412` at commit `2986324` (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`).
-The audit itself is **14/23 checks, red on purpose** (`node tests/run-browser.mjs audit`); its
-nine reds are the work list in `docs/DEFECTS.md`.
+LAST GREEN: unit **`416/416`, exit 0** at commit `84ef92e` (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`)
+— the 412 of the baseline plus this pass's four module-gate tests. Browser: subset
+`testmap interior city townsfolk living doors world` **287/289**, and `townsfolk` alone **56/57**
+after D-10's repair; the reds are D-08 (pre-existing, attributed by a baseline worktree run) and
+the audit's own nine. The audit is **14/23, red on purpose** (`node tests/run-browser.mjs audit`).
 
 IN PROGRESS: nothing half-edited. `src/main.js` gained `installPageLoadCounter()` (the audit's
 S-E instrument: `__debug.navigations`, `sessionStorage`-based, 0 in a tab's first document);
@@ -33,6 +35,9 @@ WHAT THE AUDIT PROVED (full write-up: `docs/AUDIT-2026-10-15.md`):
   living world (P3).
 
 NEXT 3 STEPS:
+0. **D-08 + D-01a are one bug** — a crowd that is not walking is drawn with frames that are, and
+   at 23:00 it does not walk at all. Probe the walk-cycle gate (`set.moved`, the sprite batch's
+   `record`) before touching either.
 1. **D-01b then D-02a** — people and creatures in the country (P1 items 1–2). These two are the
    same complaint ("there is nothing out there") and are the biggest player-visible win. For the
    bestiary, `rosterFor(danger)` already exists and is annotated; a *terrain/clock* table does not,
@@ -44,9 +49,9 @@ NEXT 3 STEPS:
    player's own folder and fall back to `daggerfall/src/characters/nameGen.json` (D-06), so a
    missing corpus is a degraded feature rather than an invisible one.
 
-OPEN DEFECTS (top): D-01a · D-01b · D-02a · D-03 (breadth) · D-05 · D-06 (the fallback) · D-07 —
-D-02b and D-05a are DOC and landed in `f2003c7`. Full list and the observation O-01:
-`docs/DEFECTS.md`.
+OPEN DEFECTS (top): D-01a · D-01b · D-02a · D-03 (breadth) · D-05 · D-06 (the fallback) · D-07 ·
+D-08 (pre-existing) — D-02b and D-05a are DOC (landed `f2003c7`), D-10 is FIXED (`townsfolk`
+56/57). Full list, plus the observation O-01: `docs/DEFECTS.md`.
 
 DO-NOT-REPEAT (paid for already):
 * Reading `src/scenes/interior.js` whole (478 KB, one ~8 400-line closure). Grep a name, then

@@ -279,8 +279,18 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     await settle();
 
     const panel = await speakTo('nearest');
+    // **Two shapes, because the game has two and this machine is the second one.** The heading
+    // a person reads as is their composed **name** when the sibling install's corpus loaded
+    // (`Elistan Mosswood — a man of the town`, S30 closed) and the unnamed form otherwise
+    // (`a person in chain mail`, `townsfolk.js`'s own `label`). The old assertion pinned the
+    // unnamed form alone, so it failed on every machine that *has* the corpus while the prose,
+    // the source and the topics all read correctly — a stale assertion, not a broken `T`
+    // (`docs/DEFECTS.md` D-10). What it still refuses is a panel with no heading at all, and the
+    // check below independently asserts that the corpus is what named them.
     check('T opens a conversation with the person in front of the player',
-      panel.shown === true && /a person in /.test(panel.who ?? ''), `${panel.who}`);
+      panel.shown === true
+      && (/^a person in /.test(panel.who ?? '') || / — a (man|woman) of the town$/.test(panel.who ?? '')),
+      `shown ${panel.shown}: ${panel.who}`);
     // S30 closed: the street's folk carry the sibling install's own composed names —
     // the heading rides the name when the corpus is in, and the seam counts the named.
     const named = await page.evalJs('JSON.stringify(window.__debug.names ? window.__debug.names() : null)');
