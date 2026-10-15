@@ -24,6 +24,39 @@ import { rollMonster } from './combat.js';
 import { MONSTERS, monsterById, rosterFor } from './monsters.js';
 
 /**
+ * How much of a level's own bestiary is in play, from the danger of the place and how deep
+ * into it the player is.
+ *
+ * **The order is Arena's; the window is this project's own.** A level's `.INF` names its
+ * creatures in `*ITEM` order, and that order is the install's own danger scale — item 32 is a
+ * rat and item 54 is a lich (`game/dungeonItems.js`'s `MONSTER_ITEM_MIN`…`MONSTER_ITEM_MAX`),
+ * which is why `monsterRosterFromInf` hands them back in it. Which **slice** of that list a
+ * given room fields is a rule this project wrote, because the table that decided it is in
+ * `A.EXE` (D11, P2). The rule: the top of a stage-1 dungeon fields the weakest 40 % of its
+ * own list, a late-stage dungeon's depths field all of it.
+ *
+ * It replaces a **uniform draw over the whole list**, which stood a stone golem, a firedaemon
+ * and a vampire in the first rooms of the Imperial Dungeons beside a goblin — the owner's own
+ * report (2026-10-16): "as first enemies you fight a lot of goblins rats … instead in
+ * perfectarena theres a golem then a vampire and ghouls" (D-15).
+ *
+ * @param {string[]} roster  the level's own creature list, in its `.INF` order
+ * @param {{danger?: number, depth?: number}} [opts]  `depth` is the level's index inside the
+ *   place (0 is where the player arrives); a place one level deep passes 0
+ * @returns {string[]} a prefix of `roster` — never empty when the roster is not
+ */
+export function rosterWindow(roster, opts = {}) {
+  const list = Array.isArray(roster) ? roster : [];
+  // A single named creature is a *quest target*, not a bestiary: `slay` jobs pass exactly the
+  // one kind they want (`interior.js`), and a window must never eat it.
+  if (list.length <= 1) return list.slice();
+  const danger = Number.isFinite(Number(opts.danger)) ? Number(opts.danger) : 4;
+  const depth = Math.max(0, Math.trunc(Number(opts.depth) || 0));
+  const share = Math.max(0.3, Math.min(1, 0.3 + (danger - 2) / 30 + depth * 0.12));
+  return list.slice(0, Math.max(1, Math.round(list.length * share)));
+}
+
+/**
  * @typedef {object} SpawnedMonster
  * @property {object} monster    a rolled monster (`game/combat.js`)
  * @property {{row: number, col: number, x: number, y: number, z: number}} place
@@ -39,6 +72,8 @@ import { MONSTERS, monsterById, rosterFor } from './monsters.js';
  * @param {number} [opts.danger]    the danger rating the roster is drawn from
  * @param {number} [opts.count]     how many monsters to place
  * @param {{row: number, col: number}} [opts.arrival]
+ * @param {number} [opts.depth]  the level's index inside the place, 0 for the level the
+ *   player arrives on (it is what widens `rosterWindow` as the player descends)
  * @param {number} [opts.minCells]  the closest a monster may stand to the arrival
  * @param {string[]} [opts.monsters]  **the level's own roster** — the monster ids its
  *   `.INF` names in its `@FLATS` `*ITEM` lines (`dungeonItems.monsterRosterFromInf`). A
@@ -59,8 +94,12 @@ export function spawnEncounter(opts) {
   const named = (opts.monsters ?? [])
     .map((id) => monsterById(String(id)))
     .filter(Boolean);
-  const roster = named.length ? named : rosterFor(danger);
-  if (!roster.length || !level?.cells?.length) return [];
+  const bestiary = named.length ? named : rosterFor(danger);
+  if (!bestiary.length || !level?.cells?.length) return [];
+  // **A level's own list is deeper than it is wide.** See `rosterWindow`: the weakest kinds of
+  // the level's own roster are what its first rooms hold, and its whole list is what its depths
+  // hold. `rosterFor`'s danger pool is already ordered weakest-first for the same reason.
+  const roster = rosterWindow(bestiary, { danger, depth: opts.depth ?? 0 });
   const arrival = opts.arrival ?? null;
   const minCells = opts.minCells ?? 6;
   const excluded = opts.exclude ?? new Set();
@@ -118,10 +157,11 @@ export function spawnEncounter(opts) {
   for (let i = 0; i < wanted; i++) {
     const pick = random.nextBelow(cells.length);
     const [place] = cells.splice(pick, 1);
-    // The kind is drawn from the whole roster, not from its first tier: a level that names
-    // thirteen creatures should field thirteen, and a lich is not rarer than a rat here —
-    // the *danger* is what scales the bodies' statistics (below), which is the original's
-    // own division of labour between a level's bestiary and its difficulty.
+    // The kind is drawn from the **reachable window** of the level's own list (`rosterWindow`),
+    // uniformly inside it: a level whose window holds six kinds fields those six, and depth and
+    // danger are what widen the window. The *statistics* still scale with the danger rating
+    // below, which is the original's own division of labour between a level's bestiary and its
+    // difficulty.
     const kind = roster[random.nextBelow(roster.length)];
     const monster = rollMonster(kind, random, { level: Math.max(1, danger + random.nextBelow(3) - 1) });
     spawned.push({

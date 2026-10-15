@@ -2020,6 +2020,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /** @type {import('../game/encounters.js').SpawnedMonster[]} */
   let monsters = [];
   /**
+   * A spawn's own number, handed out the first time `__debug.combat()` reads the array.
+   *
+   * **An index is not a handle.** The array is compacted when a creature dies
+   * (`stepMonsters`), so a fixture that captured `monsters.length - 1` before a fight was
+   * addressing a different creature after one — the `actioncombat` suite carries a comment
+   * about exactly that ("the golem's removal after its death shrank the array"), and its
+   * workaround was to look creatures up by **name**, which breaks the moment a level's own
+   * bestiary fields a second one (the Imperial Dungeons hold rats now — D-15). A serial is
+   * stable across compaction and across several creatures of one species.
+   */
+  let spawnSerial = 0;
+  /**
    * The bolts in flight — a caster's thrown magic (`game/ranged.js`). Each is stepped by
    * the sim clock, dies on a wall, and resolves against the player's live defence; the
    * dead are dropped at the end of the step that killed them.
@@ -3100,6 +3112,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       : monsterCountFor({ danger, level: loaded.level, monsters: rosterIds });
     const spawned = spawnEncounter({
       level: loaded.level, seed, danger, count, arrival,
+      // **How deep this level is**, which is the other half of whose bestiary stands in it:
+      // the entrance level of a place fields the weakest slice of its own `.INF` list and its
+      // depths field the rest (`encounters.rosterWindow`, D-15). `loaded.index` is the level's
+      // index inside this map — 0 is where the player arrives.
+      depth: loaded.index ?? 0,
       minCells: inhabited ? 14 : 6, monsters: rosterIds,
     });
 
@@ -7225,7 +7242,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return { ok: true, objective: radiantObjective(radiant), completed: Boolean(radiant.active?.completed) };
     },
     /** Who is here, what they are doing, and what the player has left. */
-    combat: () => ({
+    combat: () => {
+      // Stable handles before anything is read (`spawnSerial`): the report below hands each
+      // spawn a `serial`, and the index it also carries moves when somebody dies.
+      for (const spawn of monsters) spawn.serial ??= ++spawnSerial;
+      return {
       view,
       player: {
         name: player.name, class: player.className ?? null, level: player.level ?? 1,
@@ -7240,7 +7261,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // its blow has been decided (`strikeFromMonster`).
       attacks: monsters.filter((s) => s.attack).map((s) => {
         const at = attackPhase(s.attack.profile, s.attack.elapsed);
-        return { name: s.monster.name, phase: at.phase, progress: at.progress, elapsed: s.attack.elapsed,
+        return { serial: s.serial, name: s.monster.name, phase: at.phase, progress: at.progress, elapsed: s.attack.elapsed,
           windup: s.attack.profile.windup, active: s.attack.profile.active, charge: s.attack.profile.charge,
           struck: s.attack.struck, origin: { ...s.attack.origin }, yaw: s.attack.yaw,
           reach: s.attack.profile.reach, x: s.world.x, z: s.world.z };
@@ -7249,6 +7270,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       effects: { space: 'world', depthTested: true, particles: combatFx.particles.length, vertices: combatFx.count, bursts: combatFx.bursts, chargeBursts: dbg.chargeBursts ?? 0, hitStop },
       defence: { rollT: defence.rollT, parryT: defence.parryT, direction: defence.rollDirection, live: liveDefence(), riposte: defence.riposte, stamina: defence.stamina.stamina ?? null, max: defence.stamina.max ?? null },
       monsters: monsters.map((s) => ({
+        serial: s.serial,
         name: s.monster.name, id: s.monster.id, level: s.monster.level,
         health: s.monster.health, maxHealth: s.monster.maxHealth,
         file: s.file, cell: { row: s.place.row, col: s.place.col },
@@ -7289,7 +7311,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       formula: HIT_FORMULA_NOTE,
       deaths: dbg.deaths ?? 0,
       lastDamage: dbg.lastDamage ?? null,
-    }),
+      };
+    },
     /** Swing, exactly as `F` and a click do. */
     strike: (opts) => { const blow = strike(opts); dbg.lastStrike = blow; return blow; },
     /**

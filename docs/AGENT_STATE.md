@@ -1,70 +1,68 @@
-# AGENT_STATE (updated 2026-10-15, second pass)
+# AGENT_STATE (updated 2026-10-16, third pass)
 
-PHASE: **P0 — reality audit** (session brief §8). The audit exists and has been run.
-ITEM: P0.1 baseline commit ✅ · P0.2 audit suite + audit doc ✅ (`tests/suites/audit.mjs`,
-`docs/AUDIT-2026-10-15.md`) · P0.3 the cheap certain fixes ← **next**.
+PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
+Arena on 2026-10-16 and reported a long list; it is written up as **D-12 … D-24 in
+`docs/DEFECTS.md` with their own section** and is now the work list. D-01a and D-15 are closed.
 
-LAST GREEN: unit **`416/416`, exit 0** at commit `84ef92e` (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`)
-— the 412 of the baseline plus this pass's four module-gate tests. Browser: subset
-`testmap interior city townsfolk living doors world` **287/289**, and `townsfolk` alone **56/57**
-after D-10's repair; the reds are D-08 (pre-existing, attributed by a baseline worktree run) and
-the audit's own nine. The audit is **14/23, red on purpose** (`node tests/run-browser.mjs audit`).
+LAST GREEN: unit **`421/421`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) at the
+D-15 commit. Browser, all run this pass: `townsfolk city living` **133/133** · `actioncombat`
+**23/23** · `dungeonplay combat` **45/45** · `audit` **15/23** (red on purpose; every red is the
+wilderness — D-01b/D-02a). The `townsfolk` suite's one long-standing red (D-08) is fixed
+(`cefb8a6`).
 
-IN PROGRESS: nothing half-edited. `src/main.js` gained `installPageLoadCounter()` (the audit's
-S-E instrument: `__debug.navigations`, `sessionStorage`-based, 0 in a tab's first document);
-`tests/suites/audit.mjs` is new and registered as `audit` in `tests/run-browser.mjs`;
-`tests/unit/modules.test.mjs` is the P0 **module gate** (every `src/` module parses, every static
-import resolves, every module imports in bare Node, one entry point) — mutation-checked: a
-missing import and a syntax error each turn it red.
+IN PROGRESS: nothing half-edited. Working tree clean except `docs/` edits of this pass.
 
-WHAT THE AUDIT PROVED (full write-up: `docs/AUDIT-2026-10-15.md`):
-* **S-A town, 10:00: 48 people, 43 of them (90 %) moved > 5 m in 20 s, 17 mid-step, 7 mid-route.**
-  The previous pass's walking is real. **23:00: the same 48 people, 0 moved — a frozen crowd (D-01a).**
-* **S-A/S-B the country is empty — 0 people and 0 creatures in all three climates (D-01b, D-02a).**
-  Root cause read off the bytes: `TWN/DWN/MWN.INF` place only item flats `[15,2,14]`, so the
-  monster roster is `[]` and `monsterCountFor` returns 0 by its own law; and `populate()`'s
-  `else { townsfolk = [] }` empties the people outside cities.
-* **S-C: 0 missing textures on all 7 levels walked** (city, shop, 3 windows, dungeon). The real
-  asset gap is coverage: 1 691 of 2 441 BSA records named by nothing.
-* **S-D is NOT reproduced**: at cell (1024,1024) the three climates place *no shared block*
-  (`[24,60,49,29]` / `[41,34,12,56]` / `[37,22,9,32]`, 1 123/1 154/1 753 flats). Climate selects
-  terrain, not just a palette. Relief/sea/roads/continuity remain absent and unclaimed.
-* **S-E: a door is NOT a page load.** `navigations` stayed flat and a variable set on the street
-  survived into the shop — `goInPlace` re-boots the scene in one document. The brief's S35 is
-  **stale** (D-05a); the real gap is that a hop re-boots the scene instead of swapping into a
-  living world (P3).
+WHAT THIS PASS PROVED (full detail: `docs/AUDIT-2026-10-15.md`, `docs/DEFECTS.md`):
+* **D-01a closed (`62b75b8`) — the night street.** Two causes: the indoors flag flickered for one
+  frame per rest block; and no city had a single trade, because `populateTown` ignored the level's
+  own `*ITEM` people records. Both fixed. Measured (`.scratch/nightprobe.mjs`): 10:00 → 48 people,
+  44 out, 41 walking, 16 on a route; **23:00 → 4 out and walking, 44 indoors**; 06:00 → 9 priests
+  walking to worship. The audit's own S-A night check went green for the first time.
+* **D-15 closed — the Imperial Dungeons' first rooms.** The level's roster was drawn **uniformly**,
+  so a stone golem and a firedaemon stood where Arena has rats and goblins (the owner's own
+  report). `encounters.rosterWindow` now fields a **prefix** of the level's own list, widening with
+  danger and depth. Audit line, before → after:
+  `{stonegolem:1, ghoul:1, goblin:1, firedaemon:1, vampire:1}` → `{lizardman:1, orc:2, wolf:1, rat:1, goblin:1}`.
 
-NEXT 3 STEPS:
-0. **D-08 + D-01a are one bug** — a crowd that is not walking is drawn with frames that are, and
-   at 23:00 it does not walk at all. Probe the walk-cycle gate (`set.moved`, the sprite batch's
-   `record`) before touching either.
-1. **D-01b then D-02a** — people and creatures in the country (P1 items 1–2). These two are the
-   same complaint ("there is nothing out there") and are the biggest player-visible win. For the
-   bestiary, `rosterFor(danger)` already exists and is annotated; a *terrain/clock* table does not,
-   and until ACD.EXE is unpacked (P2) it must be stamped this project's own.
-2. **D-01a** — find out why the town freezes at 23:00; probe `stepTownsfolk`/`townPaths` at night
-   before changing anything.
-3. **D-07** — names exist only on this checkout's dev door (hard-coded
-   `C:/ArenaProject/daggerfall/arena2/...` behind a silent catch). Serve the corpus through the
-   player's own folder and fall back to `daggerfall/src/characters/nameGen.json` (D-06), so a
-   missing corpus is a degraded feature rather than an invisible one.
+NEXT 3 STEPS (the owner's list, cheapest-loudest first):
+0. **D-14 — the first-person weapon in hand.** The sheets and the state machine are right and
+   `equipThing` does reset the rig, so the report ("always the dagger") is not yet reproduced:
+   probe what the rig draws for each of `fists → dagger → longsword → war-axe → mace → staff`
+   **through the real equip path**, and check the *starting* weapon (Arena starts you unarmed /
+   per class; this port's `placeholderPlayer` carries a longsword and items.js's starting kit a
+   dagger). Also D-16 (loot pile too big) and D-21 (no dungeon fog) are one-file reads.
+1. **D-20 — "hold left click and yellow particles come out of me" + the notice.** The tell is
+   gated to an *armed* heavy already (`interior.js`, `defence.charging`), so what a player sees is
+   the held heavy's own amber — the owner wants Arena's presentation (blood, not sparks) and no
+   developer-voice notice. Decide the art trade-off, then make the tell the weapon's own wind-up.
+2. **D-12/D-13 — the start of the game.** Whether `INTRO.FLC` is played at all after `?chargen`,
+   and whether the start dungeon's mirrored look is a data or a camera issue (compare
+   `START.MIF`'s own flat layout — `tools/lib/mapascii.mjs` — with what the port draws).
 
-OPEN DEFECTS (top): D-01a · D-01b · D-02a · D-03 (breadth) · D-05 · D-06 (the fallback) · D-07 ·
-D-08 (pre-existing) — D-02b and D-05a are DOC (landed `f2003c7`), D-10 is FIXED (`townsfolk`
-56/57). Full list, plus the observation O-01: `docs/DEFECTS.md`.
+Then the two big ones the list names and the phases already own: **D-01b/D-02a** (people and
+creatures in the country — the audit's four remaining reds) and **D-22** (P3/P4: the wilderness is
+a 128×128 window, not a country — the owner: "you teleport around and cant even get out of a city").
+
+OPEN DEFECTS (top): D-12 · D-13 · D-14 · D-16 · D-17 · D-18 · D-19 · D-20 · D-21 · D-01b ·
+D-02a · D-22 · D-23 · D-24 · D-03 (coverage) · D-05 (P3) · D-06/D-07 (names outside this checkout).
+Full list: `docs/DEFECTS.md`. O-01 stands (a live page whose clock is moved answers no probe).
 
 DO-NOT-REPEAT (paid for already):
 * Reading `src/scenes/interior.js` whole (478 KB, one ~8 400-line closure). Grep a name, then
   `sed -n 'A,Bp'` a ≤300-line window.
-* **An in-page probe whose promise can hang.** `page.evalJs` awaits the page's promise, and an
-  exception inside a `requestAnimationFrame` callback leaves that promise pending *forever* —
-  the first audit run sat for four minutes with nothing on screen. Every in-page watch in
-  `audit.mjs` now catches per step and arms a `setTimeout` belt. Never write another one without.
-* Moving the clock on a live page (`setClock(1380)`) from a probe: a page **booted** at an hour
-  (`?clock=`) answers; the live move did not (O-01).
-* Trusting `ARENA_PATH`'s default: run the suites with it set, or the audit's own folder line and
-  every suite's `q` disagree.
+* **An in-page probe whose promise can hang.** An exception inside a `requestAnimationFrame`
+  callback leaves the promise pending for ever; every audit watch catches per step and arms a
+  `setTimeout` belt.
+* Moving the clock on a live page from a probe (`setClock`). A page **booted** at an hour
+  (`?clock=`) answers; boot a fresh page instead.
+* Trusting `ARENA_PATH`'s default: run the suites with it set.
+* **Addressing a suite's own creature by name or by array index.** An index moves when a creature
+  dies; a name is not unique once a level fields its own bestiary (D-15). Use
+  `__debug.combat()`'s `serial`.
+* Assuming a failing check is pre-existing: attribute it in a `git worktree` at the baseline
+  commit (`git worktree add -q .scratch/wt HEAD`) before believing either story.
 
 FILES NOT TO READ WHOLE: `src/scenes/interior.js` (478 KB) · `src/engine/render/renderer.js`
 (5 551 lines) · `src/scenes/worldmap.js` (59 KB) · `tests/run-browser.mjs` (89 KB) ·
-`docs/DECISIONS.md` (52 KB) · `src/game/livingWorld.js` (49 KB) · `src/game/radiantQuests.js` (42 KB).
+`docs/DECISIONS.md` (52 KB) · `src/game/livingWorld.js` (49 KB) · `src/game/radiantQuests.js`
+(42 KB) · `tests/suites/actioncombat.mjs` (319 lines — read the phase you touch).
