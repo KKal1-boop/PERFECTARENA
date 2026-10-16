@@ -186,6 +186,34 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
       along?.wild === true && along.map === walkedOut.map,
       `still ${along?.wild ? 'the country' : 'the city'} at ${JSON.stringify(along?.feet)} (from ${JSON.stringify(beforeAlong)})`);
 
+    // ── 4b. and the way back in, from the country ──────────────────────────────
+    //
+    // The other half of the same door, and the one that was **undone** until D-32: the country
+    // page *did* recognize the gate and the push *did* cross, but the boot let the save's
+    // remembered wilderness cell override the explicit arrival (`?at=`), so the city page came
+    // back AS the country at the cell the player had left from. `interior.js`'s `rememberedWild`
+    // guard now refuses memory when the URL asks for the settlement, which is what its own
+    // comment always said. Measured here: the push in lands on the city page, three cells inside
+    // the gate on its own row (`?at=8,124` for `CITYW2`'s gate at 8,127).
+    // **D-32's own law, which is why the walk back was undone**: the save remembers the last
+    // wilderness cell for a place, and a bare `?location=` opens the country on it — that is the
+    // persistent world working. But an **explicit arrival** (`?at=`, which is what the gate
+    // crossing and fast travel both build) must beat memory, or the crossing boots the country
+    // again at the cell the player left from. The suite has just walked out, so the save holds a
+    // wilderness cell for this city: the two loads below are that pair, and the second one is the
+    // push-back's own URL.
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&arena=${encodeURIComponent(arena)}`);
+    await ready();
+    const remembered = await page.evalJs('({ wild: Boolean(window.__debug.state().wild), cell: window.__debug.state().wild?.cell ?? null })');
+    check('the world remembers the last wilderness cell — a bare location opens the country on it',
+      remembered.wild === true, `wild: ${remembered.wild} at ${JSON.stringify(remembered.cell)}`);
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&at=${stand[0]},${stand[1]}&arena=${encodeURIComponent(arena)}`);
+    await ready();
+    const arrived = await page.evalJs('({ wild: Boolean(window.__debug.state().wild), map: window.__debug.state().map, feet: window.__debug.state().feet })');
+    check('and an explicit arrival beats it: the gate crossing lands in the city, not back in the country',
+      arrived.wild === false && arrived.map === walkedOut.map,
+      `?at=${stand[0]},${stand[1]} → ${arrived.wild ? 'the country' : 'the city ' + arrived.map} at ${JSON.stringify(arrived.feet.map((v) => Math.round(v * 10) / 10))}`);
+
     await page.screenshot(path.join(shots, 'movement-stride.png'));
     check('the movement suite leaves no console error behind', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400) || 'none');

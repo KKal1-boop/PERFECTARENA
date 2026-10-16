@@ -721,8 +721,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // click, fast travel) always arrive in the settlement itself — memory may only apply
   // when the player came here by walking into it, which is exactly the case below.
   const askedWild = readWildRequest(params);
+  // **`?at=` is the explicit "be in the settlement" answer** — the gate crossing
+  // (`crossGate`) and a fast-travel arrival both carry it, and both *keep* `location=`
+  // because a settlement's page needs it. Without that test the guard below let the save's
+  // remembered wilderness cell override the player's own arrival: walking back in at a city
+  // gate rebuilt the **country** at the cell they had left from, so the walk back was undone
+  // (D-32, measured: `?at=8,124&location=Daggerfall` re-booted the wilderness at
+  // (1992,2114) — the remembered cell — every time). Reported because the comment above was
+  // already right and only the code was not.
   const rememberedWild = (() => {
-    if (askedWild || !params.has('location')) return null;
+    if (askedWild || params.has('at') || !params.has('location')) return null;
     try {
       const raw = localStorage.getItem(LAST_LOCATION_KEY);
       if (!raw) return null;
