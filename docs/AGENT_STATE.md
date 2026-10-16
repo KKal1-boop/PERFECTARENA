@@ -1,4 +1,4 @@
-# AGENT_STATE (updated 2026-10-16, eighth pass)
+# AGENT_STATE (updated 2026-10-16, ninth pass)
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
@@ -10,10 +10,12 @@ that work order — **23** system-level blocks with their source of truth, their
 that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
 **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN (this pass): unit **`476/476`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
-test`) — seven new checks, `unit/dungeonsurface.test.mjs`. Browser: **`dungeonplay` 20/20** (17 of
-them one walk: a dev-door dungeon → its own stair → the country at the ruin its seed picks → `E`
-back down, plus the opening dungeon → the country outside Riverhold) · **`mainquest` 62/62** ·
+LAST GREEN (this pass): unit **`482/482`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
+test`) — six new checks, `unit/pklite.test.mjs`. Browser: the **new `exe` suite 8/8** — the game's
+own `ACD.EXE` read from the install and unpacked **in the page**, with the four structural numbers
+and Arena's own words read back. Previous pass: unit **`476/476`**, browser **`dungeonplay` 20/20**
+(17 of them one walk: a dev-door dungeon → its own stair → the country at the ruin its seed picks →
+`E` back down, plus the opening dungeon → the country outside Riverhold) · **`mainquest` 62/62** ·
 **`movement` 11/11** · **`world` 28/28**. Previous pass's record: unit **`469/469`, exit 0** — seven
 new checks, `unit/stride.test.mjs`. Browser: **`movement` 11/11** (new then: every movement key
 held leaves the frame counter climbing, the stride measured, the city gate walked through) ·
@@ -25,10 +27,41 @@ touched creation). Earlier browser runs, for the record:
 it was written) · `world` **28/28** · `combat` + `actioncombat` **82/82** · `chargen` **41/41** ·
 `menu` · `dungeonplay` **10/10** (the camp the level hears).
 
-IN PROGRESS: nothing half-edited. `src/game/dungeonSurface.js` + `tests/unit/dungeonsurface.test.mjs`
-are new; `interior.js` (the exit, the `?ruin=` country page, `E` at the ruin) and
-`tests/suites/dungeonplay.mjs` (two new walks) moved with them. The ninth pass's first item is
-§5 item 0 in `docs/PORT_BLOCKS.md` (dungeon depth), unless the owner's report is louder.
+IN PROGRESS: nothing half-edited. **The executable is open** (block B24): `src/arena/pklite.js`
+(the unpacker) and `src/arena/exeData.js` (the runtime read) are new, `interior.js` carries the
+`exe()` seam, and `tests/suites/exe.mjs` is a new browser suite (registered in `run-browser.mjs`,
+which now offers **24**). The tenth pass's first item is §5 item 0 in
+`docs/PORT_BLOCKS.md` — **the tables out of the unpacked image**, one table per pass, unless the
+owner's report is louder.
+
+WHAT THIS PASS PROVED (ninth pass, 2026-10-16 part six — **`ACD.EXE` unpacked**; `docs/PORT_BLOCKS.md` §4e):
+* **The game's own executable is readable, in the page, from the player's own copy.** `ARENA.BAT`
+  runs `ACD` (not `A.EXE`), so the 174 429-byte `ACD.EXE` **is** the game, packed with **PKLITE 1.12
+  registered, "extra" + "large"** (offset 28 `0x0C` = minor 12; offset 29 `0x31` = major 1 with the
+  `0x10`/`0x20` flags; string at 30 — which corrects the previous pass's off-by-one reading of that
+  pair). The previous pass planned to disassemble the stub to find the stream offset; the published
+  format's own table gives **656** for that version pair and the image starts at 96, so the stream is
+  at **752** — exactly where the file's byte entropy stops being stub-like. One table, one number,
+  both checkable against the bytes.
+* **What came out** (`src/arena/pklite.js`): a **305 520-byte code image** (19 095 whole paragraphs),
+  **4 044 relocations**, footer `SS=19087 SP=128 CS=0 IP=0`, the relocation table ending at
+  **174 421 = the file's end − 8** (on the footer), 33 ms, no warnings. Four checks a one-bit desync
+  cannot pass, all green: the image is whole paragraphs; `SS×16+SP = 305 520` = the image's length;
+  the entry the footer names is the image's **first byte** (`mov dx,3BA0h / mov ah,30h / int 21h`);
+  and every relocation segment is a multiple of `0x0fff`.
+* **It is this game**: `to select your class?` @220304, `the world of Tamriel, home of the Arena…`
+  @221192, `Imperial Province` @235528, `Khajiit` @251849, `Redguard` @255313, `Nord` @255323,
+  `wild.mif` @249113 — and the **wilderness draws' thresholds as words** (`0x6666` ×71, `0x4000` ×235,
+  `0x2666` ×73, `0x1999` ×3), the first independent confirmation `game/wilderness.js`'s
+  `CATEGORY_THRESHOLDS` has ever had.
+* **Held where it will run**: `unit/pklite.test.mjs` **6/6** (including the refusal path — a
+  non-PKLITE file is refused by name, not decoded into nonsense) and the new **`exe` suite 8/8**,
+  which produces every number above *in a browser page, from the player's own install*. Doctrine
+  kept: nothing derived is committed; the image is read at runtime and kept for the page's life.
+* **A test bug worth the note**: the first run of `unit/pklite.test.mjs` failed twice on my own
+  expectations, not the decoder — `PKLITE_NOT_ENOUGH_MEMORY` is in the *stub* (packed), not the code
+  image, and the version label renders the minor byte as **decimal** (`0x0c` → `1.12`, `0x99` →
+  `2.153`). Both were fixed in the test, which is where they belonged.
 
 WHAT THIS PASS PROVED (eighth pass, 2026-10-16 part five — D-34, and `docs/PORT_BLOCKS.md` §4c):
 * **D-34 — a dungeon's way out is the country, not the map.** The owner: *"STILL EXITING A DUNGEON
@@ -190,7 +223,15 @@ always said) and `movement` **11/11** holds both halves. The one cause still ope
 `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m).
 
 NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
-0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
+0. **B24 continued · the tables out of the unpacked image** — the owner's own ask (*"you need to
+   decompile all of Arena"*), and the block is now cheap to advance: the image, its anchors and its
+   structure are all in hand (`§4e`). One table per pass, each verified against something this repo
+   already trusts: the class and race tables against `chargen`'s list, the creation prose against
+   the port's own text, the wilderness draws (already confirmed), the item and spell text. First
+   probe: dump the ASCII runs around the creation offsets (`to select your class?` @220304) and the
+   `img` name tables, and name the module each run belongs to — `docs/ASSETS.md`'s discipline,
+   applied to the executable.
+0b. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
    Probe: per shipped dungeon, `levelCount`, each stair's cell and which levels are wet; then
    assemble the second level the way the original's own second level reads. **D-27's open leftover
    rides with it**: `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m), so a crossing

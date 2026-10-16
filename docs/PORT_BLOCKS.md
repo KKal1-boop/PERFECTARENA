@@ -76,7 +76,7 @@ stops a session from guessing.
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
 | B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
 | B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24, and the owner's "you should port much more from arena" = D-31) | `unit/assetcoverage.test.mjs` + the tool's own run |
-| B24 | **`ACD.EXE` — the game's own tables** (the owner's "you need to decompile all of Arena"; the brief's P2) | `arena/ARENA/ACD.EXE` (174 429 B) — the executable `ARENA.BAT` runs. **Measured from the bytes this session** (`node` read of the file): `MZ`, **1** relocation, header **96 B** (6 paragraphs) so the image is 174 333 B, `minAlloc` 9 024 paragraphs, `maxAlloc` 65 535, entry `IP:CS = 100:fff0`, `SS:SP = 2a96:200`; the stub carries `"PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved"` at offset 30 (the **pre-1993** PKLITE string, so not the 1.5+ "1990-93" variant), **no** `LZ91` marker, and the tail's entropy is **7.872 bits/byte** over the last 64 KiB — packed, not encrypted | new (`src/arena/pklite.js`, runtime-only) + `src/arena/exeData.js` (anchor-located tables) | `[ ]` **started, nothing unpacked yet — but the stub is now read byte by byte**, which is the whole first probe. Measured after the header: at **offset 24** the relocation-table pointer `0x0052` (=82, one entry `7:0`), at **offset 28** the byte `0x0C`, at **offset 29** the ASCII string **`1PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved`** (NUL at **83**) — the leading `1` is the packer's own version digit, and `0x0C` the byte a decoder keys the variant on — then thirteen zero bytes and the **stub's entry at offset 96**: `B8 C1 4D  BA 90 2A` = `mov ax,4DC1h` / `mov dx,2A90h`, PKLITE's per-file **signature words**, followed by `05 00 00 3B 06` (add/compare against the image size). Entropy does **not** separate stub from payload here (7.084 bits/byte at offset 96 in a 1 KiB window, 7.666 at 4 KiB, 7.702 at 20 000), so the stub's own length field — not a heuristic — is what will mark the compressed stream's start. Next: decode `mov ax/dx`'s use in the stub to find that field, then the LZ decoder, verified by anchors this repo already trusts (class and race names, "Jagar Tharn", `.MIF` names) **and** by a fact it proved itself (the wilderness thresholds `0x6666/0x4000/0x2666/0x1999`). Doctrine: derived at runtime on the player's machine, cached in memory/IndexedDB, **never committed** (law 6) |
+| B24 | **`ACD.EXE` — the game's own tables** (the owner's "you need to decompile all of Arena"; the brief's P2) | `arena/ARENA/ACD.EXE` (174 429 B) — **the game itself**: `ARENA.BAT` runs `@ACD -Ssbpdig.adv -IOS220 -IRQS7 …`. The format's description is the entropymine write-up *Notes on PKLITE format* (jsummers, Parts 1–3) and the instance is the file's own bytes. **Measured from the bytes this session** (`node` read of the file): `MZ`, **1** relocation, header **96 B** (6 paragraphs) so the image is 174 333 B, `minAlloc` 9 024 paragraphs, `maxAlloc` 65 535, entry `IP:CS = 100:fff0`, `SS:SP = 2a96:200`; the stub carries `"PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved"` at offset 30 (the **pre-1993** PKLITE string, so not the 1.5+ "1990-93" variant), **no** `LZ91` marker, and the tail's entropy is **7.872 bits/byte** over the last 64 KiB — packed, not encrypted | new (`src/arena/pklite.js`, runtime-only) + `src/arena/exeData.js` (anchor-located tables) | `[~]` **THE FILE IS UNPACKED — the game's tables are readable** (`682e48e`+, this pass). **What packed it, read from its own bytes:** offset 28 = `0x0C` (minor 12) and offset 29 = `0x31` → major **1**, bit `0x10` = **"extra"** compression, bit `0x20` = **"large"** codebook, i.e. **PKLITE 1.12 registered**; the copyright string is at **30** (`PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved`, NUL at 83). *(Correction to the previous pass's reading: the `1` that looked like the string's version digit at 29 is the **flags byte**, and the string starts at 30 — the format's own version table keys on the pair `31 0c`.)* The write-up's table gives that pair **656** bytes into the code-image segment, and the image starts at 96 → compressed stream at **752**, which is exactly where this file's byte entropy climbs (7.0 bits/byte at 704, 7.2 from 752 on). **What came out:** a **305 520-byte code image** (19 095 whole paragraphs), **4 044 relocations**, footer `SS=19087 SP=128 CS=0 IP=0`, code image ending at 166 321, relocation table ending at **174 421 = the file's end − 8** (exactly the footer), no warnings, **33 ms** in Node. Four structural checks a desynchronised stream cannot pass, all green: the image is whole paragraphs; `SS×16+SP = 305 520 = ` the image's length (the stack ends at the top of the load image); the entry the footer names is the image's **first byte**, which is why it opens `BA A0 3B B4 30 CD 21` = `mov dx,3BA0h / mov ah,30h / int 21h` — a DOS version call, then PSP reads; and every relocation segment is a multiple of `0x0fff` (the extra-compression normalisation). **And it is this game:** measured offsets into the image — `to select your class?` @220304, `the world of Tamriel, home of the Arena…` @221192, `Imperial Province` @235528, `Khajiit` @251849, `Redguard` @255313, `Nord` @255323, `wild.mif` @249113, `menuscrn.img` @249067 — plus the **wilderness draws' own thresholds as words**: `0x6666` ×71, `0x4000` ×235, `0x2666` ×73, `0x1999` ×3, the cross-check `game/wilderness.js` has never had. Next probe: read the tables themselves out of the image, one per pass (`exeData.js`), each verified against something this repo already trusts — the class and race tables against `chargen`, the creation prose against the port's own text, the thresholds against `wilderness.js`. Still unexplained and not needed by the static route: the stub's own setup words `mov ax,4DC1h` / `mov dx,2A90h` at offset 96. Doctrine unchanged: derived at runtime on the player's machine, cached for the page's life, **never committed** (law 6) | `unit/pklite.test.mjs` 6/6 (format, structure, and Arena's own words) + **`exe` browser suite 8/8** (the same numbers produced in a real page from the player's own copy) |
 | B23 | **Dungeon depth**: the level below (a wet basement — the original's sewers) and the storeys a tall level implies | the install's `*.MIF` + each level's `*.INF` `*LEVELUP`/`*LEVELDOWN` markers; OpenTESArena's `INFFile` for the marker names | `dungeonPlan.js` (assembly), `mifLevel.js` (markers), `interior.js` (`stairNear`/`useStair`) | `[ ]` **the owner's "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling"** — a multi-level file is walkable already (`state().level`/`levelCount`); what does not exist is a level *below* an assembled dungeon, and the storey a decoration pokes through | first probe: per dungeon, `levelCount`, each stair's cell, and which levels are wet — then assemble the second level (D-28) |
 
 ---
@@ -213,11 +213,77 @@ the draw run backwards from the grid, or a record written the first time a door 
 
 ---
 
+## 4e. What this pass closed (2026-10-16, part six — **the executable is open**)
+
+**B24 · `ACD.EXE` is unpacked, in the page, from the player's own copy.** The owner's ask has been
+*"you need to decompile all of Arena"*; this is the pass where the door opened.
+
+`ARENA.BAT` does not run A.EXE — it runs **`ACD`** (`@ACD -Ssbpdig.adv -IOS220 -IRQS7 -DMAS1
+-Mgenmidi.adv -IOM330 -IRQM2 -DMAM1`), so the 174 429-byte `ACD.EXE` in this folder **is the game**,
+and its own tables are inside it rather than in the 153 loose files. It is packed with **PKLITE
+1.12 registered, "extra" + "large" compression** (offset 28 `0x0C` = minor 12; offset 29 `0x31` =
+major 1 with the `0x10` "extra" and `0x20` "large" flags; copyright string at 30, which corrects the
+previous pass's off-by-one reading of that pair).
+
+The previous pass read the stub byte by byte and planned to disassemble it to find the stream's
+offset. **It did not need to**: the published description of the format has a table of code-image
+offsets by version, that pair (`31 0c`) is in it at **656**, the code image starts at `e_cparhdr`×16 =
+**96**, so the compressed stream is at **752** — and that is exactly where this file's byte entropy
+stops being stub-like. One table and one number, both checkable against the bytes, instead of an
+8086 disassembler.
+
+**What the unpacker produces** (`src/arena/pklite.js`, ~300 lines, no dependencies):
+
+* a **305 520-byte code image** — 19 095 whole paragraphs;
+* **4 044 relocations**, every segment a multiple of `0x0fff` (the extra-compression normalisation);
+* the footer `SS=19087 SP=128 CS=0 IP=0`, with the table ending at **174 421 = the file's end − 8**,
+  i.e. exactly on those eight bytes;
+* 33 ms in Node, no warnings, every bound checked with the offset it failed at.
+
+**Four structural checks, green, that a one-bit desync cannot pass** — and this is the whole reason
+to believe the tables rather than merely that something came out:
+
+1. the image is a whole number of paragraphs;
+2. `SS × 16 + SP = 305 520` = the image's length — the stack ends exactly at the top of the load
+   image, which is what a DOS program's stack *is*;
+3. the entry the footer names is the image's **first byte**, and that byte opens `BA A0 3B B4 30 CD
+   21` = `mov dx,3BA0h / mov ah,30h / int 21h` (a DOS version call, then PSP reads);
+4. the compressed relocation table parses after the stop marker and lands on the file's own trailer.
+
+**And the image is this game.** Arena's own words, at offsets measured in the image:
+`to select your class?` @220304 · `the world of Tamriel, home of the Arena…` @221192 ·
+`Imperial Province` @235528 · `Khajiit` @251849 · `Redguard` @255313 · `Nord` @255323 ·
+`wild.mif` @249113 · `menuscrn.img` @249067. The **wilderness draws' thresholds are numbers in the
+executable** — `0x6666` ×71, `0x4000` ×235, `0x2666` ×73, `0x1999` ×3 — which is the first
+independent confirmation `game/wilderness.js`'s `CATEGORY_THRESHOLDS` has ever had.
+
+**The runtime half matters more than the desktop one.** `src/arena/exeData.js` reads the executable
+through the same `ArenaData` source the rest of the game uses (trying `ACD.EXE`, then the floppy
+release's `A.EXE`), keeps the image for the page's life, and reports the four structural numbers
+above plus the anchor offsets. Nothing derived is committed (law 6), so a new **`exe` browser suite**
+proves the whole chain where it will actually run: **8/8**, all four structural checks and the anchors
+produced **in a page, from the player's own install**.
+
+**Held by:** `tests/unit/pklite.test.mjs` **6/6** (the file naming itself, the structural invariants,
+the trailer, Arena's own words — and the refusal path: a non-PKLITE file is refused **by name**, not
+decoded into nonsense) and the new `exe` suite **8/8** in `tests/run-browser.mjs`.
+
+---
+
 ## 5. The queue — what the next sessions take, in order
 
 Each entry names **the first probe**, because a block starts with a measurement.
 
-0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
+0. **B24 continued · the tables out of the unpacked image** (the owner's own ask: *"you need to
+decompile all of Arena"*). The executable is open (`§4e`); what is not done is *reading* it. One
+table per pass, each verified against something this repo already trusts rather than against
+itself: the class and race tables (against `chargen`'s own list), the character-creation prose
+(against the port's own text), the wilderness draws (already confirmed: the four thresholds are in
+the image as words), the item and spell text, the spawn tables. First probe: dump the ASCII runs
+around the creation offsets (`to select your class?` @220304) and the two `img` name tables, and
+say for each run which module would consume it — the same discipline `docs/ASSETS.md` used for the
+archive's unread records.
+0b. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
    First probe: per shipped dungeon, `levelCount`, each stair's cell and which levels are wet; then
    assemble the second level the way the original's own second level reads. The owner's own words
    are the acceptance test.

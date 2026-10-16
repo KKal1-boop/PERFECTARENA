@@ -68,6 +68,10 @@ import { escapeHtml } from '../engine/ui/escape.js';
 import { fieldOfView } from '../engine/ui/viewSettings.js';
 import { lookScale, lookInvert } from '../engine/ui/lookSettings.js';
 import { ArenaData } from '../arena/arenaData.js';
+// **The game's own tables, out of the game's own executable** (block B24, the brief's P2): the
+// executing file is PKLITE-packed (`arena/pklite.js` unpacks it) and what it holds is read here, at
+// runtime, from the player's own copy — never committed, never bundled.
+import { exeReport, loadExeImage } from '../arena/exeData.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
 import { decodeLevel } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
@@ -8577,6 +8581,29 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return out;
     },
     /** Find the nearest standable cell to a point, for tests that need a target. */
+    /**
+     * **The game's own executable, unpacked in this page** (block B24).
+     *
+     * `ARENA.BAT` runs `ACD.EXE`, and the tables this port has been reconstructing by hand — the
+     * creation prose, the class and race tables, the wilderness draws — are inside it. This seam
+     * reads the player's own copy through the same source the rest of the game uses, unpacks it
+     * (`arena/pklite.js`, PKLITE 1.12 with "extra" and "large" compression) and reports what came
+     * out, including the four window counts that make the *structure* checkable from a browser:
+     * the image's whole paragraphs, its stack ending exactly at the image's end, the relocation
+     * table landing on the file's own eight-byte trailer, and the entry being the image's first
+     * byte. `present: false` with the reason when the install ships no such file.
+     *
+     * Lazy on purpose: nothing pays the 174 KB read or the unpack unless something asks.
+     *
+     * @returns {Promise<object|{present: false, error: string}>}
+     */
+    exe: async () => {
+      try {
+        return exeReport(await loadExeImage(data));
+      } catch (err) {
+        return { present: false, error: err.message };
+      }
+    },
     cellAt: (row, col) => {
       const { level } = current;
       if (row < 0 || col < 0 || row >= level.depth || col >= level.width) return null;

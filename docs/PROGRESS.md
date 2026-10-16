@@ -38,8 +38,8 @@
 
 | Command | Last recorded |
 |---|---|
-| `npm test` (`tests/unit/*.test.mjs`) | **412 pass, 0 fail** (last run after the cutscene and sound-bank pins) |
-| `npm run test:browser` (`tests/run-browser.mjs`, 19 suites) | **713/714 checks** on the last full run, before the `cutscene` suite existed; re-measured 2026-10-15: `interior` 70/70 · `mainquest` 62/62 · `cutscene` 14/14 · `interior`+`cutscene` together 84/84. The one wobble — `living`'s standing-still animation read, on a machine running every suite at once — passes 37/37 in isolation, as the page's own reads have tended to do) |
+| `npm test` (`tests/unit/*.test.mjs`) | **482 pass, 0 fail** (last run this pass, with `unit/pklite.test.mjs`) |
+| `npm run test:browser` (`tests/run-browser.mjs`, **24** suites) | **713/714 checks** on the last full run, before the `cutscene` and `exe` suites existed; re-measured 2026-10-15: `interior` 70/70 · `mainquest` 62/62 · `cutscene` 14/14 · `interior`+`cutscene` together 84/84; this pass: **`exe` 8/8** (the game's own executable unpacked in a page), `dungeonplay` 20/20, `movement` 11/11, `world` 28/28, `chargen` 41/41, `menu` 39/39. The one wobble — `living`'s standing-still animation read, on a machine running every suite at once — passes 37/37 in isolation, as the page's own reads have tended to do) |
 
 Re-run both (or `npm run check`) after any change; the numbers above are a record, not a promise.
 

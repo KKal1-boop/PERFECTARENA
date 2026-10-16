@@ -136,8 +136,8 @@ was copied, what was adapted and what was dropped. The bands that matter to this
 | `tools/lib/` | `mapascii.mjs` (a decoded level as ASCII), `textures.mjs`, `voxhist.mjs`, `shotascii.mjs`, `nodeSource.mjs` (the Node side of the data door). |
 | `tools/tmp/` | Throwaway probes kept out of the build. |
 | `tests/unit/*.test.mjs` | Node tests (`node --test`) over the **real** Arena files. |
-| `tests/suites/*.mjs` | The browser suites that are their own flow: `chargen`, `combat`, `doors`, `gear`, `generated`, `living`, `mainquest`, `menu`, `progression`, `regard`, `townsfolk`, `world`. |
-| `tests/run-browser.mjs`, `tests/cdp.mjs` | The headless suite driver and the raw-CDP client (launch, evaluate, key/mouse events, screenshots). Seven further suites are defined inline in `run-browser.mjs` rather than in a file: `testmap`, `movement`, `interior`, `city`, `worldmap`, `radiant`, `story` — 19 suites in all. |
+| `tests/suites/*.mjs` | The browser suites that are their own flow — one file each (22 of them: `chargen`, `combat`, `cutscene`, `doors`, `dungeonplay`, `exe`, `gear`, `generated`, …). |
+| `tests/run-browser.mjs`, `tests/cdp.mjs` | The headless suite driver and the raw-CDP client (launch, evaluate, key/mouse events, screenshots). Two further suites live inline in `run-browser.mjs` rather than in a file — `testmap`, `worldmap` — so the driver offers **24** suites in all (`node tests/run-browser.mjs` for every one, or a name for one). |
 
 ## 4. Data flow
 

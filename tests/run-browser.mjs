@@ -17,6 +17,7 @@ import { makeCombatSuite } from './suites/combat.mjs';
 import { makeActionCombatSuite } from './suites/actioncombat.mjs';
 import { makeSceneVisualsSuite } from './suites/scenevisuals.mjs';
 import { makeDungeonPlaySuite } from './suites/dungeonplay.mjs';
+import { makeExeSuite } from './suites/exe.mjs';
 import { makeMovementSuite } from './suites/movement.mjs';
 import { makeBountiesSuite } from './suites/bounties.mjs';
 import { makeMainQuestSuite } from './suites/mainquest.mjs';
@@ -1233,6 +1234,10 @@ const SUITES = {
   actioncombat: makeActionCombatSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   scenevisuals: makeSceneVisualsSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
   dungeonplay: makeDungeonPlaySuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // **The game's own executable** (`ACD.EXE`, PKLITE-packed): read from the player's own install,
+  // unpacked in the page, and checked against the structure a DOS load image cannot fake
+  // (`docs/PORT_BLOCKS.md` B24 — the owner's "you need to decompile all of Arena").
+  exe: makeExeSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // The player's own stride, and the one hole the other nineteen suites left: **no suite had
   // ever held a movement key.** Holding Shift used to kill the frame loop outright (`D-26`),
   // and every suite stayed green. This one holds each key the loop can hear, and then measures
