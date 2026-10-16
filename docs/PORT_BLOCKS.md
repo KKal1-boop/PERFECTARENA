@@ -70,7 +70,7 @@ stops a session from guessing.
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
 | B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
-| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel; **and the walk back in is not demonstrated** | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
+| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **the walk back in is blocked and diagnosed (D-32: the arrival is 7.5 m out of the push's 3.2 m reach and the window slide returns the player to the arrival cell)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
 | B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
@@ -171,6 +171,14 @@ and passes the day: "You make camp and rest.").
 
 Each entry names **the first probe**, because a block starts with a measurement.
 
+0. **D-27's reverse walk + D-32** — the gate probe is already run and its answer is in
+   `docs/DEFECTS.md`: the country **does** recognize the gate (`wildGate {row: 8, col: 127,
+   to: 'city', axis: 'east'}`), but the crossing places the player **3 cells (7.5 m) out** where the
+   push rule needs **3.2 m**, and the next step's window slide returns them to the exact arrival
+   cell (D-32) — the walk back is *undone*, not unwritten. Two small causes: the slide must keep the
+   player's own cell, and `GATE_STEP` between two *adjacent* pages should be **1 cell** (which is
+   what Arena's own gate reads as). The failing probe exists (`.scratch/gatein.mjs`) and is the
+   acceptance test: cell (1992, 2112) → the city page within a second of holding `W`, no snap-back.
 1. **B02 · is the start dungeon mirrored?** (D-13.) Probe: render `START.MIF`'s cell grid as
    text (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) and compare it against the original's
    own screen — the cell door, the stair (`GATE.IMG`), the room the arrival point is in, and the

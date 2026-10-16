@@ -132,6 +132,16 @@ WHAT THIS PASS PROVED (2026-10-16, part four — `docs/PORT_BLOCKS.md` §4b):
   wilderness page, every sheet a folk sheet and **zero creatures**, with `01MNKWLK.CFA` shown to be
   the *monk* sheet, not a minotaur; "port much more from arena" is the wiring half of B22.
 
+**The country's own gate is recognized, and the walk back is undone (D-32, found this pass and
+left OPEN with its cause).** `.scratch/gatein.mjs` after crossing out at Daggerfall's east gate:
+the player stands at the world cell **three cells out (7.5 m)** where the push rule's reach is
+**3.2 m**; pushing in, the very next sample reports the gate correctly —
+`wildGate {row: 8, col: 127, to: 'city', axis: 'east'}` — and the sample after that is **the exact
+arrival cell again**, so the approach was returned to where it began. Cause read off the code: the
+window slide re-places the player from the **remembered entry cell** (`interior.js:1508`) rather
+than the cell they are standing on, and `GATE_STEP` (3) disagrees with `GATE_WALK_REACH` (3.2 m).
+Both are small and the failing probe is written; it is the queue's item 0.
+
 NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
 0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report),
    and the same pass settles **D-27's open half**: the walk *back* into a city from the country.
@@ -157,8 +167,10 @@ a 128×128 window, not a country — the owner: "you teleport around and cant ev
 The blocks those belong to are B11 and B17 in `docs/PORT_BLOCKS.md`; B17 is the largest block in
 the ledger and is the owner's own "we will never go on" risk.
 
-OPEN DEFECTS (top): D-13 (the mirrored start — B02) · D-14 (the equip-path probe) · D-18 · D-18a
-(water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
+OPEN DEFECTS (top): D-32 (the country returns the player to the arrival cell, and the gate's reach
+and its own placement disagree — queue 0) · D-13 (the mirrored start — B02) · D-28 (dungeon depth —
+B23) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced, needs
+the place or a sweep) · D-18 · D-18a (water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
 no relief, coast or roads — B17) · D-23 (weather that moves, a ground that knows the season —
 B18) · D-03/D-24 (coverage: the list is named, the wiring is not done — B22) · D-05 (P3) ·
 D-06/D-07 (names outside this checkout) · B09's decal half (the blood records exist; the pass is
