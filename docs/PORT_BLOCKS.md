@@ -106,7 +106,7 @@ Every row of the 2026-10-16 report, with the block that owns it. Full rows live 
 
 | report | block | status |
 |---|---|---|
-| "still you cant go out of cities and into the wilderness gates dont work there is no door to bring you to the wilderness" | B17 | **half closed this session** (D-27, `baf80ef`: the gate is walked through; the walk *back in* is not demonstrated) |
+| "still you cant go out of cities and into the wilderness gates dont work there is no door to bring you to the wilderness" | B17 | **closed this session** (D-27, `baf80ef`: the gate is walked through, and D-32, `dbf4058`: the walk *back in* works — the save's remembered wilderness cell no longer overrides an explicit `?at=` arrival) |
 | "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling" | **B23** (new) | **open** · D-28, first probe named in the ledger |
 | "most enemies dont exist or dont spawn" | B11 + B22 | **open** · D-29: three numbers per dungeon (roster size, how many ids this install can draw, the field's real count) |
 | "some npcs have enemy sprites like theres a minotaur guy somewhere" | B11 | **open** · D-30: **not reproduced** in Daggerfall, Corinth or a wilderness page (48/48/1 people, every sheet a folk sheet); needs the place, or a sweep of every city × clock × interior |
