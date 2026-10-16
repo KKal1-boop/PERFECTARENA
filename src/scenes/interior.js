@@ -1025,9 +1025,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   let visitHaggle = null;
   /** The cells this visit's shelf has already sold out of. @type {Record<string, number>} */
   let stockTaken = {};
-  /** The fanfare's once-per-page ask — keyed the same way the names ask is, because the
-   * first `loadLevel` runs this deep block before the later declarations exist. */
-  let fanfareTried = false;
   /**
    * Is one of the install's own movies on screen?
    *
@@ -5563,6 +5560,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       spent: taken.spent, unspent: taken.character.lastLevel.unspent, refused: taken.refused,
     };
     const still = pendingLevels(player);
+    // **The install's own fanfare, at the event it is for** (`FANFARE1.VOC`, Arena's level-up
+    // cue). It used to be played as a boot greeting instead — see `updateCombatHud`'s note —
+    // which is the report this moved for.
+    void playFanfare({ arenaPath: source?.arenaPath ?? params.get('arena') ?? null });
     showNotice(`${player.name} reaches level ${player.level}. Health +${taken.health}`
       + `${taken.character.lastLevel.unspent ? `, ${taken.character.lastLevel.unspent} point(s) could not be placed` : ''}`
       + `${still ? ` — ${still} more level${still === 1 ? '' : 's'} owed` : ''}.`, 4000);
@@ -6145,13 +6146,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!peopleBanks && !peopleNamesTried) {
       void ensurePeopleNames().then(() => updateCombatHud());
     }
-    // …and the install's own greeting, asked for the same once — a session the fanfare
-    // greets either on the first paint or, when the browser's autoplay law blocks it,
-    // on the player's own first gesture.
-    if (!fanfareTried) {
-      fanfareTried = true;
-      void playFanfare({ arenaPath: source?.arenaPath ?? params.get('arena') ?? null });
-    }
+    // **No fanfare on the first paint.** This block used to play the install's own
+    // `FANFARE1.VOC` as a session "greeting" from here, and the owner heard exactly what it
+    // was: *"THE LEVEL UP SOUND PLAYS EVERY TIME YOU START THE GAME FOR NO REASON"*
+    // (2026-10-16). It is Arena's cue for **gaining a level**, so it plays where the level is
+    // taken (`takeLevel`) and nowhere else. Nothing is lost but an invented greeting — and
+    // `FANFARE2.VOC` is the second half of the same cue, played by `fanfare.js` itself.
     // The HUD's own panel is bottom-left too, and both are several lines tall: with
     // nothing keeping them apart the fight line drew straight over the level line
     // (visible in the first playable build). The class lets the HUD step up out of
