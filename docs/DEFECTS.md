@@ -133,3 +133,50 @@ game and its unplayable"*.
 | D-49 | no report — **found by running the suite this pass**: `ERROR boot failed: Cannot set properties of null (setting 'gateway')` on every city and wilderness page | `node tests/run-browser.mjs movement` — the same command that was green a moment before the gate block landed | **the previous pass's gate code was never booted.** It wrote `current.gateway = gates` four hundred lines *above* the `current = { … }` literal that creates `current` (`interior.js` 1678 vs 1959), so every settlement and country page threw on its way through `loadLevel`. The block is now a local (`gatewayCells`) carried into the literal, and the lesson is the file's own: a new *name* beside the loader is where a scope mistake hides (D-34) | **FIXED (same commit as D-48)**; the suite that would have caught it (`movement`) was in the previous pass's *not re-run* list, which is why the note is here |
 | D-36's second half | *"barely moving in the persistent world wilderness reloads the game and its unplayable"* | `.scratch/slideidle.mjs` on one country page (`?location=Daggerfall&wild=1992,2114`): eight seconds **standing still** — `painted` climbs 20 → 105, no re-boot, `windowSlide` null; then **holding `W`** — the frame counter climbs to 380 over 19 s and then **drops to 6**: one page re-boot, the window origin moves `2048 → 2112` (64 cells), the player's own cell unchanged and its bearing kept (D-36's fix). **One re-boot per 64 cells of country travel** — 160 m, i.e. about twenty seconds of walking at the country's own stride | the window *is* the original's mechanism (`wildernessWindowOrigin`, a 128×128 slice re-centred one 64-cell block at a time) and the slide is *correct* where it is; what it costs is a **new page**: the level's geometry, the crowd, the creatures, the light and the sky are all rebuilt from the save, and the country's own folk are re-rolled. That is B19's second half — *a hop is still a full scene re-boot* | **OPEN, now measured.** It is the streaming block (B25, below): one resident level whose window is **shifted in place** (the four-cell building blocks that have not changed kept, only the new strip built) instead of a page. The probe to write first is the cost, not the count: time one `goInPlace` on a page and list what the boot recomputes that the world already knows |
 | the `persist` fixture | the check *"a page that names no cell puts the player back on the corner the world remembers"* failed with the player at the **level's own spawn** (`[16,2]`), 40.5 cells from the cell they had left (`[30,40]`) | `node tests/run-browser.mjs persist`; `.scratch/playercell.mjs` reads the save itself (`perfectarena.world`) rather than the debug seam, which does not expose `player` | **the fixture, not the game.** `rememberClock` writes the player's cell on the world's own slow tick, which counts **simulated** seconds (`CLOCK_SAVE_EVERY = 20`) while the frame step caps `dt` at 0.1 s — so on a software renderer, where a city page uploads its textures at a handful of frames a second, twenty simulated seconds arrive *later* than twenty wall seconds. Measured on the same machine: the save's `player` field appears at simulated second 20 = **wall second 25**, and the check slept 21. The game's own behaviour was right the whole time (`{place: "Daggerfall:CITYW2.MIF#0:city=589986", row: 30, col: 40}`) | **RESTATED (logged, not loosened)**: the wait is now for the *fact* — the save naming the cell the player is standing on, bounded at 90 s — plus a check that reports how long that took (24 s here), so the claim (*a bare page returns the player to the corner the world remembers*) is unchanged and the frame rate is out of it. `persist` **14/14** |
+### D-44's probe, run (2026-10-16, eighteenth pass) — the result, and the seam the fix belongs at
+
+`.scratch/stationary.mjs`, one city page (`?city&seed=20232`), the whole crowd sampled every two
+seconds for sixty seconds (**10:00 → 10:21** in-page, twenty-one minutes of the town's own day).
+Per person: the trade their day is built from (`role`), whether they are a building's keeper
+(`shop`), whether their own day has them indoors (`atHome`), how many **distinct cells** they stood
+on, the longest they ever stood still, and their total drift.
+
+| trade | people | distinct cells each | longest stand | mean drift |
+|---|---|---|---|---|
+| **priest** | 7 | **22.3** | 8 s | **48.9 m** |
+| performer | 4 | 20.0 | 8 s | 37.3 m |
+| wizard | 2 | 20.0 | 6 s | 43.4 m |
+| vendor | 1 | 16.0 | 10 s | 30.9 m |
+| beggar | 4 | 14.5 | 8 s | 16.9 m |
+| townsperson | 25 | 10.0 | 8 s | 13.5 m |
+| harlot | 3 | 6.3 | 60 s | 6.5 m |
+| shady | 2 | 1.0 | 60 s | 0.0 m |
+
+**Result, and it reproduces the owner's report.** 44 of the 48 people moved at least half a cell,
+and the only four that never moved were the ones whose day had them **indoors** (two harlots, two
+shady characters — the `atHome` half of D-01a working). A **priest visits 22 different cells in
+twenty-one minutes** — 49 m of walking — and never stands still for longer than **eight seconds**.
+A vendor, a performer, a beggar and a wizard are the same: the trades that in Arena *serve from a
+spot* (the priest at the shrine, the vendor at the stall, the beggar at a post) walk the town here,
+and the trades whose work *is* going to people (a harlot, a shady character, the watch) are the ones
+the port moves least. **The port has no stationary street role at all.**
+
+**The seam, read, not fixed (and the reason it is left for the next pass rather than rushed).**
+`scenes/interior.js`'s `stepTownsfolk` already contains exactly this law for one place and not the
+others: *"a person whose day says they are home **rests, and does not pace their door**"* — the
+branch keys on `goal.reason` matching `/^home/` **and** the goal being the cell they stand on, and
+then holds them (`person.wait = secondsForMinutes(left)`, `person.walking = false`, `person.atHome`
+for the draw). A person whose block is `work`/`worship`/`openShop` at *the market* or *the temple*
+takes the branch below it instead, asks `streetGoal` again when the wait runs out, is handed a new
+beat, and walks — which is the 22 cells. The fix is therefore *the same law extended to a serving
+block* (hold the post the block gave them for the block's own length, and do **not** set `atHome`:
+they are outside and must be drawn), with the block's identity carried on the person so a new block
+re-asks the day. That is a plan-shaped change in the spirit of `livingWorld.js`'s tiled plans, and
+it needs `townsfolk` (65), `living` (37) and `doors` (42) re-run around it — which is why it is
+named here with its numbers instead of half-written.
+
+**Refinement this probe still owes** (named, not done): the numbers above are one city at one hour.
+Daggerfall at 10:00 and at 22:00, and a town and a village, would say whether the wandering is
+uniform or whether one trade is unusual — and the "longest stand" column should be read against the
+plan block's own length (a 3-hour `work` block that shows an 8-second stand is the whole defect in
+one number).

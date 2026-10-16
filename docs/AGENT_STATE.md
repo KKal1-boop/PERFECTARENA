@@ -55,12 +55,16 @@ NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §4m and §5, each with its first probe
 1. **0e · B25 the resident country** — the owner's loudest remaining complaint. First: the cost
    probe (one `goInPlace`, what it recomputes); then shift the window in place, keeping the blocks
    that did not change. Checks: `world`, `persist`, `movement`.
-2. **0i · D-44 "the npcs that dont move"** (the tavern keeper, the priest, the rumour-givers) —
-   probe as written: for one city, list the level's own `*ITEM` people spots with `role` and cell,
-   then watch each for an hour of in-page clock and print how many ever leave their spawn cell. A
-   building's keeper already stands still (`interior.js`: `if (person.shop) continue;`); a
-   **street**'s share of stationary roles is what is unmeasured. Checks: `townsfolk`, `doors`,
-   `living`.
+2. **0i · D-44 "the npcs that dont move"** — **the probe is RUN and the complaint reproduces**
+   (`.scratch/stationary.mjs`, numbers in `docs/DEFECTS.md`): in one city at 10:00 a **priest
+   visits 22 different cells in 21 in-page minutes and never stands still longer than 8 s**; the
+   only figures that never moved were the four whose day had them indoors. Trades that serve from a
+   spot (priest, vendor, beggar, performer, wizard) walk; the port has **no stationary street
+   role**. The fix is the law `interior.js` already has for one place — *a person whose day says
+   they are home rests, and does not pace their door* (keyed on `/^home/`) — **extended to a
+   serving block**, holding the post the block gave them for the block's own length and **not**
+   setting `atHome` (they are outside and must be drawn). Checks: `townsfolk` 65, `living` 37,
+   `doors` 42.
 3. **0b/B24 · the executable's numeric tables** — now with the race recolour as a second reason
    (D-45's open half: the archive ships one human body and **no `.PAL`/`.COL`**, so a province's
    skin is either read out of `ACD.EXE` or stamped as this project's own). First probe: the
