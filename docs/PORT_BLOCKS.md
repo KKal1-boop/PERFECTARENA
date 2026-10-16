@@ -170,7 +170,7 @@ and passes the day: "You make camp and rest.").
 
 ## 4c. What this pass closed (2026-10-16, part five)
 
-**B17 · a dungeon's door is out in the country** (D-34; the owner: *"STILL EXITING A DUNGEON JUST
+**B17 · a dungeon's door is out in the country** (D-34, `682e48e`; the owner: *"STILL EXITING A DUNGEON JUST
 SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*). The exit opened the **world map**, and the comment
 that defended it was the tell — *"the world map is the surface"*. It is not. New
 `src/game/dungeonSurface.js` holds the rule and says in its own header which half is the install's

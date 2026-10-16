@@ -227,7 +227,7 @@ B02) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: n
 needs the place or a sweep) · D-18 · D-18a (water — B05) · D-34's named gap (the country's own
 ruins are not doors yet — B17, queue item 0a) · and the gate's own leftover: `GATE_STEP`
 against `GATE_WALK_REACH` on D-27's row. ~~D-32~~ **closed `dbf4058`** · ~~D-34~~ **closed this pass**
-(`dungeonSurface.js`; the exit boots the country at the ruin the dungeon's seed picks) · D-28 (dungeon depth —
+(`682e48e`: the exit boots the country at the ruin the dungeon's seed picks) · D-28 (dungeon depth —
 B23) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced, needs
 the place or a sweep) · D-18 · D-18a (water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
 no relief, coast or roads — B17) · D-23 (weather that moves, a ground that knows the season —
