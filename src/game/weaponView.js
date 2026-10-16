@@ -323,6 +323,22 @@ export function createWeaponRig(weaponId = 'fists', opts = {}) {
 export const weaponName = (id) => weaponById(id).name;
 
 /**
+ * Arena's own stride law: **a drawn weapon is a walk, not a run.**
+ *
+ * The owner, playing this port beside the original (2026-10-16): *"for the combat to be
+ * better in perfectarena you shouldnt be able to run with your weapons unsheathed"*. It is
+ * the original's law rather than a balance choice — a fight is entered deliberately, and
+ * fleeing means putting the blade away first — and the argument is the rig's **own** answer
+ * (`drawn`: whether a frame of the held weapon is on screen), never a second flag kept
+ * beside it, so the input builder cannot disagree with what the player sees in their hands.
+ * The engine's `canRunUnlessRiding` (`systems/transport.js`) is the same shape for a mount.
+ *
+ * @param {boolean} drawn whether the first-person weapon is out
+ * @returns {boolean} whether the sprint key is allowed to mean one
+ */
+export const canRunUnlessDrawn = (drawn) => !drawn;
+
+/**
  * The screen Arena drew its first-person art on, and the line its weapon art stands on.
  *
  * `ART_BASELINE` is **measured, not chosen**. Across the six sheets this install ships, the

@@ -17,6 +17,7 @@ import { makeCombatSuite } from './suites/combat.mjs';
 import { makeActionCombatSuite } from './suites/actioncombat.mjs';
 import { makeSceneVisualsSuite } from './suites/scenevisuals.mjs';
 import { makeDungeonPlaySuite } from './suites/dungeonplay.mjs';
+import { makeMovementSuite } from './suites/movement.mjs';
 import { makeBountiesSuite } from './suites/bounties.mjs';
 import { makeMainQuestSuite } from './suites/mainquest.mjs';
 import { makeTownsfolkSuite } from './suites/townsfolk.mjs';
@@ -1232,6 +1233,11 @@ const SUITES = {
   actioncombat: makeActionCombatSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   scenevisuals: makeSceneVisualsSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
   dungeonplay: makeDungeonPlaySuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The player's own stride, and the one hole the other nineteen suites left: **no suite had
+  // ever held a movement key.** Holding Shift used to kill the frame loop outright (`D-26`),
+  // and every suite stayed green. This one holds each key the loop can hear, and then measures
+  // the walk, the sprint and the sprint with the blade out (`docs/PORT_BLOCKS.md` B06).
+  movement: makeMovementSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   bounties: makeBountiesSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // And the whole main quest is its own flow: eighteen page loads, one `E` key per beat,
   // and the ending. It is the suite that proves the game can be finished.

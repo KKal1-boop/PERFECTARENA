@@ -155,7 +155,7 @@ import { playerSpriteFile } from '../game/playerSprite.js';
 // The archive's other people families (`game/peopleKinds.js`), read off the same listing
 // the armoured roster comes from: the town's men and women, and the watch.
 import { peopleKindsFromListing } from '../game/peopleKinds.js';
-import { ART_BASELINE, SCREEN, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
+import { ART_BASELINE, SCREEN, canRunUnlessDrawn, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
 import { DUNGEON_BLOCKS_INF, DUNGEON_BLOCKS_MIF, assembleDungeon, spawnCellFor } from '../game/dungeonPlan.js';
 import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
 import { buildQuestChain, stageMif } from '../game/questData.js';
@@ -244,8 +244,15 @@ const GATE_STEP = 3;
  *
  * @param {Set<string>} keys    the held keys
  * @param {Set<string>} pressed the keys that went down since the last step
+ * @param {boolean} drawn       whether the first-person weapon is out (`weaponRig.drawn`).
+ *   It is a **parameter and not a capture**: this function is module-level and the rig lives
+ *   inside `bootInterior`, so the first version of the run gate below read an identifier that
+ *   was not in scope — and because `&&` short-circuits, the `ReferenceError` was thrown only
+ *   while a sprint key was held. That throw left `step()`, left `frame()` before its own
+ *   `requestAnimationFrame`, and **the page froze for good** (D-26). The law itself lives in
+ *   `game/weaponView.js` (`canRunUnlessDrawn`), where a Node test can hold it.
  */
-function inputOf(keys, pressed) {
+export function inputOf(keys, pressed, drawn = false) {
   return {
     forward: (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0),
     back: keys.has('KeyS'),
@@ -255,10 +262,10 @@ function inputOf(keys, pressed) {
     // they played the two games side by side (2026-10-16): *"for the combat to be better in
     // perfectarena you shouldnt be able to run with your weapons unsheathed"*. The rig is the
     // one that knows whether a frame is on screen (`weaponView.js`'s `drawn`, which is the
-    // state machine's own answer and not a second flag), so the key is read here and gated
-    // there: with the blade out the stride is the walk, and the run comes back when it is put
-    // away. Sheathing is a second long, so nothing is lost but the sprint.
-    run: (keys.has('ShiftLeft') || keys.has('ShiftRight')) && !weaponRig.drawn,
+    // state machine's own answer and not a second flag), so it is handed in here and the law
+    // is `canRunUnlessDrawn`: with the blade out the stride is the walk, and the run comes
+    // back when it is put away. Sheathing is a second long, so nothing is lost but the sprint.
+    run: (keys.has('ShiftLeft') || keys.has('ShiftRight')) && canRunUnlessDrawn(drawn),
     crouch: pressed.has('KeyC'),
     sneak: keys.has('ControlLeft'),
     autoRun: false,
@@ -4304,7 +4311,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return false;
     }
     defence.rollT = 0;
-    const input = inputOf(keys, pressed);
+    const input = inputOf(keys, pressed, weaponRig.drawn);
     const forward = input.forward || (input.strafe ? 0 : -1);
     const len = Math.hypot(forward, input.strafe);
     defence.rollDirection = [
@@ -4425,7 +4432,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // …and in the first person the picture is Arena's own weapon sheet, swung the way the
     // player is pushing (a thrust when moving forward, a side sweep when strafing, the
     // overhead chop when standing still). The heavy is always the chop. See `game/weaponView.js`.
-    weaponRig.swing(heavy ? 'down' : swingDirection(inputOf(keys, pressed)));
+    weaponRig.swing(heavy ? 'down' : swingDirection(inputOf(keys, pressed, weaponRig.drawn)));
     const feet = feetOf();
     const fx = Math.sin(cam.yaw);
     const fz = Math.cos(cam.yaw);
@@ -8345,7 +8352,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function step(dt) {
     lookFilter.tick(dt, cam);
-    const input = inputOf(keys, pressed);
+    const input = inputOf(keys, pressed, weaponRig.drawn);
     // Dodge distance/timing is independent of walking statistics and uses the same swept
     // capsule as normal movement. Turning the camera cannot redirect a committed roll.
     const rolling = defence.rollT < DODGE.seconds;

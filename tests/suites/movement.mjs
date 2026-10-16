@@ -1,0 +1,145 @@
+// THE PLAYER'S OWN STRIDE — the movement keys, and B06's law that a drawn weapon is a walk.
+//
+//   node tests/run-browser.mjs movement
+//
+// This suite exists because of a hole no other suite covered: **not one of the nineteen
+// suites ever held a movement key in the interior scene.** Nobody pressed Shift. So when the
+// run gate landed (`5cccb80`: the input builder's `run` reads the rig's `drawn`), the fact
+// that `interior.js`'s `inputOf` is module-level while `weaponRig` lives inside
+// `bootInterior` went unnoticed — and because `&&` short-circuits, the `ReferenceError` fired
+// *only while a sprint key was held*: the throw left `step()`, left `frame()` before its own
+// `requestAnimationFrame`, and **the page stopped for good**. One press of Shift killed the
+// game, and every suite was green (D-26).
+//
+// So this file checks two things a player would notice, in the order that matters:
+//
+//   1. **No key a player can hold stops the game.** Each movement key is held for a quarter
+//      second and the frame counter must still be climbing afterwards, with no page error.
+//      This is the check that would have caught D-26, and it is deliberately written against
+//      the *loop* rather than against a key's effect: a key may do nothing (crouch is an
+//      edge, `Q`/`E` are the stairways) but nothing may throw.
+//   2. **The stride is measured, not asserted in prose** (`docs/PORT_BLOCKS.md` B06's own
+//      queue item): the same `W` held for the same 800 ms sheathed and drawn, and the same
+//      `Shift+W`, so the run's speed, the drawn weapon's speed and the walk's speed are three
+//      numbers from one page and one install. `movement` is the suite the block list named
+//      for it.
+//
+// A city street is the room because it is the one place the port lays out tens of open metres
+// (the seed is the Imperial City Watch's own start cell, and the street in front of it is
+// clear for seventeen); a dungeon corridor would measure the walls.
+
+import path from 'node:path';
+
+/** How long a measurement leg holds its keys, in milliseconds. */
+const LEG_MS = 800;
+/** How long a movement key is held in the freeze check, in milliseconds. */
+const KEY_HOLD_MS = 250;
+/**
+ * The keys the freeze check holds, one at a time: the four strides, the sprint either way, the
+ * jump, the sneak, and the crouch edge. `E`/`Q` are left out on purpose — a stairway changes
+ * the level, and this check is about the loop, not about where a key takes you.
+ */
+const MOVEMENT_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space', 'ControlLeft', 'KeyC'];
+
+export function makeMovementSuite({ check, realErrors, shots, getPort }) {
+  return async function movement(page) {
+    const arena = process.env.ARENA_PATH || 'C:/ArenaProject/arena/ARENA';
+    const url = `http://localhost:${getPort()}/?location=Daggerfall&arena=${encodeURIComponent(arena)}`;
+    const ready = () => page.waitFor('window.__debug?.state && window.__debug.state().painted > 5', { timeoutMs: 120000, label: 'the street' });
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const feet = () => page.evalJs('window.__debug.state().feet');
+    const painted = () => page.evalJs('window.__debug.state().painted');
+
+    await page.goto(url);
+    await ready();
+    // A suite that followed one which paused the simulation inherits the pause.
+    await page.evalJs('window.__debug.pause(false)');
+
+    // The start cell is the level's own arrival, and the street in front of it is what the
+    // legs are measured along. `look(0, 0)` faces down +z, which is the clear direction.
+    const home = await feet();
+
+    /** Hold `keys` for `ms` from the arrival cell and report the ground covered. */
+    const leg = async (keys, ms = LEG_MS) => {
+      await page.evalJs(`window.__debug.teleport(${home[0]}, ${home[1]}, ${home[2]}); window.__debug.look(0, 0)`);
+      await sleep(140);
+      const before = await feet();
+      const first = await painted();
+      for (const code of keys) await page.pressKey(code, true);
+      await sleep(ms);
+      const ran = await painted();
+      for (const code of keys) await page.pressKey(code, false);
+      const after = await feet();
+      const metres = Math.hypot(after[0] - before[0], after[2] - before[2]);
+      return { metres: Math.round(metres * 1000) / 1000, speed: Math.round((metres / (ms / 1000)) * 100) / 100, frames: ran - first };
+    };
+
+    // ── 1. no key a player can hold stops the game ──────────────────────────────
+    //
+    // Each key is held alone, and the frame counter is read **while it is down**: a page whose
+    // loop has died paints nothing, so a frozen game is a `painted` that stopped climbing.
+    const holds = [];
+    for (const code of MOVEMENT_KEYS) {
+      const before = await painted();
+      await page.pressKey(code, true);
+      await sleep(KEY_HOLD_MS);
+      const during = await painted();
+      await page.pressKey(code, false);
+      await sleep(60);
+      holds.push({ code, frames: during - before });
+    }
+    const frozen = holds.filter((h) => h.frames <= 0);
+    check('every movement key leaves the page painting — no key a player can hold stops the frame loop',
+      frozen.length === 0 && holds.every((h) => h.frames > 0),
+      `${holds.map((h) => `${h.code} +${h.frames}`).join(' ')}${frozen.length ? ` — froze on ${frozen.map((h) => h.code).join(', ')}` : ''}`);
+
+    // …and holding a sprint key is a *stride*, not an exception: the errors are named if any.
+    const errs = realErrors(page.consoleErrors());
+    check('and none of them raises a page error', errs.length === 0,
+      errs.map((e) => e.text).join(' | ').slice(0, 400) || 'none');
+
+    // ── 2. the stride, measured: walk, run, and the run with the blade out ──────
+    const walk = await leg(['KeyW']);
+    const run = await leg(['ShiftLeft', 'KeyW']);
+    check('Shift runs: the sprint covers materially more ground in the same 800 ms',
+      run.metres > walk.metres * 1.15 && run.frames > 0,
+      `walk ${walk.speed} m/s (${walk.metres} m) → run ${run.speed} m/s (${run.metres} m) over ${walk.frames}/${run.frames} frames`);
+
+    // The weapon in hand is the install's own sheet — the longsword the install ships art for,
+    // asked for by name so the measurement cannot fall back to a weapon with no first-person
+    // art (`HAND.CIF` and `FLAIL.CIF`/`BOW.CIF`'s absence is `weaponView.js`'s own report).
+    await page.evalJs('window.__debug.setWeapon("longsword")');
+    const artless = await page.evalJs('window.__debug.weaponView().missing');
+    if (artless) throw new Error(`this install has no art for the longsword: ${artless}`);
+
+    // A blow draws it (`strike` is what `F` and a click call).
+    await page.evalJs('window.__debug.strike()');
+    const drawn = await page.evalJs('window.__debug.weaponView().drawn');
+    const drawnLeg = await leg(['ShiftLeft', 'KeyW']);
+    const stillDrawn = await page.evalJs('window.__debug.weaponView().drawn');
+    check('a drawn weapon is a walk, not a run — Shift with the blade out is the walk\'s own speed',
+      drawn === true && stillDrawn === true
+      && drawnLeg.metres <= walk.metres * 1.2 && drawnLeg.metres < run.metres * 0.85,
+      `drawn ${drawnLeg.speed} m/s vs walk ${walk.speed} and run ${run.speed} (drawn at both ends of the leg: ${drawn}/${stillDrawn})`);
+
+    // ── 3. and the sprint comes back when it is put away ───────────────────────
+    //
+    // The rig's own clock is driven, not slept through: the sheathe is two seconds of idle
+    // plus the sheathing frames, and a test should not wait on the frame rate of the machine.
+    // Two calls, because the rig takes **one** transition per step (`weaponView.js`'s `step`
+    // switches on the state it is in): the first leap runs the hold out into `sheathing`, the
+    // second runs the sheathing frames out into `sheathed`. A page does the same over frames.
+    await page.evalJs('window.__debug.stepWeapon(4)');
+    await page.evalJs('window.__debug.stepWeapon(2)');
+    const sheathed = await page.evalJs('window.__debug.weaponView().drawn');
+    const again = await leg(['ShiftLeft', 'KeyW']);
+    check('the sprint comes back when the weapon is put away — the gate is a spell, not a permanent slow',
+      sheathed === false && again.metres > drawnLeg.metres * 1.25,
+      `sheathed: ${sheathed}, run again ${again.speed} m/s (${again.metres} m) vs drawn ${drawnLeg.speed}`);
+
+    await page.evalJs(`window.__debug.teleport(${home[0]}, ${home[1]}, ${home[2]}); window.__debug.look(0, 0)`);
+    await page.screenshot(path.join(shots, 'movement-stride.png'));
+    check('the movement suite leaves no console error behind', realErrors(page.consoleErrors()).length === 0,
+      realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400) || 'none');
+  };
+}
