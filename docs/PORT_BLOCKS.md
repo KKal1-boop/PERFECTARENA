@@ -51,6 +51,58 @@ stops a session from guessing.
 
 ---
 
+## 1b. The standard: what "Daggerfall Enhanced" / "Daggerfall MMO online" actually is (read 2026-10-17)
+
+The owner has asked for this project to *"match the standard of daggerfall mmo online"* and named
+**Daggerfall Enhanced** twice as the persistent world he wants (D-05, the queue's item 0e). Neither was
+verifiable from this checkout, so it was looked up rather than assumed — and the answer reframes the
+request in this project's favour:
+
+**They are one project, and it is this project's own engine family.** *Daggerfall Enhanced* and
+*Daggerfall Online* are **earlier names** of what its own documentation now calls **DFO Online**
+(*Daggerfall JavaScript*): an open-source **JavaScript + hand-written WebGL2** reimplementation in the
+browser, using Daggerfall Unity only as a *reference for game logic and data* — no engine underneath,
+playable from a browser, with an optional Electron shell over the same build. Source:
+<https://github.com/Lattymoy/daggerfall-js-source> (MIT **code**; the player supplies their own
+`ARENA2` data, which is exactly this project's own rule — Arena's files are read from the player's
+install and none are bundled). Play site: <https://daggerfalljs.dev/>. The separately branded
+<https://daggerfall.online/> is an independent community site around that client, not the upstream
+domain.
+
+**What it documents, as figures rather than adjectives** (its own multiplayer design and arc documents):
+
+| the standard | DFO Online's own numbers |
+|---|---|
+| topology | a Cloudflare Worker plus **one Durable Object per room code**; clients connect by **WebSocket** (no WebRTC in the initial transport) |
+| authority | **the host's browser simulates the shared world**; there is no server-side simulation for ordinary co-op, and the trust model is stated as friends-only |
+| party | **2–8 players**, room-based rather than MMO-scale |
+| cadences | world **time and weather at 1 Hz**; player transforms at **10–20 Hz**; enemies **on change, capped at 20 Hz** |
+| state split | the **world half** of the save envelope is shared, then receives deltas; each player's **character, inventory and quest state stay their own** |
+| wire format | the existing **save envelope is the wire format** for world state — a snapshot first, updates and requests after — with **schema versions** in JSON messages |
+| persistence | a room's world snapshot is held in durable storage for a configured period after the last visitor (no published TTL) |
+| honest gaps it names | host migration, reconnection and a party split across interiors are open work; no mod support and no import of classic/DFU saves |
+
+**Why this matters to Block B19, and where this project already stands.** That split is **the same split
+this port has had since `worldState.js` was written**, which is evidence the shape is right rather than a
+coincidence to celebrate: the **world half** is `game/worldState.js` (doors, loot, kills, standing,
+quest stages, and — since §4j — the **clock**, which is DFO's *"time at 1 Hz"* in its single-player
+form), whose snapshot is exactly `serializeWorld`/`parseWorld` (versioned, JSON-safe, unable to throw on
+a corrupt save — i.e. *a wire format already*), and the **player half** is `game/save.js`
+(character, inventory, radiant state). So the persistent world the owner is asking for is **not** a
+rewrite of the save: it is (a) the world half being complete and authoritative — the hour is done, the
+weather and the player's own last ground are the two loose fields left (`weather`, `player`) — and
+(b) **the scene keeping it in hand instead of re-booting** (item 0e's remaining half). Multiplayer is
+**not** part of the request, and the standard's own authority model says why a solo port should not
+pretend otherwise: its world is simulated by *a player's browser*, which is what this project's page
+already is.
+
+**What is deliberately not copied:** the room/host machinery (a Worker, Durable Objects, WebSocket
+relay) is a *multiplayer* answer to a question nobody here has asked. It is recorded as the shape a
+future co-op pass would take — Worker + one Durable Object per room, the world snapshot on the wire,
+1 Hz time — and named in the queue rather than built.
+
+---
+
 ## 2. The ledger
 
 `[x]` closed and held by a passing check · `[~]` working, with a named gap · `[ ]` not started.
@@ -73,10 +125,10 @@ stops a session from guessing.
 | B13 | Radiant quests **given by NPCs** | `TEMPLATE.DAT` + `.INF` people | `radiantQuests.js` | `[x]` | `unit/radiant`, `radiant`, `bounties` |
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
-| B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
-| B17 | Wilderness, leaving a city on foot, **and a dungeon's own door out here** | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks, `CITYDATA.64`'s 144 dungeon records | `wilderness.js`, `wildernessBestiary.js`, **`dungeonSurface.js`** | `[~]` **(D-34 closed with `dungeonSurface.js` + `leaveThePlace`): a dungeon's way out is the country, not the map** — the country is the wilderness of the settlement nearest the dungeon's world-map pixel, the door is a ruin block of that country's drawn grid chosen by the dungeon's own seed, the country page stands the player at it (`state().wild.ruin`) and `E` goes back down by seed. Measured: `?dungeon=Stonekeep` (seed 3969902143) → the country at cell **(1568, 3360)** = the centre of ruin block **(24, 52)**, `onRuin: true`, then the same dungeon again; `START.MIF` (no record of its own) → the country outside Riverhold. **Gap named**: a ruin nothing points at is inert — the country's ruins are not doors yet (queue §5 item 0). **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **the walk back in works (`dbf4058`) — D-32 was the save's remembered wilderness cell overriding the explicit `?at=` arrival; the only cause left on that row is `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
+| B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65`, `TERRAIN.IMG`, and — for the ninth province, which the file leaves empty — **the later games' Cyrodiil** | `worldMap.js`, `worldmap.js`, **`cyrodiil.js`** | `[x]` **(§4h: D-38 — the terrain-class table and the fail-safe sampling are the game's own now, which is what the owner's *"biomes … swapped … the imperial city is in the desert instead of temperate"* was; D-39 — the Imperial Province's 31 all-zero placeholder records, one pixel and one seed between them, are the later lore's Cyrodiil: 31 names, 31 pixels, 31 cities; D-40 named and open on the row below)** | `worldmap`, **`unit/worldmap`** |
+| B17 | Wilderness, leaving a city on foot, **and a dungeon's own door out here** | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks, `CITYDATA.64`'s 144 dungeon records | `wilderness.js`, `wildernessBestiary.js`, **`dungeonSurface.js`** | `[~]` **(D-34 closed with `dungeonSurface.js` + `leaveThePlace`): a dungeon's way out is the country, not the map** — the country is the wilderness of the settlement nearest the dungeon's world-map pixel, the door is a ruin block of that country's drawn grid chosen by the dungeon's own seed, the country page stands the player at it (`state().wild.ruin`) and `E` goes back down by seed. Measured: `?dungeon=Stonekeep` (seed 3969902143) → the country at cell **(1568, 3360)** = the centre of ruin block **(24, 52)**, `onRuin: true`, then the same dungeon again; `START.MIF` (no record of its own) → the country outside Riverhold. **Gap named**: a ruin nothing points at is inert — the country's ruins are not doors yet (queue §5 item 0). **This pass (§4g) closed the two halves of the owner's next report — D-35: the exit stood the player on the ruin block's *centre cell* (4 096 cells of country; a field as often as a doorway), and now stands them in front of the ruin's own **door** (its arch, or the built cell nearest the centre) two or three cells out on the open side, facing it; D-36: a window slide re-booted the page facing north and now carries the player's bearing (`&yaw=`)**. **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **the walk back in works (`dbf4058`) — D-32 was the save's remembered wilderness cell overriding the explicit `?at=` arrival; the only cause left on that row is `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
-| B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
+| B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **(§4j this pass: *the world keeps the hour*)** — `world.clock` (`{day, minutes}`) is written on every place change, on the world's own saves and on a 20-second tick, and read on the way in: the hour a player leaves a place at is the hour the next place opens on, a bare reload comes back at it, and a world that has never kept an hour still starts at ten. `?clock=` still wins (and is dropped from a transition's URL — D-32's law) so a probe cannot rewrite the world it measures. **What stays open on D-05**: a place change is still a full scene re-boot (level, crowd, creatures, light rebuilt from the save — S-E), which is the block's other half | `unit/worldstate`, **`persist`**, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
 | B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
 | B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24, and the owner's "you should port much more from arena" = D-31) | `unit/assetcoverage.test.mjs` + the tool's own run |
@@ -116,6 +168,14 @@ Every row of the 2026-10-16 report, with the block that owns it. Full rows live 
 | "most enemies dont exist or dont spawn" | B11 + B22 | **open** · D-29: three numbers per dungeon (roster size, how many ids this install can draw, the field's real count) |
 | "some npcs have enemy sprites like theres a minotaur guy somewhere" | B11 | **open** · D-30: **not reproduced** in Daggerfall, Corinth or a wilderness page (48/48/1 people, every sheet a folk sheet); needs the place, or a sweep of every city × clock × interior |
 | "still stuff from arena is missing you should port much more from arena" | B22 | **open** · D-31: the wiring half, group by group in `docs/ASSETS.md`'s order (screens first) |
+
+### And the fourth report, later the same day
+
+| report | block | status |
+|---|---|---|
+| *"the biomes, biome backgrounds and buildings texture and architecture are completely different … they seem to be swapped like blackmarsh has nord architecture the imperial city is in the desert instead of temperate"* | B16 + B18 | **closed this session** (D-38, §4h: the terrain-class table and the fail-safe sampling are the game's own now; measured over the whole install — 288 settlements, 91 mountain / 129 temperate / 68 desert, none at sea, Daggerfall temperate, Skyrim 32/32 mountain, the Imperial City temperate at 254, Anvil's city built of `MCN.INF`) |
+| *(no report — found while measuring the one above)* the province the game **begins** in is one named place and thirty-one empty records | B16 | **closed this session** (D-39, §4h: the later games' Cyrodiil fills all 31 slots — 31 names, 31 pixels, 31 cities; the greeting gap is queue item **0c**) |
+| *(no report — measured while checking that)* `CITYDATA.64` repeats two settlement names across provinces | B16 | **open** · D-40, queue item **0d**: `?location=Glenpoint` always lands in High Rock, `?location=Riverbridge` always in Morrowind |
 
 ---
 
@@ -346,6 +406,301 @@ those are the cheapest visible follow-ons.
 
 ---
 
+## 4g. What this pass closed (2026-10-16, part eight — **the country you walk**)
+
+**B17 continued · a dungeon's door, and the compass a slide must not steal.** The most useful thing
+this pass produced is a number: the exit of D-34 stood the player on the **centre cell** of the ruin
+block it had just chosen, and a block is **64×64 = 4 096 cells** of country. Measured on Daggerfall's
+own wilderness with Stonekeep's seed (`?location=Daggerfall&wild=&ruin=3969902143`): ruin block
+(26, 9), centre **(1696, 608)** — the player in open ground with the structure that is their way back
+down out of sight, and `state().wild.ruin` carrying no door at all. The block's nearest wall stands
+**12 cells west** of that centre, at (1696, 596). "You exit a building" was a reading of the *centre
+of a field*, which is what a block centre is: the structure is a building somewhere in it.
+
+**The rule** (`game/dungeonSurface.js`'s **`ruinDoorStand`**, ~80 lines, pure, no I/O):
+
+* **the door** is the ruin's own **arch** — the `0x9` voxel, which is the doorway every `.INF` in this
+  game marks a gate with and which `scenes/interior.js` reads a settlement's gate from — **nearest**
+  the block's centre. A ruin with no arch in it (this install's blocks are libraries, colonnades and
+  grave-fields) falls back to the **built cell nearest the centre**, and `arch` says which reading
+  answered;
+* **the stand** is two or three cells out along the door's **open side**: `HORIZON = 24` cells of the
+  block are measured per axis and the side with the **least ruin in it** wins, then the longest run of
+  open ground. Both readings are needed and neither is enough — a ruin's courtyard is open at the door
+  and full of building beyond it, so "longest open run" alone walked the player *into* the ring
+  (the first version of the rule did, and a test now says so);
+* **the facing** looks back at the door (`atan2` in `openYaw`'s own convention: yaw 0 is the column
+  axis), so the way down is the first thing on screen — and that is the one claim a picture cannot
+  fake and a number can.
+
+**Measured after** (same URL, in a page): door **(1696, 596)**, stand **(1699, 596)**, the player
+**on** the stand (`state().wild.ruin.atDoor: true`), yaw **−1.571** — exactly the direction of the
+door — and `arch: false`, because that block has no arch. Held by
+`tests/unit/dungeonsurface.test.mjs` **11/11** (four new: the arch beats a wall nearer the centre, the
+stand is outside with the ruin exactly `paces − 1` cells in front and open country behind, a ring's
+courtyard is refused as the outside, and a block with nothing built in it answers `null` rather than a
+field). The wiring is `interior.js`'s `standAtRuinDoor`, which is **skipped for any page that names
+its own cell** — a slide of the window, a gate crossing, a save's remembered foot — because those
+pages are about the ground the player is already standing on.
+
+**And the second half, which is the same question asked of the *window*.** The slide itself is the
+original's own mechanism (`ArenaWildUtils::getCenteredWildOrigin` → `wildernessWindowOrigin`): a
+128×128 window kept around the player and re-centred a 64-cell block at a time. The port boots a page
+in place for it (`goInPlace`, B19's own work), and that boot recomputed the facing from scratch.
+**Measured**: walking across the boundary on **yaw 0.35**, `state().yaw` came back **0.00** — the
+compass reset every 64 cells, which is the owner's *"you dont understand where you are going"*; and
+`?yaw=` was a parameter the boot **read by nothing** (`params.has('yaw')` only ever suppressed its own
+`openYaw`; grep finds no `yaw=` in `src`, `tools` or `tests`). **Fixed**: the slide's URL carries
+`&yaw=<cam.yaw>` and the boot applies it. **Measured after**: `yaw 0.35 → 0.350`, URL
+`/…?wild=1703,608&…&yaw=0.35`, origin (1664, 512) → (1664, 576), and the player's cell **continuous**
+(1703, 608 on both sides of the slide — the country kept their ground; only their compass was stolen).
+The country's *terrain* was never the defect: the block grid is drawn from the settlement's seed and
+is the same grid on every page and every visit.
+
+**The queue this pass hands on** — the rest of the owner's country list, unclosed and named:
+
+* **the country has no landmarks and no roads** (D-22, still open): a 128×128 window per climate, no
+  relief, no coast, no continuous Tamriel. The door rule above gives the *dungeon* a place; what a
+  walker needs next is something to walk *between* — the settlements' own `.RMD` villages are already
+  in the grid (`classifyBlock`'s `village`/`tavern` lists) and no page says where they are.
+* **a ruin nothing points at is still inert**: the country's ruins are not doors until something names
+  them. The seed that opens a ruin is the *dungeon's*, so a ruin without one is scenery — the fix is a
+  per-ruin address (`?ruin=` already carries a seed; it needs a record to resolve against).
+* **the slide is still a scene re-boot** (B19/D-05): the bearing is kept now, and the people, the
+  creatures and the level are rebuilt for the four blocks under the player. Making it incremental is
+  B19's block, not this one's — but the measurement to start it is here: a slide is one `goInPlace` per
+  64 cells of walking.
+
+---
+
+## 4h. What this pass closed (2026-10-16, part nine — **the biomes, and the province that was empty**)
+
+**B16 · D-38 — every biome was one province over, and the owner said so first** (*"the biomes, biome
+backgrounds and buildings texture and architecture are completely different … they seem to be swapped
+like blackmarsh has nord architecture the imperial city is in the desert instead of temperate"*).
+`game/worldMap.js`'s terrain-class table had **249/250 temperate, 251/252 mountain, 253/254 desert**;
+Arena's own classes are **249/250 `MOUNTAIN`, 251/254 `TEMPERATE`, 252/253 `DESERT`** (OpenTESArena's
+`WorldMapTerrain` constants and `toClimateType`). One pair of numbers decides a settlement's climate,
+and the climate decides the city `.INF` a settlement is textured from (its architecture), its
+wilderness `.INF`, its creatures and its sky. The same function's **sampling** was wrong too:
+`getFailSafeAt` takes *every* sample **twelve pixels to the left** (a linear-index shift that wraps
+around the 320×200 buffer) and, when that is still sea, walks **below → above → right → left**
+outward for the first land, giving up at **254** after 199 cells; this project sampled the point
+itself, shifted only when it was sea, and answered the sea constant otherwise.
+
+**The readings that make it a reading and not a preference** (all in `tests/unit/worldmap.test.mjs`, 20
+checks): **288 settlements — 91 mountain, 129 temperate, 68 desert, none sampling sea**; High Rock
+**two** temperate (**Daggerfall**, **Reich Gradkeep**) and thirty mountain, against UESP's *"warmer
+forests in the southwest around Daggerfall"*; Valenwood's three mountain settlements exactly
+**Arenthia, Thormar Keep, Ebon Ro**, against UESP's *"mountains in the north around Arenthia"*;
+Skyrim **32/32 mountain**; Elsweyr **all 32 temperate**, which is UESP's *"completely devoid of desert
+biome"* and was the reported swap; the **Imperial City temperate** at the game's own `TEMPERATE`
+pixel (254). The browser half is one line of the `worldmap` suite: **Anvil's city is built of
+`MCN.INF`** — the climate reaching the visible textures.
+
+**B16 · D-39 — the province the game begins in had one place in it.** `CITYDATA.64` names all 32
+settlements of eight provinces and **one** of the Imperial Province's; the other 31 records are
+all-zero placeholders (no name, local (0,0), visibility 0), and the port read them as 31 places:
+**one world pixel** (the rectangle's own corner, 107,61 — 31 markers stacked, thirty unselectable),
+**one city seed** (0: `citySeed` is the packed local point) and **one country** (0: `wildernessSeed`
+is the name's first four letters), an **empty string** for the map's label and the marker card's
+title, and a `?location=` **with nothing in it** for fast travel. New **`src/game/cyrodiil.js`** fills
+them from the **later** games' Cyrodiil — the owner's own rule for Tamriel lore — because Arena wrote
+nothing there to disagree with: **Anvil, Bruma, Bravil, Cheydinhal, Chorrol, Leyawiin, Skingrad** in
+the seven free city-state slots, **Kvatch** as a town (the city the Oblivion Crisis burned), eight
+towns with **Vlastarus** and **Sutch** among them, and sixteen villages from Oblivion's own list. The
+module stamps the provenance line by line: names and kinds from the later games (UESP:
+Oblivion:Settlements, Lore:Sutch, Online:Vlastarus/Online:Cyrodiil), directions from UESP's own words,
+and **the pixel this project's own**, since nothing in Arena's install has a coordinate for a place it
+never had. The file's own record — the Imperial City — is untouched, and a placeholder the table
+cannot place is not a place at all (left out, with a warning).
+
+**Measured after**: 288 settlements, **32 in every province**, no province drawing two of its own on
+one pixel, **31 placed**, and a filled record booting a real city in a page — `?location=Anvil` →
+`citySeed 1048696`, `city {inf: MCN.INF, blocks: 30, cells: 12 000, missing: 0}`, no boot error and no
+page errors (Kvatch `CITY2.MIF`/`TCN.INF`, coastal Leyawiin `CITYW2.MIF`, desert Sutch `DCN.INF`).
+**The gap named on the row**: a filled city arrives with **no greeting**, because Arena's `CITYTXT`
+holds **64** greetings — eight provinces × eight city slots — and **none for the Imperial Province at
+all**, not even for the Imperial City (`cityTextKey(8, 0..7)` absent). This project will not invent
+prose it did not read, so nothing is shown and the browser suite pins that (*"offers no invented
+arrival greeting where Arena's corpus has none"*).
+
+**And D-40, found by checking the above and left open, because it is Arena's data**: `CITYDATA.64`
+repeats two names across provinces — **`Glenpoint`** in High Rock (52,71) and Valenwood (118,141),
+**`Riverbridge`** in Morrowind (226,84) and Black Marsh (253,133) — and `byName` (and therefore the
+map's `?location=`) answers the first, so the second of each pair cannot be reached by name. The test
+pins the exact pair.
+
+---
+
+---
+
+## 4i. What this pass closed (2026-10-17, part ten — **a province's two climates, and the floor that
+lied**)
+
+**B18 · D-41 — the ground and the buildings are not the same climate.** The owner's list, and then
+his correction of the first attempt (*"MORROWIND NOW JUST SAYS DESERT BUT WHEN YOU GET INTO IT ITS
+COMPLETELY MOUNTAIN EVEN THE GROUND AND THERE IS NO DESERT LANDSCAPE WITH MOUNT ARCHITECTURE AND ITS
+LIKE THIS FOR EVERYBODY"*). New **`src/game/provinceStyle.js`** is the law: per province a **ground**
+(Morrowind desert, Elsweyr and the Summerset Isles temperate, Skyrim a latitude mix north of
+`SKYRIM_SNOW_LINE = 50`), an **architecture** (Morrowind mountain, Elsweyr/Summerset desert), places
+with a row of their own (**Sentinel** desert — its pixel is mountain; **Winterhold** `weather: 'snow'`),
+and the **people pools** (each province's own race first and most of all, weighted, every key one of
+the corpus's eight banks). The world model carries `terrainClimate` (the pixel, D-38), `climate` (the
+ground), `architecture` and `weather`; the scene builds a settlement from its architecture's `.INF`
+and **lays the country's floors under it** — an INF's voxel table is really two tables (`@FLOORS`
+then `@WALLS`, `infFile.floorTextureCount`), and `withGroundFloors` swaps the ground climate's five
+floor entries in, refusing (with the reason) when the two tables differ in length rather than
+shifting an index. The map card says **both** readings, because one of them alone is what the owner
+called a lie.
+
+**Measured** — units: all three city INFs carry **5 floor entries of 59**, merged `MCN`+`DCN` is
+`NROADD.IMG` (a desert road) with `DEQ.IMG` (a mountain wall); 288 settlements, 32 per province, no
+province drawing two of its own on one pixel. Pages (`worldmap` **52/52**): `?location=Necrom` →
+desert country, `MCN.INF`, `groundInf DCN.INF`, `merged: true`; `?location=Corinth` → temperate
+country, `DCN.INF`, floors from `TCN.INF`; `?location=Winterhold` → `MCS.INF`, `weather: snow`, no
+second INF; the card reads *"desert country, mountain buildings"*.
+
+**Named gaps on the row**: the **sheets** a person is drawn from are still the archive's art (the
+names follow the province; the Argonian/Khajiit art the owner asked for is queue **0f**), and the
+corpus has **eight race banks with no `argonian` key** (measured), so Black Marsh's folk take the
+closest names the file has. The four NPC reports are now their own rows — D-42 (the missing 360°
+turn), D-43 (a person changing as you talk to them), D-44 (the stationary tavernkeeper/priest/rumour
+roles), D-45 (the race art) — and the volcano is D-46; each carries its own first probe, and none of
+them was measured this pass.
+
+---
+
+---
+
+## 4j. What this pass closed (2026-10-17, part eleven — **the world keeps the hour**)
+
+**B19 · D-05 — the persistent world's first half, found by probing instead of guessing.** The owner's
+word twice (*"you dont understand where you are going"*, *"there is no persistency in the world like
+instead there is in daggerfall enhanced"*), and queue item **0e**'s first probe was "on one page, list
+what survives a change of place and what it costs". The list came back with exactly one hole, and it
+was the one a player feels first: **the hour**. `game/worldState.js` has carried `clock` since it was
+written (`{day, minutes}`, validated by `parseWorld` and reported by `worldSummary`) and **nothing had
+ever written it** — `__debug.worldMemory().clock` read `null` on every page this project has ever
+measured. `interior.js`'s `arrivalMinutes()` answered `?clock=<minutes>` or **ten in the morning**, and
+`clockNow()` is `timeOfDay(radiant.day, dbg.seconds, {opensAt: arrivalMinutes()/60})`, where
+`dbg.seconds` is the seconds *that page* has been standing. So every gate, stair, shop door, fast
+travel, wilderness slide and reload put the world back at breakfast, for ever.
+
+**The law, in `game/worldState.js`:** *the hour belongs to the world.* `setWorldClock(world, day,
+minutes)` and `worldClock(world)` are the two doors and they meet in one normaliser (`foldClock`):
+minutes fold into `[0, 1440)` with the overrun carried into the day, a day is at least one (the floor
+`livingWorld.timeOfDay` already uses), and a pair that is not numbers is no clock — so a scene handing
+over a **running** clock cannot write `minutes: 1500`. `plainClock` (the save's own reader) comes
+through the same fold, which makes the setter, the reader, `worldSummary` and `parseWorld` one claim
+rather than four.
+
+**And in the scene** (`scenes/interior.js`, four small edits): `arrivalMinutes()` is the world's minute
+unless the URL forces one; the calendar's day is `max(radiant.day, world clock day)` (`worldDay()` — a
+calendar that rewinds is worse than one that is early, and neither writer can put time back);
+`rememberClock()` stamps the world and saves, and is called from **every place change** (one line in
+`goInPlace`, before the new scene is built), from the saves the world already makes (a door, a kill),
+and from a 20-second tick so a tab closed mid-idle keeps its hour.
+
+**Two laws older than this block shaped it, and both are the reason the fix is four edits and not one:**
+
+* **An explicit arrival beats memory** (D-32, the `?at=` half). `?clock=` is an instruction about *this*
+  page, not a fact about the world: a forced page never writes the world's hour (`clockIsForced()`), and
+  `goInPlace` now **drops the parameter** from the URL it hands on — otherwise a session that began at
+  `?clock=1380` would be pinned to eleven at night for ever (out of a city, up a stair, into a shop)
+  while the world's own clock was ignored at every arrival. The next page takes its hour from the world,
+  exactly as a player's own travel does.
+* **A probe must not corrupt what it measures.** `living` and `audit` drive the shutters and the sky
+  with `?clock=`; with the tick above, a forced page would have rewritten the world and the *next*
+  suite's bare load would have inherited it. That is what `clockIsForced()` is for — and why `living`'s
+  own arrival check (*the player arrives at ten in the morning*) is still green **without being
+touched**.
+
+**Measured, on a real install and a real page** (new suite `persist`, **12/12**; `unit/worldstate`
+**552/552**, four new checks where the file had 548; `living`+`doors`+`movement` **90/90**; `audit`
+**26/26**):
+
+* a world that has never kept an hour still arrives at ten in the morning (**600** — so "the hour
+  persists" cannot be bought by making every arrival midnight);
+* `?clock=1330` is obeyed on arrival (**22:10**) and the world still reads `clock: null` — the *visit* is
+  written down (`1 place`), the *instruction* is not;
+* the player walks out of `CITYW2` through its own gate at ten past ten at night, and the country page
+  opens at **22:10** with the world holding `{day: 1, minutes: 1330}`;
+* a **full page load** of the country's own URL — no `?clock=` in it at all, which is the point — comes
+  back at **22:10**: the tab closed and reopened, where before it was 600;
+* and a settlement opened bare afterwards is at 22:10 too.
+
+**What stays open on the row, and it is the rest of B19:** a place change is still a **full scene
+re-boot** — the level, the crowd, the creatures and the light are built again (`audit`'s S-E measures a
+door costing one boot in the same document). The clock had to cross that boundary first because it is
+what the player feels first; what is left is swapping a payload into a living world rather than
+re-running the boot. **Next first probe** for that half: on one page, time a single `goInPlace` and
+list what the boot recomputes that the **world already knows** (the roster, the crowd, the hour's own
+light) — the same shape as this pass's probe, and the list is the rest of the work order.
+
+---
+
+---
+
+## 4k. What this pass closed (2026-10-17, part twelve — **the people of a place, drawn right**)
+
+**B11 · D-42 — "some Npcs are not setted up well and they dont have a proper 360 walking animation or
+going around him 360 animation": half a defect and half the archive.** The probe ran first
+(`.scratch/peopleProbe.mjs`, which reads every people family out of `GLOBAL.BSA` by its own bytes, and
+then reads the same names through this project's own readers), and it answered both halves of the
+question at once:
+
+* the **armoured roster** (`01PLTWLK.CFA`…`15MAGWLK.CFA`) is **six frames with one angle per file** —
+  the angle is the file's own set digit, which `outfitsFromFolk` had already read correctly;
+* the **town's men and women** (`MLGEN0#W`, `FMGENW0#`) are **one angle each** — six frames, nine for
+  the set-1 pair — which is how Arena drew its commoners;
+* the **watch** (`GUARD01`…`GUARD05`) and **`BABE01`…`BABE05`** are **twelve-frame view sheets** with
+  Arena's layout inside one file: **walk 0–5, look 6/0/7/0, attack 8–11** — and `GUARD06`/`BABE06` are
+  the three-frame deaths;
+* `LGLIT0#` is three frames at 26…60 px tall, which is not a person's size (the next thing to read).
+
+**The defect the probe found is not the one that was reported.** `actorFrame` read the layout from the
+**actor** (`enemy: Boolean(actor.monster)`) and gave every actor that is not a monster `count` — *every
+frame the file holds* — as its stride. On a twelve-frame sheet that means **the town's watch walked
+through its own head-turn (6/7) and its sword-swing (8–11)**, in the street, in front of the player;
+the `BABE` family with it. And the 360° turn the owner asked for was **already there** and is now
+measured: on a page, *every person in the street is drawn from one of the archive's five angles — 48
+people, views 1,2,3,4,5*, and the eye walking around one reads *from `11BARWLK.CFA` (view 1) to
+`15BARWLK.CFA` (view 5)*. The half the owner cannot get is the archive's own: a **commoner has one
+angle**, so no port can turn that figure — the five-angle families are the armoured roster, the watch
+and `BABE`.
+
+**The fix is in the modules, and the layout is now a property of the art:** `peopleKinds.js` gives every
+kind a `layout` — `'view'` for the twelve-frame families, `'action'` for one-animation-per-file —
+`townsfolk.js` carries it onto the person, `actorAnimation.actorFrame` takes a `walkFrames` reading
+(clamped to the sheet, so a reading longer than the art cannot sample past it) and `interior.js` passes
+`LAYOUT_WALK_FRAMES` for a `'view'` person. The old law stands where nothing was measured: a creature's
+sheet is the layout, everything else is its whole sheet.
+
+**Measured** — unit **554/554** (`unit/actoranimation.test.mjs`'s *a twelve-frame sheet strides on its
+walk frames, and a nine-frame action on all nine*: the stride visits 0…5 and never 6+;
+`unit/peoplekinds.test.mjs`'s *the layout is read from the family and matches the frames the archive
+ships*: `GUARD0`/`BABE0` are twelve-frame `'view'` kinds, `MLGEN01/02` and `FMGEN01/05` are 6/9-frame
+`'action'` kinds, and the armoured roster is six frames of one angle). Browser: **`townsfolk` + `city`
+97/97**, including the new page check *and the watch walks on its walk frames, not on its head-turn or
+its sword-swing* (six samples of a peaceful street, 44 batches drawn, no layout sheet past frame 5).
+
+**The check this pass found broken, and repaired rather than loosened:** `townsfolk`'s *"T opens a
+conversation with the person in front of the player"* failed on **`Bathi — a person in a habit`** — the
+game's **third** heading shape, because the armoured roster is *named* too and D-10's two-shape
+restatement admitted the name only in front of the unarmoured families (D-10b). The assertion is now
+built out of the modules' own vocabulary (`ARMOUR_WORDS` + `peopleKinds`' four labels) with an optional
+`name — ` in front, so a fourth description fails it instead of slipping through, and it still refuses
+a heading made of words this project never wrote.
+
+**What this pass hands on, in the order the owner's own message puts it** (queue §5, items **0h** the
+people's identity while you talk — D-43, **0i** Arena's stationary roles — D-44, **0f** whose faces
+these are — D-45 with the family table now measured, **0e** the seamless world — *"barely moving in the
+persistent world reloads the game and its unplayable"*, **0l** the two map levels coherent, **0m**
+Winterhold's snow and every biome's own background).
+
+---
+
 ## 5. The queue — what the next sessions take, in order
 
 Each entry names **the first probe**, because a block starts with a measurement.
@@ -384,6 +739,118 @@ Each entry names **the first probe**, because a block starts with a measurement.
    cell, `?at=` lands in the city. **One cause still open on that row**: `GATE_WALK_REACH` (3.2 m)
    and `GATE_STEP` (3 cells = 7.5 m) disagree — the crossing arrives 7.5 m out, so the walk back has
    to be walked 4 m first, where Arena's own gate puts the player in the opening.
+0c. **B16 · the later lore's own words for Cyrodiil** (D-39's named gap, §4h). The places boot and the
+   markers are their own; what a player does not get is what every other Arena city says on arrival.
+   `CITYTXT` holds **64** greetings — eight provinces × eight city slots — and **none for the Imperial
+   Province**, not even for the Imperial City. First probe: read the later games'
+   own arrival prose for the 31 (Oblivion's place descriptions and loading texts, UESP) and settle
+   whether this project may use it — the standing rule is that prose is either the install's own or
+   stamped as this project's, so the decision comes *before* the wiring. The same pass can give a
+   **town** a greeting at all (today only `kind === 'city'` is looked up), which is older than the
+   fill and affects every province.
+0d. **B16 · a name is not a world address** (D-40). `?location=Glenpoint` always lands in High Rock
+   and `?location=Riverbridge` always in Morrowind, because the file repeats both names across
+   provinces and `byName` answers the first match. First probe: boot one page per repetition and read
+   where they land (`?location=Glenpoint` twice), then choose the rule — a province-qualified arrival
+   (`&province=`, the way a dungeon is addressed by seed), or the world's own disambiguation with the
+   file's provenance written on it.
+0f. **B11/B18 · whose faces these are** (D-45, and the *art* half of D-41). The **names** a province's
+   people carry are the province's own now (`game/provinceStyle.js`); the **sheets** are the
+   archive's, and the owner asked for Khajiit in Elsweyr, Dunmer in Morrowind, Nords in Skyrim and
+   lizardmen standing in for Argonians. **THE FIRST HALF OF THE PROBE RAN** (§4k, `.scratch/peopleProbe.mjs`):
+   fourteen families, and their own bytes — the **armoured roster** is six frames with **one angle per
+   file** (the angle is the file's set digit), the **town's men and women** (`MLGEN0#W`/`FMGENW0#`) are
+   **one angle each** (six frames, nine for the set-1 pair), the **watch** (`GUARD01–05`) and
+   **`BABE01–05`** are **twelve-frame view sheets** (walk 0–5, look 6/0/7/0, attack 8–11), `GUARD06`
+   and `BABE06` are three-frame deaths, and **`LGLIT0#` is three frames at `h26…60`** — too small to be
+   a person, which is the next thing to read. **What is left of this item, and it is the owner's own
+   request:** which way a province's folk are *drawn*. The archive ships no Khajiit, no Argonian and
+   no Dunmer skin, and **no lizard-named `.CFA` at all** (measured), so the honest options are the
+   creature art this install *does* carry (the Lizardman's sheets stand in for Argonians, the way
+   `PAT#` turned out to be the Minotaur's) and a per-province choice among the fourteen families the
+   archive has. First probe: for each family, what the figure reads as (a screenshot of one view per
+   family, five angles), then the mapping with the provenance written on it — Arena's art where
+   Arena has it, this project's substitution where it does not, stamped as such.
+0g. **B17 · the country's landmarks** — the volcano is the one the owner named (D-46: *"in morrowind
+   you still cant see a vulcano"*), and it is the cheapest honest one: a world-map *bitmap* cannot be
+   drawn on (`TAMRIEL.IMG` and the nine province maps are Arena's own art), but the country is this
+   project's, and `TERRAIN.IMG`'s own mountain classes already mark Red Mountain's pixel. First
+   probe: what the Morrowind province bitmap shows at that pixel, and what `arenaSky`/the wilderness
+   window draw over a Morrowind city today — then a **country feature** the terrain classes already
+   imply, with the same rule as a ruin's door (one feature per place, deterministic from the seed).
+0h. **B11 · a person's own identity, while the player is looking at them** (D-43, the owner's *"when you
+   speak to them they change character sometimes"*). The crowd's art, its kind and its armour are
+   chosen when the level is built; `livingWorld.js` guards a *class/arm/flag* change with
+   `allowChange = !row.visible || allowChange` — i.e. a person in view is not supposed to be
+   re-dressed — and the talk panel holds a `person` object while it is open. First probe: talk to
+   twenty people in a row on one page and print each one's `key`, `armour`, `factions.kind` and
+   `file` **before the panel opens, while it is open, and after it closes**; a change of identity
+   while a player is looking at them is the bug whether or not it is what the owner saw. Owning
+   block: **B11** (the people), check: `townsfolk` + a new unit test on the identity record.
+0i. **B11 · Arena's own stationary roles** (D-44, the owner: *"you should add the npcs that dont move
+   from the original arena the one in taverns the priest the ones you can ask rumors … they are
+   probably object and not entities in the original arena"*). Arena places its tavernkeeper, its
+   priest and its rumour-givers as **records in the map** (the `*ITEM` people spots this port already
+   reads — Daggerfall's `CITYW2.MIF` places nineteen), and the port gives **every** person a day plan
+   (`livingWorld.js`) so a keeper who should stand at a counter walks the street instead. First probe:
+   for one city, list the level's own people spots with their `role` and cell, then watch each of them
+   for an hour of in-page clock (`__debug.setClock`) and print how many ever leave their spawn cell:
+   the ones that never move are the roles the port drew as wanderers. The fix is a *plan* change, not
+   a new entity — a keeper's day begins and ends at their own cell (which is also what the taverns
+   and temples of D-44's list need: an owner standing still is a shop you can talk to). Owning block:
+   **B11** with **B18**'s trades; check: `townsfolk`, `doors`, `living`.
+0l. **B16 · the two map levels, made coherent** (the owner: *"the big map and the region maps
+   coherence needs to be redone in order for it to be visually and technically coherent and develop a
+   persistent world"*). The world map is the continent with its nine provinces and the province maps
+   are the game's own hand-drawn plates (`MAPOUT.CIF`/`MAPBLINK.CIF` icons, `OUTPROV.CIF` plates),
+   and §4h/§4i put the climate, the province and the markers right; what has never been **read as one
+   picture** is the pair: the same place on the continent, on the province plate, on the marker card
+   and in the country the player walks. First probe: for three settlements chosen for their edges
+   (a coastal city-state, a two-province name like `Glenpoint`, a `cyrodiil.js` fill), print the
+   place's pixel on both maps, its province rectangle, its climate, its seed and the URL its marker
+   builds, and check the four agree — then fix what disagrees in the *world model*, never in a
+   drawing routine. Owning block: **B16**; check: `worldmap`, `unit/worldmap`, `unit/mapscreen`.
+0m. **B18 · the sky a province never stops doing, and every biome's own background** (the owner:
+   *"in winterhold it never needs to stop snowing"*, and *"make sure the backgrounds are correct for
+   every biome"*). `provinceStyle.js` already gives Winterhold `weather: 'snow'` and the level's
+   `.INF` letter is honoured (`MCS.INF`) — what no probe has shown is the **precipitation and the
+   background** a player sees: D-23 (*"there is no front that moves, no per-climate ground mix"*)
+   still stands. First probe: on one page per climate, read `state().sky`/`sceneLighting` and take a
+   screenshot at the horizon, then compare the three climates' skylines and their weather — the
+   claim to test is *"a desert's horizon is not a temperate one's, and Winterhold's snow does not
+   stop"*, and each biome's answer belongs in `game/arenaSky.js`/`sceneLighting.js` rather than in a
+   scene. Owning block: **B18**; check: `scenevisuals`, `sky`, `unit/sky`, `unit/lighting`.
+0e. **B19 · a persistent world** — the owner's own words, twice: *"you dont understand where you are
+   going and there is no persistency in the world like instead there is in daggerfall enhanced"* — and
+   then, of the country: *"barely moving in the persistent world reloads the game and its unplayable"*,
+   which is the same row said louder: a slide re-boots the whole scene every 64 cells, so the world is
+   re-made under the player's feet. **The standard this block is judged against has now been READ
+   (§1b)**: *Daggerfall Enhanced* and *Daggerfall Online* are earlier names of **DFO Online**, a
+   JavaScript + WebGL2 browser reimplementation whose own documents split the state **exactly as this
+   project does** — a shared **world half** (doors, loot, kills, standing, quests, **time at 1 Hz**) and
+   a private **character, inventory and quest half** — with the save envelope itself as the wire format,
+   a snapshot then deltas. Its room/host machinery (a Worker, one Durable Object per room, a WebSocket
+   relay) is a *multiplayer* answer to a question this project has not been asked, so it is recorded in
+   §1b rather than built; what the standard confirms is that **the remaining work is not a save rewrite
+   but the world half being complete (the two loose fields, `weather` and `player`) and the scene
+   keeping it in hand instead of re-booting**.
+   **THE PROBE RAN AND HALF THE BLOCK IS CLOSED (§4j)**: the list of what survives a change of place
+   came back with one hole, the **hour**, and the world keeps it now (`worldState.setWorldClock`/
+   `worldClock`, `interior.js`'s `rememberClock`; held by the new `persist` suite, 12/12). **What is
+   left of the block is the other half of the same list** — a place change is still a **scene
+   re-boot** (`goInPlace`: the level, the crowd, the creatures and the light are built again from the
+   save, never carried; D-36 measured one `goInPlace` per 64 cells of walking). First probe: on one
+   page, time a single `goInPlace` and list what the boot recomputes that the **world already knows**
+   (the roster, the crowd, the hour's own light) — that list is the remaining work order, and the
+   shape of the fix is D-36's: the boot's URL carries what the player must not lose.
+   **The seams, already located for that probe:** the world's memory is one object with a
+   field-first API (`src/game/worldState.js`: `visitPlace`, `setDoorState`/`doorStateAt`, `noteKill`,
+   `regard`, `quests`, `worldSummary`), the scene writes it at `interior.js:1676` (a door read),
+   `:1955` (a place visited), `:1979` (a door set), `:6317` (a kill noted), and the page exposes it as
+   **`__debug.worldMemory()`** (`interior.js:8035` — a place key plus `worldSummary`), with
+   `__debug.setClock(minutes)` beside it. A probe that reads those before and after one forced place
+   change (`__debug.leave()`, D-34's own exit) answers the whole question in one run.
+
 1. **B02 · is the start dungeon mirrored?** (D-13.) Probe: render `START.MIF`'s cell grid as
    text (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) and compare it against the original's
    own screen — the cell door, the stair (`GATE.IMG`), the room the arrival point is in, and the

@@ -202,15 +202,17 @@ test('a speech talks about the place the job really sends the player', () => {
 });
 
 test('a generated quest always points somewhere the game can actually go', () => {
-  // `CITYDATA.64` is a fixed 32 city slots per province, and the ones a province does
-  // not use ship as **empty records** with real coordinates and no name — 31 of them in
-  // this install. They are in `world.settlements()`, so a delivery drawn at random from
-  // that list used to name nowhere: "Carry word to", `Travel to  — ...`. The set below
-  // is therefore the *named* locations, and the length check is the same defect seen
-  // from the other side.
+  // `CITYDATA.64` is a fixed 32 settlement slots per province and ships 31 of the Imperial
+  // Province's as **empty records** with no name and no coordinates — which used to be in
+  // `world.settlements()`, so a delivery drawn at random from that list named nowhere:
+  // "Carry word to", `Travel to  — ...`. The world **places** those 31 now (the later games'
+  // Cyrodiil, `game/cyrodiil.js`, D-39 — `world.placed` is the count), so the list a
+  // delivery draws from has no anonymous entry left; the empty name is still not a place a
+  // quest may name, and this check is the same defect seen from the other side.
   const names = new Set(world.locations.filter((l) => l.name).map((l) => l.name.toLowerCase()));
   const anonymous = world.settlements().filter((l) => !l.name);
-  assert.equal(anonymous.length, 31, 'the install has 31 nameless city slots');
+  assert.equal(world.placed, 31, 'the file\u2019s 31 nameless settlement slots');
+  assert.equal(anonymous.length, 0, 'and the world places every one of them');
   assert.ok(!names.has(''), 'the empty name is not a place a quest may name');
   for (const giver of [world.byName('Daggerfall'), world.byName('Sentinel'), world.byName('Ebonheart')]) {
     for (let seed = 1; seed <= 40; seed++) {

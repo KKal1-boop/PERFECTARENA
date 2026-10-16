@@ -24,12 +24,14 @@ import { makeMainQuestSuite } from './suites/mainquest.mjs';
 import { makeTownsfolkSuite } from './suites/townsfolk.mjs';
 import { makeDoorsSuite } from './suites/doors.mjs';
 import { makeWorldSuite } from './suites/world.mjs';
+import { makeWorldmapSuite } from './suites/worldmap.mjs';
 import { makeRegardSuite } from './suites/regard.mjs';
 import { makeMenuSuite } from './suites/menu.mjs';
 import { makeGearSuite } from './suites/gear.mjs';
 import { makeGuildsSuite } from './suites/guilds.mjs';
 import { makeCommerceSuite } from './suites/commerce.mjs';
 import { makeLivingSuite } from './suites/living.mjs';
+import { makePersistSuite } from './suites/persist.mjs';
 import { makeGeneratedSuite } from './suites/generated.mjs';
 import { makeProgressionSuite } from './suites/progression.mjs';
 import { makeCutsceneSuite } from './suites/cutscene.mjs';
@@ -931,102 +933,6 @@ async function suiteArenaCity(page) {
 }
 
 /**
- * Suite: the world map of Tamriel — Arena's own map art, the nine provinces, every
- * location, and the side-work board.
- *
- * This is Milestone 5's centrepiece and it had no browser coverage until now: the
- * node checks could say `CITYDATA.64` parsed, but only a real page can say the map
- * *draws* — that the art decoded, the markers landed on the continent, and the
- * quest chain's stage is reachable by clicking where a player would click.
- */
-async function suiteWorldMap(page) {
-  const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
-  const q = `arena=${encodeURIComponent(arena)}`;
-  await page.goto(`http://localhost:${PORT}/?map&${q}`);
-  try {
-    await page.waitFor('window.__debug?.scene === "worldmap" || !!window.__bootError', { label: 'the map', timeoutMs: 60000 });
-  } catch (e) {
-    const diag = await page.evalJs('JSON.stringify({ href: location.href, boot: window.__bootError || null, errs: window.__debug?.pageErrors, dbg: window.__debug?.scene, title: document.title })');
-    throw new Error(`${e.message}; page state ${diag}`);
-  }
-  const bootError = await page.evalJs('window.__bootError || null');
-  check('the world map boots without a boot error', !bootError, bootError ? String(bootError).slice(0, 400) : '');
-
-  await page.waitFor('window.__debug.state().frames > 3', { label: 'map frames' });
-  const st = await page.evalJs('window.__debug.state()');
-  check('the map drew the whole continent, from the game\'s own art', st?.drawn?.width === 320 && st?.drawn?.height === 200,
-    `${st?.drawn?.width}×${st?.drawn?.height}`);
-  check('all nine provinces of Tamriel are on the map', st?.provinces === 9, `provinces=${st?.provinces}`);
-  check('every CITYDATA location became a marker', st?.locations === 432, `locations=${st?.locations}`);
-  check('288 of them are settlements and the rest are dungeons', st?.settlements === 288, `settlements=${st?.settlements}`);
-
-  const png = await page.screenshot(path.join(SHOTS, 'm5-worldmap.png'));
-  const decoded = decodePng(png);
-  const stats = imageStats(decoded);
-  check('the map screenshot is not blank', stats.distinctColors > 60 && stats.dominantShare < 0.9,
-    `${stats.distinctColors} colours, dominant ${(stats.dominantShare * 100).toFixed(1)}%`);
-  const edges = Math.max(...[0.35, 0.5, 0.65].map((f) => scanlineEdges(decoded, Math.floor(decoded.height * f))));
-  check('the map is a drawn picture, not a flat fill', edges > 20, `${edges} edges along the best scanline`);
-
-  // The continent, sampled where the provinces are: a marker or land art must be
-  // there, and open sea must not be mistaken for it.
-  const at = (name) => page.evalJs(`window.__debug.markerAt(${JSON.stringify(name)})`);
-  const daggerfall = await at('Daggerfall');
-  const morrowind = await at('Dagoth-Ur');
-  check('a named city has a marker on the map', Boolean(daggerfall && daggerfall.x > 0 && daggerfall.y > 0), JSON.stringify(daggerfall));
-  check('the east of the map is where Morrowind is', Boolean(morrowind && morrowind.world.x > daggerfall.world.x),
-    `Daggerfall x=${daggerfall?.world?.x}, Dagoth-Ur x=${morrowind?.world?.x}`);
-  check('the map knows the terrain under a pixel',
-    await page.evalJs('(() => { const t = window.__debug.terrainAt(172, 106); return t.glyph !== "?" && typeof t.climate === "string"; })()'));
-
-  // Climate comes from TERRAIN.IMG; High Rock is temperate and Hammerfell is desert
-  // in Arena's own world, and the unit tests pin the classes. Here the question is
-  // whether the *browser* path reads them the same way.
-  const climates = await page.evalJs(`JSON.stringify({
-    daggerfall: window.__debug.state().selected, riven: window.__debug.closest(60, 80) })`);
-  check('the map resolves a location\'s climate and coast', /temperate|mountain|desert/.test(climates), climates.slice(0, 160));
-
-  // The main quest chain, derived from the world data, as the map shows it.
-  const chain = await page.evalJs('window.__debug.chain()');
-  check('the chain has the escape, eight pieces and the finale', chain?.length === 10 && chain[1]?.kind === 'piece' && chain[9]?.kind === 'finale',
-    `${chain?.length} stages: ${chain?.map((s) => s.title).slice(0, 3).join(', ')}…`);
-  check('every piece stage names its province and a real .MIF', chain?.slice(1, 9).every((s) => s.province && /^\d{8}\.MIF$/.test(s.mif ?? '')),
-    chain?.slice(1, 9).map((s) => `${s.title}=${s.mif}`).join(' '));
-
-  // ── fast travel, for real ────────────────────────────────────────────────
-  //
-  // **The check that would have caught the reported bug.** Everything above reads what the map
-  // *says* — `travelUrl` is a string this suite asked for and can always produce — while the
-  // journey itself was the one line nothing ran, and that line was wrong: `travel`'s parameter
-  // is called `location`, which **shadows `window.location`**, so its `location.href = url` set
-  // a `href` property on a plain marker object and the page never went anywhere. Fast travel
-  // from the world map did nothing at all, which is the player's report verbatim: "when you
-  // create a new character it opens the map and you cant even travel anywhere".
-  //
-  // So this travels — through `__debug.travel`, which is the marker-click path — and then asks
-  // the page what it is standing in. The second half of the claim is the marker set before the
-  // journey: a live Arena folder is a `FileList` in this page's memory and **cannot survive a
-  // page load**, so a travel that navigated would ask the player for their game data again.
-  // A marker still set afterwards is what proves the scene was rebuilt in place.
-  await page.evalJs('window.__stillTheSamePage = 1');
-  const offered = await page.evalJs('window.__debug.travelUrl("Daggerfall")');
-  check('the map offers a real travel URL for a city it knows', /location=Daggerfall/.test(offered ?? ''), String(offered));
-  const journey = await page.evalJs('window.__debug.travel("Daggerfall")');
-  check('travelling names where it is going', journey?.to === 'Daggerfall', JSON.stringify(journey));
-  await page.waitFor('window.__debug?.scene === "interior" || (window.__debug?.pageErrors ?? []).length > 0', { label: 'the arrival', timeoutMs: 60000 });
-  const arrived = await page.evalJs('({ scene: window.__debug?.scene ?? null, search: location.search, samePage: window.__stillTheSamePage === 1, errors: (window.__debug?.pageErrors ?? []).slice(0, 3) })');
-  check('travelling from the map really arrives at the place it named',
-    arrived?.scene === 'interior' && /location=Daggerfall/.test(arrived?.search ?? ''), JSON.stringify(arrived).slice(0, 220));
-  check('and the journey happened in this page, so a picked Arena folder survives it',
-    arrived?.samePage === true, JSON.stringify(arrived).slice(0, 220));
-  check('the arrival raised no errors', (arrived?.errors ?? []).length === 0, (arrived?.errors ?? []).join(' | ').slice(0, 300));
-
-  check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
-  const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
-  check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));
-}
-
-/**
  * Suite: radiant quests — the side work, end to end.
  *
  * A whole job is played the way a player plays it: read the board, accept a
@@ -1225,7 +1131,7 @@ async function suiteStory(page) {
 
 const SUITES = {
   testmap: suiteTestMap, movement: suiteMovement, interior: suiteArenaInterior, city: suiteArenaCity,
-  worldmap: suiteWorldMap, radiant: suiteRadiant, story: suiteStory,
+  radiant: suiteRadiant, story: suiteStory,
   // Character creation lives in its own module: it is long, it is a flow rather
   // than a scene check, and keeping it here would bury the other suites.
   chargen: makeChargenSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
@@ -1255,6 +1161,11 @@ const SUITES = {
   // The chasm's own surface — the harbour and a lava lake, drawn from the install's own
   // fields and checked by pixels — and where the first-person weapon stands.
   world: makeWorldSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The world map, at **both of its levels** (B16, `D-35`): the continent with its nine
+  // provinces, and the hand-drawn province map a click opens, where the places are the game's own
+  // little icons. It was an inline function in this file until the rework; it is a suite file now
+  // because it grew the pixel checks that tell Arena's marker record from a yellow circle.
+  worldmap: makeWorldmapSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng, scanlineEdges, imageStats }),
   // Who knows the player: the regard ledger, the hand-in a person pays for, and the street
   // that turns on somebody who cuts one of its own down.
   regard: makeRegardSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
@@ -1276,6 +1187,13 @@ const SUITES = {
   // and the watch. **It was written and never registered** — a suite nothing runs is a suite
   // that has never once been green, so it is listed here with the rest.
   living: makeLivingSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng, brightness }),
+  // **The world's own clock** (B19, D-05): the first half of the owner's *"there is no persistency
+  // in the world like instead there is in daggerfall enhanced"*. The hour was the one thing the
+  // world's record did not carry — every gate, stair and reload put the player back at ten in the
+  // morning — and this suite holds it across a real walk out of the city, a cut-short tab and the
+  // next place. It is here rather than in `living` because `living` owns the *hours a trade keeps*
+  // and this owns *what survives a transition*.
+  persist: makePersistSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // The dungeons the install does not ship: 128 of Tamriel's 144 dungeon records are
   // *assembled* out of the pieces this install does have (`game/dungeonPlan.js`), and this is
   // the only suite that ever enters one. It is the reported defect's own suite — "you find

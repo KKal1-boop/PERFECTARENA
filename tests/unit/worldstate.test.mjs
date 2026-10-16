@@ -10,14 +10,19 @@
 //   * a place remembers how often it was visited and the first and last day of it;
 //   * every collection is **capped**, oldest first, so a long game cannot grow a save forever;
 //   * `parseWorld` answers a valid world for `null`, `'x'`, `[]`, a future version and a
-//     truncated object — a corrupt save is a fresh world, never a scene that will not boot.
+//     truncated object — a corrupt save is a fresh world, never a scene that will not boot;
+//   * and, since B19, **the world keeps its own clock** — a day and the minute of that day, both
+//     normalised on the way in, so the hour a player left a place at is the hour the next place
+//     opens on. The laws: minutes fold into one day, a day is at least one, a record that is not
+//     numbers is no clock, and the setter, the reader and `parseWorld` agree on all of it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   STANDINGS, WORLD_ENTRY_MAX, WORLD_PEOPLE_MAX, WORLD_PLACE_MAX, WORLD_STATE_VERSION,
   createWorldState, doorStateAt, lootTakenAt, noteKill, parseWorld, serializeWorld, setDoorState,
-  setQuest, setRegard, takeLoot, visitPlace, worldSummary,
+  setQuest, setRegard, setWorldClock, setWorldPlayer, takeLoot, visitPlace, worldClock,
+  worldPlayer, worldSummary,
 } from '../../src/game/worldState.js';
 
 // ── a fresh world ─────────────────────────────────────────────────────────────
@@ -272,6 +277,69 @@ test('parseWorld survives a truncated or nonsense-filled object without losing w
   assert.equal(parseWorld({ clock: {} }).clock, null);
 });
 
+// ── the world's own clock ─────────────────────────────────────────────────────
+
+test('the world keeps its own clock: a day, and the minute of that day', async () => {
+  const world = createWorldState();
+  assert.equal(worldClock(world), null, 'a world nobody has left yet has no hour to answer with');
+  assert.equal(worldSummary(world).clock, null);
+  assert.deepEqual(setWorldClock(world, 5, 480), { day: 5, minutes: 480 });
+  assert.deepEqual(worldClock(world), { day: 5, minutes: 480 });
+  assert.deepEqual(worldSummary(world).clock, { day: 5, minutes: 480 });
+  // **The record is JSON and nothing else**: a clock is written to a save and read back, so a
+  // fractional minute is not a rounding question, it is a record that would not survive.
+  const fractional = setWorldClock(world, 3, 90.7);
+  assert.equal(Number.isInteger(fractional.minutes), true, 'a minute is a whole minute');
+  assert.equal(fractional.minutes, 90);
+});
+
+test('the hours roll into the day, in both directions', async () => {
+  const world = createWorldState();
+  // A scene hands over a clock that is still running, so `1440` is the *next* day's midnight and
+  // `-30` is the evening before: folding is the whole reason this has a function rather than being
+  // a plain field. (The scene's own `timeOfDay` already folds its own arithmetic; this is the
+  // record's half of the same law, applied to whatever it is handed.)
+  assert.deepEqual(setWorldClock(world, 5, 1440 + 90), { day: 6, minutes: 90 });
+  assert.deepEqual(setWorldClock(world, 5, 2880), { day: 7, minutes: 0 });
+  assert.deepEqual(setWorldClock(world, 5, -30), { day: 4, minutes: 1410 });
+  assert.deepEqual(setWorldClock(world, 5, -1441), { day: 3, minutes: 1439 });
+  // …and the day never goes below one, whatever is folded into it: a world on day zero is a
+  // calendar that has been rewound, and `livingWorld.timeOfDay` floors the same number.
+  assert.equal(setWorldClock(world, 1, -1440 * 4).day, 1);
+  assert.equal(setWorldClock(world, null, 0).day, 1);
+});
+
+test('a clock that is not numbers is no clock, and the world is left as it was', async () => {
+  const world = createWorldState();
+  setWorldClock(world, 5, 480);
+  assert.equal(setWorldClock(world, 6, 'noon'), null);
+  assert.equal(setWorldClock(world, 6, undefined), null);
+  assert.equal(setWorldClock(world, 6, Number.NaN), null);
+  assert.deepEqual(worldClock(world), { day: 5, minutes: 480 }, 'a refused clock does not erase one');
+  // The reader is just as careful: a hand-edited save, a v0 record, a string of nothing.
+  for (const garbage of [null, undefined, 'noon', 12, [], {}, { day: 'x', minutes: 'y' }]) {
+    assert.equal(worldClock({ clock: garbage }), null, `${JSON.stringify(garbage)} is no clock`);
+  }
+  // A record with only one of the two halves is still a clock: the missing half is its own
+  // innocent default (day one, midnight), which is what `parseWorld`'s `plainClock` always said.
+  assert.deepEqual(worldClock({ clock: { minutes: 480 } }), { day: 1, minutes: 480 });
+  assert.deepEqual(worldClock({ clock: { day: '4' } }), { day: 4, minutes: 0 });
+});
+
+test('the setter, the reader, the summary and the save all fold the same way', async () => {
+  // **One law, four doors.** A hand-written save can hold a clock that was never folded
+  // (`{day: 2, minutes: 1500}`); if the summary said `1500` while the reader said `60`, a scene and a
+  // HUD line would disagree about the time of day. They come through one normaliser.
+  const world = createWorldState();
+  world.clock = { day: 2, minutes: 1500 };
+  assert.deepEqual(worldClock(world), { day: 3, minutes: 60 });
+  assert.deepEqual(worldSummary(world).clock, { day: 3, minutes: 60 });
+  assert.deepEqual(serializeWorld(world).clock, { day: 3, minutes: 60 });
+  assert.deepEqual(parseWorld({ clock: { day: 2, minutes: 1500 } }).clock, { day: 3, minutes: 60 });
+  // Round-tripping an already-folded clock changes nothing, which is what makes it a normal form.
+  assert.deepEqual(parseWorld(serializeWorld(world)).clock, { day: 3, minutes: 60 });
+});
+
 // ── the round trip ────────────────────────────────────────────────────────────
 
 test('serialize then parse is an identity on everything the world can hold', async () => {
@@ -300,4 +368,32 @@ test('serialize then parse is an identity on everything the world can hold', asy
   // …and the same world serialized twice is the same bytes, which is what makes a save file
   // stable rather than dependent on the order a scene happened to touch it.
   assert.equal(JSON.stringify(serializeWorld(loaded)), JSON.stringify(saved));
+});
+
+// ── the player’s own ground, as the world remembers it (B19’s second loose field) ──
+
+test("the world remembers where in a place the player was standing, and only whole cells", async () => {
+  const world = createWorldState();
+  assert.equal(worldPlayer(world), null, "a world nobody has stood in has no ground to answer with");
+  const key = "city:Daggerfall#CITYW2.MIF";
+  assert.deepEqual(setWorldPlayer(world, key, { row: 30, col: 40 }), { place: key, row: 30, col: 40 });
+  assert.deepEqual(worldPlayer(world), { place: key, row: 30, col: 40 });
+  // A live position is not a cell: the scene rounds its own feet, and a fractional row here would
+  // be a record that disagrees with every other cell in the save.
+  assert.equal(setWorldPlayer(world, "x", { row: 3.7, col: -2.2 }).row, 3);
+  // …and a cell that is not a cell is refused, leaving the world as it was (the clock’s own law).
+  const held = createWorldState();
+  setWorldPlayer(held, key, { row: 12, col: 7 });
+  assert.equal(setWorldPlayer(held, "x", { row: "north", col: 2 }), null);
+  assert.equal(setWorldPlayer(held, "x", null), null);
+  assert.equal(setWorldPlayer(held, "x", {}), null);
+  assert.deepEqual(worldPlayer(held), { place: key, row: 12, col: 7 }, "a refused cell does not erase one");
+  for (const garbage of [null, "here", 7, [], {}, { row: 1 }, { col: "x" }]) {
+    assert.equal(worldPlayer({ player: garbage }), null, "a position that is not a position is none");
+  }
+  // It rides a save like everything else, and the round trip keeps the place’s own key.
+  const loaded = parseWorld(JSON.parse(JSON.stringify(serializeWorld(world))));
+  assert.deepEqual(worldPlayer(loaded), worldPlayer(world));
+  // The summary is unchanged by it: six numbers and the clock, as `worldSummary` has always said.
+  assert.equal(Object.hasOwn(worldSummary(loaded), "player"), false);
 });

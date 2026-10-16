@@ -64,6 +64,13 @@ const VIEW_SHEETS = Object.freeze({
  * @property {string} label         what the file's own name says the figure is
  * @property {Record<number,string>} views  angle 1…5 → walk sheet (what `viewFileFor` hands back)
  * @property {{walk?: string, talk?: string, die?: string}} actions
+ * @property {'view'|'action'} layout  what a *sheet* of this kind is: `view` means Arena's
+ *   twelve-frame layout (walk 0–5, look 6/0/7/0, attack 8–11) and a stride of six; `action` means
+ *   one animation per file, so the whole sheet is the stride. Measured off the archive (the probe
+ *   is `.scratch/peopleProbe.mjs`): the five-angle families carry **12** frames and the action
+ *   families **6 or 9**. **Read here rather than guessed in the scene**, because it is a fact
+ *   about the file: a walking guard used to play frames 0…11, i.e. its own head-turn and its
+ *   sword-swing as part of its stride (D-42).
  * @property {string[]} files       every file this kind draws from, for loading
  *
  * There is no `fighter` flag: whether a kind can fight is a fact about the **loaded
@@ -123,6 +130,9 @@ export function peopleKindsFromListing(names) {
   const out = [];
   for (const [key, entry] of byKey) {
     if (!Object.keys(entry.views).length && !entry.actions.die) continue;
+    // **The layout, from the family the name spells.** A `VIEW_SHEETS` family is the twelve-frame
+    // one (the watch, and `BABE`); the male and female generics are one action per file.
+    const layout = Object.hasOwn(VIEW_SHEETS, key) ? 'view' : 'action';
     // A kind with only one angle still needs the five: the archive's own fallback rule,
     // the same one `outfitsFromFolk` applies to an incomplete armour family.
     const walk = entry.actions.walk ?? entry.views[1];
@@ -132,6 +142,7 @@ export function peopleKindsFromListing(names) {
       label: entry.label,
       views: entry.views,
       actions: { ...entry.actions },
+      layout,
       files: [...new Set([...Object.values(entry.views), ...Object.values(entry.actions)].filter(Boolean))],
     });
   }

@@ -32,10 +32,12 @@
 //   `player`   the scene's own last known position, for a scene that wants to put the player
 //              back where they were
 //
-// The three loose ones (`clock`, `weather`, `player`) are plain fields a caller sets directly
-// — they have no invariants worth a function, and inventing setters for them would be four
-// more names to keep in step. Every other key is changed through the functions below and
-// nowhere else.
+// One of the three loose ones (`weather`) is a plain field a caller sets directly — it has no invariant
+// worth a function. The other two do, because a running level hands them over: `clock`'s minutes are
+// folded into one day and what they overrun carried into `day`, so a scene cannot write a record whose
+// minutes read `1500` (`setWorldClock`/`worldClock`), and `player` is whole cells of a place the scene
+// names (`setWorldPlayer`/`worldPlayer`) — the pair a bare page load reads to put the player back where
+// they were standing. Every other key is changed through the functions below and nowhere else.
 //
 // ## Bounded on purpose
 //
@@ -65,6 +67,13 @@ export const WORLD_QUEST_MAX = 512;
 
 /** The standings `setRegard` accepts, and the only three `regard` ever holds. */
 export const STANDINGS = Object.freeze(['friendly', 'neutral', 'hostile']);
+
+/**
+ * One game day in the world's clock. The scene's own module keeps its own
+ * (`livingWorld.MINUTES_PER_DAY`), and this file deliberately does not import it: the save's shape
+ * must not depend on the clock code, which may be rebuilt.
+ */
+const MINUTES_PER_DAY = 1440;
 
 /**
  * A fresh world: nothing visited, nothing opened, nobody who has heard of the player.
@@ -370,6 +379,119 @@ export function setQuest(world, id, state) {
 }
 
 /**
+ * Set the world's own clock: **the day, and the minute of that day, that the world is on**.
+ *
+ * A level's clock is the level's (`interior.js`'s `clockNow`, from `livingWorld.timeOfDay`), and it
+ * dies with the page. This is where it goes on the way out, so the hour the player left a town at
+ * is the hour the next place opens on — the owner's *"there is no persistency in the world"*, and
+ * `docs/PORT_BLOCKS.md` B19.
+ *
+ * Both numbers are **normalised here rather than trusted**, because the caller is handing over a
+ * clock that is still running: minutes are folded into `[0, 1440)` and what they overrun is carried
+ * into the day, and a day is at least one (the same floor `livingWorld.timeOfDay` puts under it).
+ * Negative minutes roll the day back, which is what folding means and not a special case.
+ *
+ * @param {object} world
+ * @param {number} day      the world's day, 1-based as `timeOfDay` counts them
+ * @param {number} minutes  minutes past midnight
+ * @returns {{day: number, minutes: number}|null} the stored clock, or null for a pair that is not
+ *   numbers at all (the world is left as it was)
+ */
+export function setWorldClock(world, day, minutes) {
+  if (!world || typeof world !== 'object' || !Number.isFinite(Number(minutes))) return null;
+  const clock = foldClock(day, minutes);
+  world.clock = clock;
+  return clock;
+}
+
+/**
+ * The world's memory of **where in a place** the player was standing.
+ *
+ * `player` is the last of the world's loose fields to get a door of its own, and for the same reason
+ * `clock` has one: the caller is a running scene handing over a live position, so the record is
+ * normalised here (`{place, row, col}`, whole cells) rather than trusted. `place` is the scene's own
+ * key for the level it is standing in (`interior.js`'s `memoryKey`: the place, the map and the entry),
+ * which is what makes this "the same corner of the same town" rather than "somewhere in the world".
+ *
+ * @param {object} world
+ * @param {string} place  the scene's key for the level
+ * @param {{row: number, col: number}} cell
+ * @returns {{place: string, row: number, col: number}|null} the stored record, or null for a cell that
+ *   is not a cell (the world is left as it was)
+ */
+export function setWorldPlayer(world, place, cell) {
+  if (!world || typeof world !== 'object') return null;
+  const row = Number(cell?.row);
+  const col = Number(cell?.col);
+  if (!Number.isFinite(row) || !Number.isFinite(col)) return null;
+  const record = {
+    place: typeof place === 'string' ? place : String(place ?? ''),
+    row: Math.trunc(row),
+    col: Math.trunc(col),
+  };
+  world.player = record;
+  return record;
+}
+
+/**
+ * The world's memory of the player's own ground, or null when it has none.
+ *
+ * The reader half of `setWorldPlayer`, and the door a scene asks on a bare load — one that names no
+ * cell of its own. An **explicit arrival beats memory** here as everywhere else (D-32): a `?at=`, a
+ * remembered wilderness cell or a ruin's door are instructions about this arrival, and only a load
+ * that names nothing asks the world where the player was standing.
+ *
+ * @param {object} world
+ * @returns {{place: string, row: number, col: number}|null}
+ */
+export function worldPlayer(world) {
+  const record = world && typeof world === 'object' ? world.player : null;
+  if (!isRecord(record)) return null;
+  const row = Number(record.row);
+  const col = Number(record.col);
+  if (!Number.isFinite(row) || !Number.isFinite(col)) return null;
+  return { place: typeof record.place === 'string' ? record.place : '', row: Math.trunc(row), col: Math.trunc(col) };
+}
+
+/**
+ * A day and a minute of that day, folded into one record: minutes in `[0, 1440)` and what they
+ * overrun carried into the day, which is at least one. Null when neither number is a number.
+ *
+ * **The one place the world's clock is normalised** — the setter, the reader and `parseWorld`'s
+ * `plainClock` all come through here, so a record cannot mean one thing to the scene and another to
+ * a summary.
+ *
+ * @param {unknown} day
+ * @param {unknown} minutes
+ * @returns {{day: number, minutes: number}|null}
+ */
+function foldClock(day, minutes) {
+  const d = dayOf(day);
+  const raw = Number(minutes);
+  if (d === null && !Number.isFinite(raw)) return null;
+  const total = Number.isFinite(raw) ? Math.trunc(raw) : 0;
+  const roll = Math.floor(total / MINUTES_PER_DAY);
+  return { day: Math.max(1, (d ?? 1) + roll), minutes: total - roll * MINUTES_PER_DAY };
+}
+
+/**
+ * The world's own clock, as `{day, minutes}`, or null when no clock has been saved.
+ *
+ * The reader half of `setWorldClock`, and the door a scene asks on the way in: `interior.js`'s
+ * `arrivalMinutes()` is the world's minute unless the URL forces one. A **forced hour is an
+ * instruction about this arrival, not a fact about the world** — `?clock=` is the probe door and
+ * beats memory, which is D-32's own law (an explicit arrival beats what was remembered) applied to
+ * the hour rather than to a cell.
+ *
+ * @param {object} world
+ * @returns {{day: number, minutes: number}|null}
+ */
+export function worldClock(world) {
+  const clock = world && typeof world === 'object' ? world.clock : null;
+  return isRecord(clock) ? foldClock(clock.day, clock.minutes) : null;
+}
+
+/**
  * A JSON-safe copy of anything, or null when there is no such copy.
  *
  * `JSON.parse(JSON.stringify(x))` is the whole of it, with the throw caught: a cycle, a
@@ -401,8 +523,9 @@ function jsonSafe(value) {
 export function worldSummary(world) {
   const countOf = (bucket) => Object.values(bucket ?? {})
     .reduce((total, map) => total + (map && typeof map === 'object' ? Object.keys(map).length : 0), 0);
-  const clock = world?.clock && typeof world.clock === 'object' ? world.clock : null;
-  const day = dayOf(clock?.day);
+  // The clock is read through its own accessor, so a summary and `worldClock` can never disagree
+  // about a record whose minutes were never folded (a hand-written save, or a v0 one).
+  const clock = worldClock(world);
   return {
     places: Object.keys(world?.visited ?? {}).length,
     doors: countOf(world?.doors),
@@ -415,7 +538,7 @@ export function worldSummary(world) {
         : 0), 0),
     quests: Object.keys(world?.quests ?? {}).length,
     people: Object.keys(world?.regard ?? {}).length,
-    clock: clock && day !== null ? { day, minutes: Math.max(0, Math.trunc(Number(clock.minutes) || 0)) } : null,
+    clock,
   };
 }
 
@@ -482,11 +605,7 @@ export function serializeWorld(world) {
 
 /** A clock as `{day, minutes}`, or null. Anything else is "no clock has been saved". */
 function plainClock(value) {
-  if (!isRecord(value)) return null;
-  const day = dayOf(value.day);
-  const minutes = dayOf(value.minutes);
-  if (day === null && minutes === null) return null;
-  return { day: day ?? 1, minutes: Math.max(0, Math.trunc(minutes ?? 0)) };
+  return isRecord(value) ? foldClock(value.day, value.minutes) : null;
 }
 
 /**

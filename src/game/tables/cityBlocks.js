@@ -110,6 +110,35 @@ export const WEATHER_LETTER = Object.freeze({ clear: 'N', overcast: 'R', rain: '
  * @param {{climate?: 'temperate'|'desert'|'mountain', location?: 'city'|'wilderness', weather?: 'clear'|'overcast'|'rain'|'snow'}} [opts]
  * @returns {string} e.g. `TCN.INF`
  */
+/**
+ * The **two** `.INF`s a settlement may need (B18/D-41).
+ *
+ * A place has a *ground* and an *architecture* and they are not always the same climate —
+ * Morrowind is desert country built out of the mountain's architecture, Elsweyr and the Summerset
+ * Isles are temperate country built out of the desert's (`game/provinceStyle.js`). One INF carries
+ * both halves (its `@FLOORS` table and its `@WALLS` table), so the settlement is built from its
+ * architecture's INF and its floors are then taken from the ground's (`infFile.withGroundFloors`).
+ *
+ * @param {{ground?: string, architecture?: string, location?: 'city'|'wilderness', weather?: string}} opts
+ * @returns {{infName: string, groundInfName: string|null}}
+ */
+export function cityInfNames(opts = {}) {
+  const { ground = 'temperate', architecture = ground, location = 'city', weather = 'clear' } = opts;
+  const infName = cityInfName({ climate: architecture, location, weather });
+  if (architecture === ground) return { infName, groundInfName: null };
+  return { infName, groundInfName: cityInfName({ climate: ground, location, weather }) };
+}
+
+/**
+ * The `.INF` a settlement or wilderness level uses.
+ *
+ * Two wrinkles from the original, both kept: wilderness collapses overcast and
+ * rain onto one letter (it has no wet template), and a desert has no snow, so
+ * snow falls back to clear rather than producing a name that does not exist.
+ *
+ * @param {{climate?: 'temperate'|'desert'|'mountain', location?: 'city'|'wilderness', weather?: 'clear'|'overcast'|'rain'|'snow'}} [opts]
+ * @returns {string} e.g. `TCN.INF`
+ */
 export function cityInfName(opts = {}) {
   const { climate = 'temperate', location = 'city', weather = 'clear' } = opts;
   const climateLetter = CLIMATE_LETTER[climate];

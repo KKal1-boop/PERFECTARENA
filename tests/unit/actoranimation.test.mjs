@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MIRROR_DEADBAND, actorFrame, actorMirrored, mirrorFor, stepActorAnimation } from '../../src/game/actorAnimation.js';
+import { LAYOUT_WALK_FRAMES, MIRROR_DEADBAND, actorFrame, actorMirrored, mirrorFor, stepActorAnimation } from '../../src/game/actorAnimation.js';
 
 test('actors sharing art have independent strides and a stationary actor always draws frame zero', () => {
   const moving = { world: { x: 0, z: 0 } }, standing = { world: { x: 3, z: 3 } };
@@ -116,4 +116,45 @@ test('the side is still decided when it means something: left is not right', () 
   assert.ok(MIRROR_DEADBAND > 0 && MIRROR_DEADBAND < 0.5);
   const ahead = { monster: {}, world: { x: 0, z: 6 }, facing: 0 };
   assert.equal(mirrorFor(ahead, 0, 0), false, 'head-on is not mirrored');
+});
+
+// ── D-42: the sheet says how long a stride is ─────────────────────────────────
+//
+// The owner: *"some Npcs are not setted up well and they dont have a proper 360 walking animation"*.
+// Measured off the archive (`.scratch/peopleProbe.mjs`): the town's **watch** (`GUARD01.CFA`…
+// `GUARD05.CFA`, five angles) and the `BABE` family are **twelve-frame** sheets — Arena's layout,
+// walk 0–5, look 6/0/7/0, attack 8–11 — while the armoured folk and the town's men and women are
+// six or nine-frame single actions. This file asked the *actor* (`enemy`), not the sheet, so every
+// person that is not a monster got all twelve frames as a stride: a walking guard played its own
+// head-turn and its sword-swing, on the street, in front of the player.
+test('a twelve-frame sheet strides on its walk frames, and a nine-frame action on all nine', () => {
+  const guard = { motion: { moving: true, metres: 0 } };
+  for (let i = 0; i < 400; i++) {
+    guard.motion.metres = (i / 400) * 2.5;
+    const frame = actorFrame(guard, 12, { walkFrames: LAYOUT_WALK_FRAMES });
+    assert.ok(frame <= 5, `a walking guard showed frame ${frame} of its look/attack poses`);
+  }
+  // …and the stride still visits every walk frame, so the cycle is a cycle and not a shuffle.
+  const seen = new Set();
+  for (let i = 0; i < 1200; i++) {
+    guard.motion.metres = (i / 1200) * 2.5;
+    seen.add(actorFrame(guard, 12, { walkFrames: LAYOUT_WALK_FRAMES }));
+  }
+  assert.deepEqual([...seen].sort((a, b) => a - b), [0, 1, 2, 3, 4, 5]);
+  // A one-animation sheet (a commoner's walk, a body in armour) strides on the whole sheet.
+  const commoner = { motion: { moving: true, metres: 0 } };
+  const whole = new Set();
+  for (let i = 0; i < 1800; i++) {
+    commoner.motion.metres = (i / 1800) * 2.5;
+    whole.add(actorFrame(commoner, 9, { walkFrames: null }));
+  }
+  assert.equal(whole.size, 9, 'a nine-frame action sheet strides on all nine frames');
+  // A reading longer than the sheet clips instead of sampling art that is not there — the same
+  // clamp the monster path has always had.
+  assert.ok(actorFrame(guard, 3, { walkFrames: LAYOUT_WALK_FRAMES }) <= 2);
+  // And with no reading at all the old law stands: a creature's sheet is the layout (six), and
+  // everything else is its whole sheet.
+  const beast = { monster: {}, motion: { moving: true, metres: 2.0 } };
+  assert.ok(actorFrame(beast, 12) <= 5, 'a creature still walks on six');
+  assert.equal(actorFrame({ motion: { moving: true, metres: 2.0 } }, 12) < 12, true);
 });

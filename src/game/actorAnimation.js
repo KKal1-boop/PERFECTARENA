@@ -3,6 +3,20 @@
 // walk 0..5, look 6/0/7/0, attack 8..11 in view 1; file 6 is DEATH, not attack.
 // https://github.com/afritz1/OpenTESArena/blob/main/OpenTESArena/src/Entities/ArenaAnimUtils.h
 export const ENEMY_WALK_FRAMES = 6;
+/**
+ * The frames a stride uses on a sheet that carries Arena's **layout**: walk 0–5, look 6/0/7/0,
+ * attack 8–11 (`ArenaAnimUtils`: view 1 holds walk 0..5, the look poses at 6 and 7, and the attack
+ * at 8..11).
+ *
+ * **Six is a fact about the sheet, not about who is wearing it.** For years this file asked the
+ * *actor* (`enemy: Boolean(actor.monster)`) and gave everybody else `count` — every frame the file
+ * happens to hold — so the town's **watch** (`GUARD01.CFA`…, twelve frames: the five angles and
+ * the death, read by `peopleKinds.js`) walked through its head-turns and its sword-swings, and so
+ * did the `BABE` family. Measured off the archive: the armoured folk and the town's men and women
+ * carry **6 or 9-frame action sheets** (one animation each, no layout), and the five-angle
+ * families carry **12**. So the layout is read from the sheet, and the caller says which it is.
+ */
+export const LAYOUT_WALK_FRAMES = 6;
 export const ENEMY_ATTACK_FRAMES = Object.freeze([8, 9, 10, 11]);
 export const ENEMY_DEATH_FRAME_SECONDS = 1 / 12;
 
@@ -58,7 +72,7 @@ export function stepActorAnimation(actor, { cycleMetres = 2.5, maxStep = 1, faci
   return state;
 }
 
-export function actorFrame(actor, frameCount, { cycleMetres = 2.5, attack = null, enemy = Boolean(actor.monster) } = {}) {
+export function actorFrame(actor, frameCount, { cycleMetres = 2.5, attack = null, enemy = Boolean(actor.monster), walkFrames = null } = {}) {
   const count = Math.max(1, frameCount | 0);
   if (actor.death) {
     return Math.min(count - 1, Math.floor(Math.max(0, actor.death.elapsed) / ENEMY_DEATH_FRAME_SECONDS));
@@ -74,7 +88,13 @@ export function actorFrame(actor, frameCount, { cycleMetres = 2.5, attack = null
     return frames[Math.min(frames.length - 1, Math.floor(progress * frames.length))];
   }
   if (!actor.motion?.moving) return 0;
-  const walkCount = enemy ? Math.min(count, ENEMY_WALK_FRAMES) : count;
+  // **The sheet says how long a stride is.** `walkFrames` is the caller's reading of the art (a
+  // twelve-frame view sheet strides on its first six, `LAYOUT_WALK_FRAMES`); with none given, the
+  // old rule stands — a creature's sheet is the layout, and every other sheet is one animation.
+  const wanted = Number.isFinite(walkFrames) && walkFrames > 0
+    ? walkFrames
+    : (enemy ? ENEMY_WALK_FRAMES : count);
+  const walkCount = Math.max(1, Math.min(count, Math.trunc(wanted)));
   return Math.floor(actor.motion.metres / cycleMetres * walkCount) % walkCount;
 }
 

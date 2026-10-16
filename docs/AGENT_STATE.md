@@ -1,17 +1,129 @@
-# AGENT_STATE (updated 2026-10-16, tenth pass)
+# AGENT_STATE (updated 2026-10-17, fifteenth pass)
+
+THIS PASS, IN ONE LINE: **the town's people are drawn from their own art.** The owner's two NPC reports
+(*"some Npcs are not setted up well and they dont have a proper 360 walking animation"*) were probed off
+the archive itself (`.scratch/peopleProbe.mjs`) and answered in halves: the **360° turn is there and is
+measured** (every person drawn from one of the five angles, and the eye walking round one reads
+`11BARWLK.CFA` view 1 → `15BARWLK.CFA` view 5), the **commoners can only face one way because Arena's
+own art gives them one angle** (the five-angle families are the armoured roster, the watch and `BABE`),
+and the half that *was* a defect is now fixed: `actorFrame` read the layout off the **actor**, so every
+person who is not a monster was given **every frame of their sheet as a stride** — a walking **guard
+played its own head-turn (6/7) and its sword-swing (8–11)**, on the street. The layout is a property of
+the **art** now (`peopleKinds.js`'s `layout`, `townsfolk.js` carrying it onto the person,
+`actorAnimation`'s `walkFrames`, clamped to the sheet). This pass also repaired a check nobody owned
+(**D-10b**: the panel's third heading shape, *`Bathi — a person in a habit`*, now admitted by a
+regular expression built from the modules' own vocabulary) and wrote the owner's remaining list into the
+queue as items **0h…0m**, each with its first probe.
+
+LAST GREEN (this pass): unit **`554/554`, exit 0`** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`)
+— two new checks (`unit/actoranimation.test.mjs`: the stride of a twelve-frame sheet visits 0…5 and
+never 6+; `unit/peoplekinds.test.mjs`: the layout is read from the family and matches the frames the
+install ships, twelve-frame views against 6/9-frame actions). Browser: **`townsfolk` + `city` 97/97**,
+including the new page check *and the watch walks on its walk frames, not on its head-turn or its
+sword-swing* (six samples of a peaceful street, 44 batches drawn, no layout sheet past frame 5) and the
+repaired heading check. **The suites that were not re-run**: `worldmap`, `world`, `generated`,
+`dungeonplay`, `living`, `doors`, `movement`, `persist`, `audit`, `regard`, `guilds`, `gear`, `combat`,
+`actioncombat`, `mainquest`, `progression`, `cutscene`, `bounties`, `exe`, `menu`, `chargen`,
+`scenevisuals`, `sky`, `commerce`, `story`, `testmap` (`interior.js`, `townsfolk.js`, `peopleKinds.js`
+and `actorAnimation.js` changed, so `living`/`world`/`audit` are the next re-runs — all four files are on
+their paths).
+
+THIS PASS, IN ONE LINE (fourteenth): **the world keeps the hour.** Queue item **0e** (B19 · a persistent world) was
+probed rather than guessed at, and the probe found exactly one thing that did not survive a change of
+place: `game/worldState.js` has carried `clock` since it was written and **nothing ever wrote it**, so
+`__debug.worldMemory().clock` read `null` on every page this project has measured and every gate, stair,
+shop door, fast travel, wilderness slide and reload put the player back at ten in the morning.
+**Closed for the clock half** (§4j): `setWorldClock`/`worldClock` in `game/worldState.js` (one
+`foldClock` law — minutes fold into a day, a day is at least one, a record that is not numbers is no
+clock; `plainClock` comes through the same fold), and four small edits in `scenes/interior.js` — the
+arrival hour is the world's unless `?clock=` forces one, the calendar's day is
+`max(radiant.day, world day)`, and `rememberClock()` writes the world on **every** place change
+(`goInPlace`, before the new scene is built), on the saves the world already makes (a door, a kill) and
+on a 20-second tick. Two older laws shaped it: **an explicit arrival beats memory** (D-32 — a forced
+`?clock=` page never writes the world, and the parameter is dropped from a transition's URL, or a
+session that began at 23:00 would be pinned there for ever) and **a probe must not corrupt what it
+measures** (`living` and `audit` drive the shutters and the sky with `?clock=`). **New suite `persist`**
+holds the claim: a full page load of the country's own URL — no `?clock=` anywhere in it — comes back at
+**22:10** rather than at **600**. **What is left of B19 is the other half of the row**: a place change is
+still a full scene re-boot (the level, the crowd, the creatures and the light rebuilt from the save,
+never carried), so **D-05 stays OPEN for that**, with its next first probe named in §4j.
+
+LAST GREEN (this pass): unit **`552/552`, exit 0`** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`)
+— four new checks in `unit/worldstate.test.mjs` (the fold, the floor, a record that is not numbers, and
+the setter, the reader, the summary and `parseWorld` agreeing). Browser, each suite on its own run:
+**`persist` 12/12** (new — the hour across a real walk out of the city's own gate, a tab closed and
+reopened, and the next place); **`living` + `doors` + `movement` 90/90** (the clock, the shutters, the
+sky, the buildings and the gate — `living`'s *the player arrives at ten in the morning* is still green
+and was **not touched**); **`worldmap` 52/52** (the suite that takes the third kind of transition —
+fast travel from the map, which is `goInPlace` too); **`audit` 26/26**. **The suites that were not
+re-run**: `world`, `generated`, `dungeonplay`, `city`, `townsfolk`, `regard`, `guilds`, `gear`,
+`combat`, `actioncombat`, `mainquest`, `progression`, `cutscene`, `bounties`, `exe`, `menu`,
+`chargen`, `scenevisuals`, `sky`, `commerce`, `story`, `testmap`. `interior.js` changed, so the next
+pass's first re-runs are `world` (it boots places by name) and `generated`/`dungeonplay` (dungeons,
+whose hour now arrives from the world rather than from a default).
+
+PREVIOUS PASS (thirteenth), IN ONE LINE: the owner's list of province looks and province people is one law —
+**`src/game/provinceStyle.js`**: each place now has a **ground** and an **architecture** that may
+differ (Morrowind is desert country built of the mountain's style, Elsweyr and the Summerset Isles are
+temperate country built of the desert's, Skyrim is a latitude mix, Sentinel is desert, Winterhold
+never stops snowing), its people are **named from its province's own race bank first**, and — because
+his second report was exactly right — a settlement now keeps its architecture's walls and **lays its
+country's floors under them** (`infFile.withGroundFloors`, five floor entries of 59 per city INF;
+the map card says both readings). Four NPC reports and the volcano are their own rows with first
+probes (D-42…D-46), and the persistent world stays queue item **0e**.
+
+LAST GREEN (this pass): unit **`548/548`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
+test`) — nine new checks in `unit/provincestyle.test.mjs` (the law, the pools, the merges, the
+install's own readings) plus one in `unit/worldmap.test.mjs`; browser **`worldmap` 52/52** (the
+province pairs, the merged floors, the snow, and the card's own words) — **only that suite was
+re-run**, and `world`, `audit`, `dungeonplay`, `movement`, `city`, `scenevisuals`, `sky` and
+`townsfolk` are the ones the next pass should take first (the world model, `interior.js` and the map
+scene all changed). Previous pass in this file's own record: twelfth, D-38 + D-39.
+
+THIS PASS, IN ONE LINE: the owner's *"the biomes … are completely different … they seem to be swapped
+like blackmarsh has nord architecture the imperial city is in the desert instead of temperate"* was
+one table — and measuring it found the province the game **begins** in had one named place and
+thirty-one empty records. Both are closed (D-38, D-39, `docs/PORT_BLOCKS.md` §4h); a third thing the
+checking turned up is **open** and is Arena's own data (D-40: `CITYDATA.64` repeats `Glenpoint` and
+`Riverbridge` across provinces, so a name is not a world address). The queue's new items **0c** (the
+later lore's own arrival words for Cyrodiil), **0d** (D-40) and **0e** (**B19 · a persistent world** —
+the owner's *"there is no persistency in the world like instead there is in daggerfall enhanced"*,
+with its first probe named) are what this pass hands on.
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
 `docs/DEFECTS.md` with their own sections** and are the work list. **D-01a, D-01b, D-02a, D-12,
 D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25, D-26, D-30 and D-34 are closed, D-27 is closed for
-the both directions** (walking out, and back in — `dbf4058`), and **D-29 is half closed** (the
-*exist* half: the Minotaur is drawable — `a9aa3a6`; the *spawn* half is queue item 8). Both reports
+the both directions** (walking out, and back in — `dbf4058`), **D-38 and D-39 are closed this pass**
+(the terrain classes and the fail-safe sampling; the Imperial Province's 31 placeholders — §4h),
+**D-40 is open** and is Arena's own repeated names, and **D-29 is half closed** (the
+*exist* half: the Minotaur is drawable — `a9aa3a6`; the *spawn* half is queue item 8). **This pass
+(fourteenth) closed B19's clock half** — the persistent world keeps its own hour across a place change,
+a reload and a tab — and **D-05 stays open** for the other half of the same row (a place change is
+still a full scene re-boot), with the row, the law, the measurements and the next probe as §4j. Both reports
 ask for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` is
 that work order — **23** system-level blocks with their source of truth, their module, the check
 that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
 **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN (this pass): unit **`499/499`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
+LAST GREEN (this pass, twelfth): unit **`538/538`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA
+npm test`) — **twenty** new checks in a file that did not exist (`tests/unit/worldmap.test.mjs`, which
+`docs/PORT_BLOCKS.md` had been listing as B16's own check since the ledger was written), and **one
+restatement** the fix owed: `unit/radiant.test.mjs`'s "the install has 31 nameless city slots" is now
+"the install ships 31 nameless settlement slots **and the world places every one of them**" — the law
+it guards (a delivery never names an empty target) is unchanged and now has no anonymous entry to trip
+over. Browser: **`worldmap` 44/44** green against a real page — its old 38 checks (the game's own art,
+the two levels, the blink, the journey to Daggerfall) plus **six** for D-38/D-39: Anvil is a place the
+map can name, it is not on the province's corner, its travel URL is real, it **boots the city it
+names** (`citySeed 1048696`, `city {inf: MCN.INF, blocks: 30, cells: 12 000, missing: 0}`, no boot error,
+no page errors), its city is built of its own climate's `MC*` textures, and it offers **no invented
+arrival greeting** where Arena's `CITYTXT` has none for that province. **The suites that were not
+re-run this pass**: `world`, `audit`, `dungeonplay`, `movement`, `interior`, `city`, `testmap`,
+`chargen`, `menu`, `mainquest`, `story`, `combat`, `actioncombat`, `doors`, `gear`, `generated`,
+`hunt`, `commerce`, `guilds`, `regard`, `radiant`, `living`, `townsfolk`, `scenevisuals`, `sky`,
+`cutscene`, `progression`, `bounties`, `exe`. The world model changed, so the next pass's first
+re-runs are `world` and `audit` (both boot places by name) — nothing else in this pass touched
+`interior.js`. Pass before this one: unit **`518/518`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
 test`) — sixteen new checks, `unit/exetables.test.mjs` **8/8** and `unit/monsterart.test.mjs` **9/9**,
 plus the three restatements the fix owed (`unit/combat`, `unit/peoplekinds`, `unit/wildernessbestiary`).
 Browser: the **`exe` suite 14/14** — every table the executable holds read **in a page** from the
@@ -42,13 +154,97 @@ IN PROGRESS: nothing half-edited. **The executable is open *and read*** (block B
 `src/arena/pklite.js` (the unpacker), `src/arena/exeTables.js` (**the tables** — new this pass),
 `src/game/monsterArt.js` (the creature-art join, new) and `src/arena/exeData.js` (the runtime read)
 are the modules; `interior.js`'s `exe()` seam reports the structure, the tables, the art audit and
-the `.INF` slot audit; `tests/suites/exe.mjs` (**14/14**) holds it in a page. The eleventh pass's
-first item is §5 item **0a** in `docs/PORT_BLOCKS.md` — **wire the tables that are read and
-unused** (the calendar, the sixty-four settlements, the class and race prose), item **0b** being the
-image's numeric tables — unless the owner's report is louder.
+the `.INF` slot audit; `tests/suites/exe.mjs` (**14/14**) holds it in a page. **The eleventh pass took the country instead**
+(`docs/PORT_BLOCKS.md` §4g: the exit's door, and the bearing a window slide must not steal) because
+the owner's report is the louder signal and always has been — §5 items **0a**/**0b** (the executable's
+read-but-unwired tables, and its numeric ones) are still the first *quiet* items, with the country's
+named gaps (§4g's own list: no landmarks, no roads, a ruin nothing points at, a slide that is still a
+scene re-boot) the loud ones.
 
-WHAT THIS PASS PROVED (tenth pass, 2026-10-16 part seven — **the executable's tables, read and used**;
-`docs/PORT_BLOCKS.md` §4f):
+WHAT THIS PASS PROVED (twelfth pass, 2026-10-16 part nine — **the biomes, and the province that was
+empty**; `docs/PORT_BLOCKS.md` §4h; the owner's *"the biomes, biome backgrounds and buildings texture
+and architecture are completely different … they seem to be swapped like blackmarsh has nord
+architecture the imperial city is in the desert instead of temperate"*):
+* **D-38 — the biome complaint was one table, and it was ours, not Arena's.** `game/worldMap.js` had
+  **249/250 temperate, 251/252 mountain, 253/254 desert**; the game's own classes are **249/250
+  `MOUNTAIN`, 251/254 `TEMPERATE`, 252/253 `DESERT`** (OpenTESArena's `WorldMapTerrain` constants and
+  `toClimateType`). A settlement's climate comes from `TERRAIN.IMG` through that table, and the
+  climate picks the city `.INF` it is textured from, its wilderness `.INF`, its creatures and its
+  sky — so one pair of numbers moved every biome a province over, which is exactly what the owner
+  saw. The *sampling* was wrong in the same function: `getFailSafeAt` reads **every** sample twelve
+  pixels to the left (a **linear-index** shift that wraps around the 320×200 buffer) and, when that
+  is still sea, walks **below → above → right → left** outward, giving up at **254**; this project
+  sampled the point itself, shifted only when it was sea, and answered the sea constant otherwise.
+* **The reading, over the whole install**: **288 settlements — 91 mountain, 129 temperate, 68 desert,
+  none sampling sea** (the fail-safe's guarantee); High Rock **two** temperate — **Daggerfall** and
+  **Reich Gradkeep** — and thirty mountain, against UESP's *"warmer forests in the southwest around
+  Daggerfall"*; Valenwood's mountains exactly **Arenthia, Thormar Keep, Ebon Ro**, against UESP's
+  *"mountains in the north around Arenthia"*; Skyrim **32/32 mountain**; Elsweyr **all 32 temperate**
+  (UESP: *"completely devoid of desert biome"* — the reported swap); the **Imperial City temperate at
+  the game's own pixel 254**. In a page, **Anvil's city is built of `MCN.INF`** — the reading reaching
+  the visible architecture.
+* **D-39 — the province the game begins in had one place in it.** `CITYDATA.64` names every settlement
+  of eight provinces and **one** of the Imperial Province's (**the Imperial City**); the other 31 are
+  all-zero placeholders (no name, local (0,0), visibility 0). Read as places, they were **one** place
+  four times over: **one pixel** (the rectangle's corner, (107,61) — 31 markers stacked, thirty
+  unselectable), **one city seed** (0 — `citySeed` *is* the packed local point) and **one country**
+  (0 — `wildernessSeed` is the name's first four letters), an **empty string** for the map's label,
+  the marker card's title and the save's remembered place, and `?location=` **with nothing in it** for
+  fast travel. New **`src/game/cyrodiil.js`** fills all 31 from the **later** games' Cyrodiil — the
+  owner's own rule for Tamriel lore, and here Arena cannot disagree because it wrote nothing:
+  **Anvil, Bruma, Bravil, Cheydinhal, Chorrol, Leyawiin, Skingrad** in the seven free city-state slots,
+  **Kvatch** as a town (the city the Oblivion Crisis burned), eight towns (with **Vlastarus** and
+  **Sutch**) and sixteen villages from Oblivion's own list. Names and kinds are the later games'
+  (UESP: Oblivion:Settlements, Lore:Sutch, Online:Vlastarus, Online:Cyrodiil); directions are UESP's
+  own words; **the pixel is this project's own**, because nothing in Arena's install has a coordinate
+  for a place it never had — each entry carries a fraction of the province rectangle that
+  `localPointOf` turns into the `local` point a record carries. The file's own record is untouched,
+  and a placeholder the table cannot place is **not a place** (dropped, with a warning).
+* **Measured after**: 288 settlements, **32 per province**, no province drawing two of its own on one
+  pixel, **31 placed**, and a filled record booting a real city **in a page**: `?location=Anvil` →
+  `citySeed 1048696`, `city {inf: MCN.INF, blocks: 30, cells: 12 000, missing: 0}`, empty `pageErrors`
+  (Kvatch `CITY2.MIF`/`TCN.INF`, coastal Leyawiin `CITYW2.MIF`, desert Sutch `DCN.INF`).
+* **Named gap on the row, measured**: a filled city arrives with **no greeting**, because Arena's
+  `CITYTXT` holds **64** greetings — eight provinces × eight city slots — and **none for the Imperial
+  Province**, not even for the Imperial City (`cityTextKey(8, 0..7)` absent). This project will not
+  invent prose it did not read, so nothing is shown and the browser suite pins that. Queue item **0c**.
+* **D-40, found while checking the above and left open because it is Arena's own data**: `CITYDATA.64`
+  repeats **`Glenpoint`** (High Rock 52,71 and Valenwood 118,141) and **`Riverbridge`** (Morrowind
+  226,84 and Black Marsh 253,133); `byName` — and therefore `?location=` — answers the first, so the
+  second of each pair cannot be reached by name. Queue item **0d**.
+* **Held by**: `tests/unit/worldmap.test.mjs` **20/20** (new, and `docs/PORT_BLOCKS.md` had listed
+  `unit/worldmap` as B16's check all along) plus the `worldmap` browser suite **44/44** (6 new), with
+  `unit/radiant.test.mjs` restated rather than weakened.
+
+WHAT THIS PASS PROVED (eleventh pass, 2026-10-16 part eight — **the country you walk**;
+`docs/PORT_BLOCKS.md` §4g; the owner's two reports *"you exit a building not a png with a dungeon
+entrace like normal arena"* and *"you dont understand where you are going"*):
+* **The exit's own arrival was the centre of a 64×64 block** — 4 096 cells of country. Measured on
+  Daggerfall's wilderness with Stonekeep's seed: ruin block (26, 9), centre **(1696, 608)**, the
+  player in open ground with their way back down out of sight, and the nearest wall of that ruin
+  **12 cells west** at (1696, 596). A block's centre is not a door however it is drawn.
+* **`game/dungeonSurface.js`'s `ruinDoorStand` is the rule** (pure, no I/O): the door is the ruin's
+  own **arch** (the `0x9` voxel every `.INF` reads a gate with) nearest the centre, or the built cell
+  nearest it (`arch` says which); the stand is two or three cells out along the **open side**
+  (`HORIZON = 24` cells measured per axis — least ruin first, then the longest run, because a
+  courtyard is open at the door and full of building beyond it); and the facing looks back at the
+  door. `interior.js`'s `standAtRuinDoor` wires it to the loaded window and is skipped for any page
+  that names its own cell.
+* **Measured after** (same URL, in a page): door **(1696, 596)**, stand **(1699, 596)**, player on it
+  (`state().wild.ruin.atDoor: true`), yaw **−1.571** = straight at the door, `arch: false`.
+* **The window slide stole the compass.** Walking across the boundary on **yaw 0.35** came back
+  **0.00**: the slide boots a page in place for the ground the player is already standing on, and
+  `?yaw=` was a parameter **nothing read** (`params.has('yaw')` only ever suppressed the boot's own
+  `openYaw`). The slide's URL now carries `&yaw=<cam.yaw>` and the boot applies it — **measured
+  0.35 → 0.350**, cell (1703, 608) continuous across origin (1664, 512) → (1664, 576).
+* **Held by**: `unit/dungeonsurface.test.mjs` **11/11** (four new checks) and the `audit` suite's new
+  **S-E** (3 checks: the door and the stand, the facing, and the slide's bearing + ground).
+* **Named gaps, untouched:** the country still has no landmarks and no roads (D-22), a ruin nothing
+  points at is still inert scenery, and the slide is still a full scene re-boot (B19/D-05) — the
+  measurements to start each are in §4g.
+
+WHAT THE PASS BEFORE PROVED (tenth pass, 2026-10-16 part seven — **the executable's tables, read and
+used**; `docs/PORT_BLOCKS.md` §4f):
 * **Thirty of the game's own tables are read out of the code image** (`a9aa3a6`,
   `src/arena/exeTables.js`): the creature roster and the sheets each creature is drawn from, the
   commoners' families, the player's animation templates, the creature voices, the eighteen classes,

@@ -23,9 +23,21 @@
 // UI pass: the map is static art plus markers, and the engine's UI path wants an
 // FNT font that Arena's own font files have not given up yet (FORMATS.md §9).
 // Logged as S19 in PROGRESS.md, with the GL-UI version as the noted alternative.
+//
+// **The screen is the game's, down to the markers** (block B16, `D-35`). Everything that goes on
+// top of the picture — the four marker icons, the set they blink to, the nine province plates —
+// comes out of the player's own archive through `game/mapScreen.js`, which is where the readings
+// live. Until that landed this scene drew circles, diamonds, gold rectangles and uppercase
+// monospace province names of its own invention over art Arena had drawn for exactly this screen.
 
 import { ArenaData } from '../arena/arenaData.js';
 import { loadWorldMap, TERRAIN_GLYPH } from '../game/worldMap.js';
+import {
+  BLINK_PERIOD_MS, ICON_MAX_SCALE, MARKER_COLORS, MARKER_ICONS, MARKER_KINDS, MARKER_RECORDS,
+  MAP_SCREEN_RECORD, PLATE_BACKGROUND_INDEX, PLATE_COLORS, PLATE_TEXT_INDEX, RECORD_LAYOUT,
+  blinkingAt, frameToRgba, indicesToRgba, legendRows, loadMapScreen, markerKind, markerRecord,
+  plateIndexFor, provinceMapRecord, provincePointOf,
+} from '../game/mapScreen.js';
 import { buildQuestChain, nearestSettlement, stageMif } from '../game/questData.js';
 import { applyQuestEvent, createQuestState, currentObjective, questLog } from '../game/questState.js';
 import { loadArenaText } from '../arena/arenaText.js';
@@ -49,20 +61,38 @@ import { beginNewGame } from './newGame.js';
 // home; `game/save.js` now owns them so every scene shares one implementation.
 export { LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY };
 
-/** Marker styling by location kind. */
-const MARKER = Object.freeze({
-  city: { radius: 3.6, fill: '#f2d9a0', stroke: '#3b2c12' },
-  town: { radius: 3.0, fill: '#d8c58c', stroke: '#3b2c12' },
-  village: { radius: 2.3, fill: '#b7a877', stroke: '#33270f' },
-  staff: { radius: 4.0, fill: '#e2564a', stroke: '#2a0d0a' },
-  map: { radius: 3.4, fill: '#d98a3c', stroke: '#2a180a' },
-  random: { radius: 2.2, fill: '#8c8676', stroke: '#2a2820' },
-  palace: { radius: 5.0, fill: '#f6f2df', stroke: '#6d5a1e' },
-});
-
-/** Gold used for the province borders and the current stage. */
-const GOLD = '#c8a54a';
+/** The sea the map floats on, when the view is wider than the map itself. */
 const SEA = '#0b1626';
+
+/**
+ * Which province the Imperial Palace stands in.
+ *
+ * `CITYDATA.64` has no record for the palace, so on a province map it is placed from this project's
+ * own knowledge of where it is (`PALACE_POINT` on the world map) and only shown on the province it
+ * belongs to: the Imperial Province, the ninth block.
+ */
+const PALACE_PROVINCE_ID = 8;
+
+/**
+ * Where the Imperial Palace stands on the map.
+ *
+ * Not a `CITYDATA` record: the palace is the seat of the Empire and the map's art has it painted
+ * on, but no province rectangle holds it. `game/questData.js` puts the finale here, and
+ * `scenes/interior.js`'s `OPENING_DUNGEON_POINT` is the same pixel — the one place every part of
+ * the port already agrees about.
+ */
+const PALACE_POINT = Object.freeze({ x: 172, y: 106 });
+
+/**
+ * The name a location is identified by in the map's own bookkeeping.
+ *
+ * A name alone will not do: `CITYDATA` leaves 128 of its 144 dungeons unnamed, so 128 of them
+ * would share the key `undefined`. The record's address in the file (`provinceID#id`) is what
+ * `worldMap.js` already salts dungeon names by, and it is unique by construction.
+ */
+function markerKey(location) {
+  return `${location.provinceID}#${location.id}`;
+}
 
 /**
  * Expand a palettized image to a canvas-ready ImageData, with index 0 *opaque*.
@@ -224,12 +254,63 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     return radiant.offers;
   }
 
-  const art = await data.img('TAMRIEL.IMG');
+  // ── the screen's own art ─────────────────────────────────────────────────
+  //
+  // The picture, the markers and the province plates are all the game's, read out of the
+  // player's own archive (`game/mapScreen.js`): `MAPOUT.CIF` for the four kinds of place,
+  // `MAPBLINK.CIF` for the set they blink to, `OUTPROV.CIF` for the nine province names, and
+  // two bytes of `PAL.COL` for the gold they carry. A record that is missing is named here
+  // rather than quietly leaving a blank map.
+  const mapScreen = await loadMapScreen(data);
+  for (const warning of mapScreen.warnings) console.warn(`[map] ${warning}`);
+  const art = mapScreen.screen;
   const artData = toMapImageData(art.indices, art.palette, art.width, art.height);
   const artCanvas = document.createElement('canvas');
   artCanvas.width = art.width;
   artCanvas.height = art.height;
   artCanvas.getContext('2d').putImageData(artData, 0, 0);
+
+  /**
+   * One canvas per marker kind per record — the icon the game drew, in the palette's own gold.
+   * @type {Record<string, {steady?: HTMLCanvasElement, blinking?: HTMLCanvasElement}>}
+   */
+  const markerCanvases = {};
+  for (const [kind, records] of Object.entries(mapScreen.icons)) {
+    markerCanvases[kind] = {};
+    for (const [state, icon] of Object.entries(records)) {
+      const color = state === 'blinking' ? mapScreen.colors.blinking : mapScreen.colors.steady;
+      const canvas = document.createElement('canvas');
+      canvas.width = icon.width;
+      canvas.height = icon.height;
+      canvas.getContext('2d').putImageData(new ImageData(
+        frameToRgba(icon.indices, icon.colorIndex, color), icon.width, icon.height), 0, 0);
+      markerCanvases[kind][state] = canvas;
+    }
+  }
+
+  /** The nine province plates, in the record's own two colours. */
+  const plateCanvases = mapScreen.plates.map((plate) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = plate.width;
+    canvas.height = plate.height;
+    canvas.getContext('2d').putImageData(new ImageData(indicesToRgba(plate.indices, {
+      [PLATE_BACKGROUND_INDEX]: mapScreen.colors.plateBackground,
+      [PLATE_TEXT_INDEX]: mapScreen.colors.plateText,
+    }), plate.width, plate.height), 0, 0);
+    return { name: plate.name, canvas, width: plate.width, height: plate.height };
+  });
+
+  /** What the last frame drew of the screen's own records — the debug seam's reading. */
+  const mapArtState = {
+    screen: MAP_SCREEN_RECORD,
+    record: markerRecord({ blinking: false }),
+    blinking: false,
+    switches: 0,
+    icons: {},
+    plaquesDrawn: [],
+    warnings: mapScreen.warnings.slice(),
+  };
+  let lastBlink = false;
 
   // ── the DOM layer ───────────────────────────────────────────────────────────
   const host = document.getElementById('map') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'map' }));
@@ -258,14 +339,35 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   host.appendChild(sheet);
   const legend = document.createElement('div');
   legend.id = 'map-legend';
-  legend.innerHTML = '<b>Tamriel</b> — the world of Arena<br>'
-    + '<span class="k">&#9679;</span> city-state &nbsp;<span class="k">&#9679;</span> town &nbsp;<span class="k">&#9679;</span> village<br>'
-    + '<span class="d">&#9670;</span> dungeon &nbsp;<span class="s">&#9670;</span> Staff piece &nbsp;<span class="p">&#9733;</span> Imperial Palace<br>'
-    + 'wheel to zoom · drag to pan · click a marker to travel';
+  legend.innerHTML = `<b>Tamriel</b> — the world of Arena<br>`
+    + legendRows().map((row) => `<span class="k"><canvas class="mk" data-kind="${row.kind}" width="${row.width}" height="${row.height}"></canvas> ${row.label}</span>`).join(' ')
+    + `<br>${overlay ? 'M or Esc to close · ' : ''}wheel to zoom · drag to pan · click a marker to travel`;
+  for (const canvas of legend.querySelectorAll('canvas.mk')) {
+    const kind = canvas.dataset.kind;
+    const source = markerCanvases[kind]?.steady;
+    if (source) canvas.getContext('2d').drawImage(source, 0, 0);
+  }
   host.appendChild(legend);
 
   /** The visible window onto the 320×200 map, in CSS pixels. */
-  const viewport = { scale: 1, offsetX: 0, offsetY: 0, width: 0, height: 0, fit: 1 };
+  const viewport = { scale: 1, offsetX: 0, offsetY: 0, width: 0, height: 0, fit: 1, dpr: 1 };
+  /** Where the pointer last was, in CSS pixels, or null. The province plate follows it. */
+  let pointerAt = null;
+  /**
+   * Which level of the screen is up: all of Tamriel, or one province's own hand-drawn map.
+   *
+   * The two-level map is the original's, and the owner's report is what brought it here: *"the real
+   * arena map … you click the province and then you zoom to an handrawn map of the province that
+   * then shows all the places and with little icons of villages dungeons and cities"*. `null` is
+   * Tamriel; a province object is that province's own picture (`HIGHROCK.IMG`, …), with its 48
+   * places at the pixels `CITYDATA.64` stores for them.
+   * @type {object|null}
+   */
+  let shownProvince = null;
+  /** Each province map's canvas, made when its province is first opened. */
+  const provinceCanvases = new Map();
+  /** Every province whose own map has been opened this session, for the debug seam. */
+  const openedProvinces = new Set();
   /** @type {object|null} */
   let selected = null;
   /** @type {object|null} */
@@ -277,6 +379,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
 
   function resize() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
+    viewport.dpr = dpr;
     viewport.width = host.clientWidth || window.innerWidth;
     viewport.height = host.clientHeight || window.innerHeight;
     view.width = Math.round(viewport.width * dpr);
@@ -318,12 +421,15 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     return { x: (point.x - viewport.offsetX) / s, y: (point.y - viewport.offsetY) / s };
   }
 
-  /** The marker style for a location. */
-  function styleOf(location) {
-    if (location.kind !== 'dungeon') return MARKER[location.kind];
-    if (location.index === 0) return MARKER.staff;
-    if (location.index === 1) return MARKER.map;
-    return MARKER.random;
+  /**
+   * How far from a marker's centre a click and a hover reach, in map pixels.
+   *
+   * Half the game's own icon for that kind of place (`game/mapScreen.js` holds the four records'
+   * sizes), so the target is the art's size rather than a number invented per kind.
+   */
+  function markerHitRadius(location) {
+    const icon = MARKER_ICONS[markerKind(location.kind)] ?? MARKER_ICONS.village;
+    return Math.max(icon.width, icon.height) / 2;
   }
 
   /**
@@ -390,13 +496,12 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   function stageLocation() {
     const stage = chain.stages[quest.step];
     if (!stage) return null;
-    if (stage.kind === 'finale') return { name: stage.title, global: { x: world.width / 2 + 12, y: 100 }, finale: true };
+    if (stage.kind === 'finale') return { name: stage.title, global: { ...PALACE_POINT }, finale: true };
     if (stage.kind === 'escape') return null;
     const hit = world.byName(stage.title);
     return hit ? { ...hit, finale: false } : null;
   }
 
-  const questLocations = () => new Set(chain.stages.map((s) => s.title).filter(Boolean));
 
   function draw() {
     ctx.clearRect(0, 0, viewport.width, viewport.height);
@@ -404,114 +509,146 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     ctx.fillRect(0, 0, viewport.width, viewport.height);
 
     const s = viewport.fit * viewport.scale;
-    // The map art, with smoothing on so a zoomed map stays readable.
+    // The picture: Arena's world map, or — one click in — the hand-drawn map of the province.
+    // Smoothing on, so a zoomed map stays readable.
+    const picture = currentPicture();
     ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(artCanvas, viewport.offsetX, viewport.offsetY, art.width * s, art.height * s);
+    ctx.drawImage(picture.canvas, viewport.offsetX, viewport.offsetY, picture.width * s, picture.height * s);
 
-    // Province borders.
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(200,165,74,0.55)';
-    for (const province of world.provinces) {
-      const p = toScreen(province.rect);
-      ctx.strokeRect(p.x + 0.5, p.y + 0.5, province.rect.width * s, province.rect.height * s);
-      const label = toScreen({ x: province.rect.x + province.rect.width / 2, y: province.rect.y + province.rect.height / 2 });
-      ctx.font = `${Math.max(9, Math.min(14, s * 26))}px ui-monospace, monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(10,10,14,0.65)';
-      const text = province.name.toUpperCase();
-      const width = ctx.measureText(text).width;
-      ctx.fillRect(label.x - width / 2 - 4, label.y - 9, width + 8, 14);
-      ctx.fillStyle = 'rgba(232,224,200,0.85)';
-      ctx.fillText(text, label.x, label.y + 1);
+    // ── the blink ───────────────────────────────────────────────────────────
+    //
+    // The game keeps **two** records of the same four icons — `MAPOUT.CIF` in the marker gold and
+    // `MAPBLINK.CIF` in the bright one — and a map that alternates them is a blinking map. This
+    // frame is on one of the two; `BLINK_PERIOD_MS` is this project's cadence, stamped as such in
+    // `game/mapScreen.js` because the original's is in `A.EXE`.
+    const blink = blinkingAt(performance.now());
+    mapArtState.blinking = blink;
+    mapArtState.record = markerRecord({ blinking: blink });
+    if (blink !== lastBlink) { lastBlink = blink; mapArtState.switches++; }
+
+    // ── what the map is pointing at ─────────────────────────────────────────
+    //
+    // Where the player is, where the main quest's next stage is, and where the job in hand sends
+    // them. These take the **opposite** record to the rest of the map, so they strobe against a
+    // strobbing map instead of vanishing into it, and each carries a word.
+    const spotlight = new Set();
+    const words = new Map();
+    const stand = whereThePlayerIs();
+    if (stand) { spotlight.add(markerKey(stand)); words.set(markerKey(stand), 'you are here'); }
+    const stage = stageLocation();
+    const palace = stage?.finale ? palaceMarker(true) : palaceMarker(false);
+    if (stage && !stage.finale) {
+      spotlight.add(markerKey(stage));
+      words.set(markerKey(stage), chain.stages[quest.step]?.kind === 'piece' ? 'the piece is here' : 'the trail leads here');
     }
-
-    // Quest dungeons get a permanent ring, so the map doubles as a quest guide.
-    const questTitles = questLocations();
-    const pulse = 1 + 0.25 * Math.sin(performance.now() / 320);
-    for (const location of world.locations) {
-      if (location.kind !== 'dungeon' || !questTitles.has(location.name)) continue;
-      const p = toScreen(location.global);
-      const style = styleOf(location);
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, style.radius * pulse + 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = location.index === 0 ? 'rgba(226,86,74,0.85)' : 'rgba(217,138,60,0.8)';
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-    }
-
-    // The job in hand, ringed in green: whatever else the map is showing, the place
-    // you were actually hired to go to is the one you can find at a glance.
     if (radiant.active) {
       const hit = world.byName(radiant.active.completed ? radiant.active.giver : radiant.active.target);
-      if (hit) {
-        const p = toScreen(hit.global);
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 6 + pulse * 2, 0, Math.PI * 2);
-        ctx.strokeStyle = radiant.active.completed ? 'rgba(120,220,150,0.95)' : 'rgba(240,200,90,0.9)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        const label = radiant.active.completed ? 'return here' : 'your job';
-        ctx.font = '10px ui-monospace, monospace';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = 'rgba(240,220,150,0.95)';
-        ctx.fillText(label, p.x, p.y - 10);
+      if (hit) { spotlight.add(markerKey(hit)); words.set(markerKey(hit), radiant.active.completed ? 'collect your pay' : 'your job'); }
+    }
+
+    // ── the markers, which are the game's own four icons ───────────────────
+    //
+    // **The places are on the province's map, not on Tamriel's.** Arena's own screen does it this
+    // way — the continent carries its nine provinces, and clicking one opens that province's
+    // hand-drawn map, where there is room for its forty-eight settlements and dungeons to be the
+    // four little icons they are. The port had no province maps at all until this block: it drew
+    // 432 invented circles on the continent instead (the owner: *"instead of points with villages
+    // dungeons an cities"*).
+    ctx.imageSmoothingEnabled = false;
+    const drawn = {};
+    const iconScale = Math.min(s, ICON_MAX_SCALE);
+    const places = shownProvince
+      ? world.locations.filter((l) => l.provinceID === shownProvince.id)
+      : [];
+    for (const location of places) {
+      const kind = markerKind(location.kind);
+      const icon = kind ? MARKER_ICONS[kind] : null;
+      if (!icon) continue;
+      const p = toScreen(provincePointOf(location));
+      const w = icon.width * iconScale;
+      const h = icon.height * iconScale;
+      if (p.x + w / 2 < 0 || p.y + h / 2 < 0 || p.x - w / 2 > viewport.width || p.y - h / 2 > viewport.height) continue;
+      const key = markerKey(location);
+      const isSpot = spotlight.has(key);
+      const isSelected = selected != null && markerKey(selected) === key;
+      const phase = (isSpot || isSelected) ? !blink : blink;
+      const canvas = markerCanvases[kind]?.[phase ? 'blinking' : 'steady'];
+      if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
+      drawn[kind] = (drawn[kind] ?? 0) + 1;
+      if (isSpot || isSelected) {
+        drawLabel(words.get(key) ?? dungeonLabel(location), p.x, p.y - h / 2 - 3);
+      } else if (kind === 'city') {
+        drawLabel(location.name, p.x, p.y + h / 2 + 11);
+      }
+    }
+    // The continent carries one mark: where the player is. `CITYDATA` puts no palace on a province
+    // map, so the palace is drawn on the world map and on the Imperial Province's own map.
+    const here = whereThePlayerIs();
+    const palaceHere = !shownProvince || shownProvince.id === PALACE_PROVINCE_ID;
+    if (!shownProvince && here) {
+      const kind = markerKind(here.kind) ?? 'city';
+      const icon = MARKER_ICONS[kind];
+      const p = toScreen(here.global);
+      const w = icon.width * iconScale;
+      const h = icon.height * iconScale;
+      const canvas = markerCanvases[kind]?.[(!blink) ? 'blinking' : 'steady'];
+      if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
+      drawn[kind] = (drawn[kind] ?? 0) + 1;
+      drawLabel(here.name, p.x, p.y - h / 2 - 3);
+    }
+    if (palace && palaceHere && !shownProvince) {
+      const icon = MARKER_ICONS.city;
+      const p = toScreen(palace.point);
+      const w = icon.width * iconScale;
+      const h = icon.height * iconScale;
+      const phase = palace.spotlight ? !blink : blink;
+      const canvas = markerCanvases.city?.[phase ? 'blinking' : 'steady'];
+      if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
+      drawn.city = (drawn.city ?? 0) + 1;
+      if (palace.spotlight) drawLabel(palace.label, p.x, p.y - h / 2 - 3);
+    }
+    mapArtState.icons = drawn;
+
+    // ── the province's own name, on its own map ─────────────────────────────
+    //
+    // The plate record's nine names have a second job here, and it is the one the art fits: on a
+    // province's map the province is what the screen is *of*, so its name is its title. The plate
+    // is drawn at its own record position (`RECORD_LAYOUT`'s nine offsets) — the layout the record
+    // carries, used where it belongs rather than over the world map's painted names.
+    if (shownProvince) {
+      const index = plateIndexFor(shownProvince.name);
+      const plate = index >= 0 ? plateCanvases[index] : null;
+      if (plate) {
+        const at = toScreen({ x: RECORD_LAYOUT.plates[index].x, y: RECORD_LAYOUT.plates[index].y });
+        const ps = Math.min(s, ICON_MAX_SCALE * 1.5);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(plate.canvas, Math.round(at.x), Math.round(at.y), plate.width * ps, plate.height * ps);
+        mapArtState.plaquesDrawn = [plate.name];
       }
     }
 
-    // Markers.
-    for (const location of world.locations) {
-      const p = toScreen(location.global);
-      if (p.x < -10 || p.y < -10 || p.x > viewport.width + 10 || p.y > viewport.height + 10) continue;
-      const style = styleOf(location);
-      const isDungeon = location.kind === 'dungeon';
-      const isSelected = selected && selected.name === location.name && selected.provinceID === location.provinceID;
-      ctx.beginPath();
-      if (isDungeon) {
-        const r = style.radius;
-        ctx.moveTo(p.x, p.y - r);
-        ctx.lineTo(p.x + r, p.y);
-        ctx.lineTo(p.x, p.y + r);
-        ctx.lineTo(p.x - r, p.y);
-        ctx.closePath();
-      } else {
-        ctx.arc(p.x, p.y, style.radius, 0, Math.PI * 2);
-      }
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      ctx.lineWidth = isSelected ? 2 : 0.8;
-      ctx.strokeStyle = isSelected ? '#fff3c4' : style.stroke;
-      ctx.stroke();
-      if (isSelected) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, style.radius + 5, 0, Math.PI * 2);
-        ctx.strokeStyle = '#fff3c4';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
+    // ── the province plate ─────────────────────────────────────────────────
+    //
+    // `OUTPROV.CIF`'s nine name plates are the game's own lettering for the nine provinces, in
+    // the record's own olive and slate. Nothing had ever read them (B16, `D-35`); they are the
+    // highlight the pointer carries, which is also why the map art's own painted names are left
+    // alone — the plate says *which* province the pointer is in, in the game's own hand.
+    const plaquesDrawn = shownProvince ? [...mapArtState.plaquesDrawn] : [];
+    const plaque = shownProvince ? null : provincePlaque();
+    if (plaque) {
+      const index = plateIndexFor(plaque.name);
+      const plate = index >= 0 ? plateCanvases[index] : null;
+      if (plate) {
+        const scale = Math.max(1, Math.round(s));
+        const w = plate.width * scale;
+        const h = plate.height * scale;
+        const at = pointerAt ?? { x: viewport.width / 2, y: viewport.height - 70 };
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(plate.canvas, Math.round(at.x + 14), Math.round(at.y + 12), w, h);
+        plaquesDrawn.push(plate.name);
       }
     }
-
-    // The palace: the finale's marker, drawn as a star.
-    const stage = chain.stages[chain.stages.length - 1];
-    if (stage?.kind === 'finale') {
-      const p = toScreen({ x: 172, y: 106 });
-      ctx.fillStyle = MARKER.palace.fill;
-      ctx.strokeStyle = MARKER.palace.stroke;
-      ctx.lineWidth = 1;
-      star(ctx, p.x, p.y, 5, 2.4);
-    }
-
-    // Labels for the biggest settlements when zoomed in.
-    if (viewport.scale > 1.6) {
-      ctx.font = '10px ui-monospace, monospace';
-      ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(20,16,8,0.8)';
-      for (const location of world.settlements()) {
-        if (location.kind !== 'city') continue;
-        const p = toScreen(location.global);
-        if (p.x < 0 || p.y < 0 || p.x > viewport.width || p.y > viewport.height) continue;
-        ctx.fillText(location.name, p.x + 6, p.y + 3);
-      }
-    }
+    mapArtState.plaquesDrawn = plaquesDrawn;
 
     if (message && performance.now() < messageUntil) {
       ctx.font = '13px ui-monospace, monospace';
@@ -524,36 +661,197 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     }
   }
 
-  /** A five-pointed star, for the palace. */
-  function star(context, cx, cy, outer, inner) {
-    context.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const r = i % 2 === 0 ? outer : inner;
-      const a = (Math.PI / 5) * i - Math.PI / 2;
-      const x = cx + Math.cos(a) * r;
-      const y = cy + Math.sin(a) * r;
-      if (i === 0) context.moveTo(x, y); else context.lineTo(x, y);
-    }
-    context.closePath();
-    ctx.fill(); ctx.stroke();
+  /**
+   * A word on the map, in the palette's own letters, with the plate's own dark behind it.
+   *
+   * The map's text is the port's (`game/mapScreen.js` holds the game's plate and marker colours,
+   * not its font — Arena's FNT files have not given up their glyphs yet, `FORMATS.md` §9).
+   */
+  function drawLabel(text, x, y) {
+    if (!text) return;
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    const width = ctx.measureText(text).width;
+    ctx.fillStyle = 'rgba(10,8,4,0.72)';
+    ctx.fillRect(x - width / 2 - 4, y - 10, width + 8, 13);
+    ctx.fillStyle = PLATE_COLORS.text;
+    ctx.fillText(text, x, y);
   }
 
-  /** The location under a CSS-pixel point, if any. */
+  /**
+   * The province's own hand-drawn map, as a canvas — made the first time it is opened.
+   *
+   * `game/mapScreen.js` read the nine records (`HIGHROCK.IMG`, `HAMERFEL.IMG`, …); this is the one
+   * place they are turned into something the screen can draw. A province with no record answers
+   * null, and the screen stays on Tamriel rather than opening a blank page.
+   *
+   * @param {object} province
+   * @returns {{canvas: HTMLCanvasElement, width: number, height: number, record: string}|null}
+   */
+  function provincePicture(province) {
+    if (!province) return null;
+    if (provinceCanvases.has(province.id)) return provinceCanvases.get(province.id);
+    const entry = mapScreen.provinces.find((p) => p.name === province.name)
+      ?? mapScreen.provinces.find((p) => plateIndexFor(p.name) === plateIndexFor(province.name));
+    if (!entry) { provinceCanvases.set(province.id, null); return null; }
+    const canvas = document.createElement('canvas');
+    canvas.width = entry.image.width;
+    canvas.height = entry.image.height;
+    canvas.getContext('2d').putImageData(toMapImageData(
+      entry.image.indices, entry.image.palette, entry.image.width, entry.image.height), 0, 0);
+    const value = { canvas, width: entry.image.width, height: entry.image.height, record: entry.record };
+    provinceCanvases.set(province.id, value);
+    return value;
+  }
+
+  /**
+   * The picture the screen is showing: Arena's world map, or the province's own map.
+   * @returns {{canvas: HTMLCanvasElement, width: number, height: number, record: string}}
+   */
+  function currentPicture() {
+    const province = shownProvince ? provincePicture(shownProvince) : null;
+    return province ?? { canvas: artCanvas, width: art.width, height: art.height, record: MAP_SCREEN_RECORD };
+  }
+
+  /**
+   * Open a province's own map — the original's second level, and the one the places live on.
+   *
+   * A province whose picture is not in this install is **refused** rather than opened onto a blank
+   * screen: the map says so on its status line and stays where it is.
+   *
+   * @param {object|string} province  a province from `world.provinces`, or its name
+   * @returns {string|null} the province that is now open
+   */
+  function openProvince(province) {
+    const hit = typeof province === 'string'
+      ? world.provinces.find((p) => plateIndexFor(p.name) === plateIndexFor(province)) ?? null
+      : province;
+    if (!hit) return null;
+    const picture = provincePicture(hit);
+    if (!picture) {
+      message = `${hit.name} has no map in this install (${provinceMapRecord(hit.id) ?? 'no record'}).`;
+      messageUntil = performance.now() + 3000;
+      return null;
+    }
+    shownProvince = hit;
+    openedProvinces.add(hit.name);
+    selected = null;
+    hovered = null;
+    pointerAt = null;
+    hoverLabel.classList.remove('on');
+    updateCard();
+    updateBar();
+    centerOn({ x: picture.width / 2, y: picture.height / 2 });
+    draw();
+    return hit.name;
+  }
+
+  /** Back to Tamriel — the continent the provinces are provinces of. */
+  function backToTamriel() {
+    if (!shownProvince) return false;
+    shownProvince = null;
+    selected = null;
+    hovered = null;
+    pointerAt = null;
+    hoverLabel.classList.remove('on');
+    updateCard();
+    updateBar();
+    centerOn({ x: art.width / 2, y: art.height / 2 });
+    draw();
+    return true;
+  }
+
+  /** The province whose rectangle holds a CSS-pixel point, or null. */
+  function provinceUnderPoint(point) {
+    const w = toWorld(point);
+    if (w.x < 0 || w.y < 0 || w.x >= art.width || w.y >= art.height) return null;
+    return world.provinceAt(w);
+  }
+
+  /** A place's screen point **in the view that is showing**: its province pixel, or its world pixel. */
+  function screenPointOf(location) {
+    return shownProvince ? toScreen(provincePointOf(location)) : toScreen(location.global);
+  }
+
+  /**
+   * Where the player is standing, as a `CITYDATA` record — by name, or by the seed a dungeon
+   * with no name was entered by (the same two ways `lastLocationGlobal` finds the point).
+   *
+   * @returns {object|null}
+   */
+  function whereThePlayerIs() {
+    const saved = lastLocation();
+    if (saved.name) {
+      const named = world.byName(saved.name);
+      if (named) return named;
+    }
+    if (saved.seed == null) return null;
+    return world.locations.find((l) => String(l.dungeonSeed) === String(saved.seed)) ?? null;
+  }
+
+  /**
+   * The Imperial Palace, which is not a `CITYDATA` record and so has no marker of its own — the
+   * one place this scene has to place from its own knowledge.
+   *
+   * It gets the **city** icon. The records hold four icons and no fifth, and inventing a fifth
+   * distinction is what this block removes; the palace is the seat of the Empire and a city-state
+   * on this map, and when the finale is what the map is pointing at, the marker strobes with a
+   * word on it instead.
+   *
+   * @param {boolean} spotlight  the finale is the current stage
+   * @returns {{point: {x: number, y: number}, spotlight: boolean, label: string}}
+   */
+  function palaceMarker(spotlight) {
+    return { point: PALACE_POINT, spotlight, label: 'the Imperial Palace' };
+  }
+
+  /**
+   * The province plate the pointer owes, or null.
+   *
+   * A location under the pointer wins: its card and its hover word already say where it is, and
+   * two plaques on one cursor is one too many.
+   */
+  function provincePlaque() {
+    if (!pointerAt || hovered) return null;
+    const world0 = toWorld(pointerAt);
+    if (world0.x < 0 || world0.y < 0 || world0.x >= art.width || world0.y >= art.height) return null;
+    return world.provinceAt(world0);
+  }
+
+  /**
+   * The place under a CSS-pixel point, if any.
+   *
+   * **Only on a province's map**, because that is where the places are drawn: the continent's own
+   * screen has nine provinces on it and no settlements (the owner's report, and Arena's own
+   * screen). The palace is the exception — it has no `CITYDATA` record, so it is a point this
+   * project holds and hit-tests on the continent's own picture.
+   *
+   * @param {{x: number, y: number}} point
+   * @returns {{location: object, distance: number}|null}
+   */
   function locationAt(point) {
     let best = null;
-    for (const location of world.locations) {
-      const p = toScreen(location.global);
+    if (!shownProvince) {
+      const palace = toScreen(PALACE_POINT);
+      const palaceDistance = Math.hypot(palace.x - point.x, palace.y - point.y);
+      if (palaceDistance <= 10) {
+        return { location: { name: 'The Imperial Palace', kind: 'palace', province: 'Imperial Province', provinceID: PALACE_PROVINCE_ID, id: 0, local: { ...PALACE_POINT }, final: true, global: { ...PALACE_POINT }, climate: 'temperate', coastal: false }, distance: palaceDistance };
+      }
+      return null;
+    }
+    const scale = Math.min(viewport.fit * viewport.scale, ICON_MAX_SCALE);
+    for (const location of placesOf(shownProvince)) {
+      const p = screenPointOf(location);
       const distance = Math.hypot(p.x - point.x, p.y - point.y);
-      const radius = Math.max(6, styleOf(location).radius + 4);
+      const radius = Math.max(7, markerHitRadius(location) * scale + 4);
       if (distance <= radius && (!best || distance < best.distance)) best = { location, distance };
     }
-    // The palace is not a CITYDATA location, so it needs its own hit test.
-    const palace = toScreen({ x: 172, y: 106 });
-    const palaceDistance = Math.hypot(palace.x - point.x, palace.y - point.y);
-    if (palaceDistance <= 9 && (!best || palaceDistance < best.distance)) {
-      return { location: { name: 'The Imperial Palace', kind: 'palace', province: 'Imperial Province', provinceID: 8, final: true, global: { x: 172, y: 106 }, climate: 'temperate', coastal: false } };
-    }
     return best;
+  }
+
+  /** The 48 places `CITYDATA` puts in a province, in the file's own order. */
+  function placesOf(province) {
+    return world.locations.filter((l) => l.provinceID === province.id);
   }
 
   function describe(location) {
@@ -607,7 +905,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   /** How far, in days, from wherever the player is to here. */
   function travelDays(location) {
     const from = lastLocationGlobal();
-    const to = location.global ?? { x: 172, y: 106 };
+    const to = location.global ?? PALACE_POINT;
     return world.travel(from, to);
   }
 
@@ -620,7 +918,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const bySeed = saved.seed == null
       ? null
       : world.locations.find((l) => String(l.dungeonSeed) === String(saved.seed));
-    return bySeed ? bySeed.global : { x: 172, y: 106 };
+    return bySeed ? bySeed.global : PALACE_POINT;
   }
 
   function updateCard() {
@@ -631,12 +929,21 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     }
     const { days } = travelDays(selected);
     const kindName = { city: 'city-state', town: 'town', village: 'village', dungeon: 'dungeon', palace: 'the Imperial Palace' }[selected.kind] ?? selected.kind;
+    // **Both of a place's climates, or the card lies.** The owner's report: *"MORROWIND NOW JUST
+    // SAYS DESERT BUT WHEN YOU GET INTO IT ITS COMPLETELY MOUNTAIN"* — the card named the country
+    // and the city the player then walked into was built of its architecture. A place whose two
+    // readings differ (Morrowind is desert country built out of the mountain's style, Elsweyr and
+    // the Summerset Isles are temperate country built out of the desert's) says so on the card, in
+    // that order: what the country is, then what the place is made of (`game/provinceStyle.js`).
+    const look = selected.architecture && selected.architecture !== selected.climate
+      ? `${selected.climate} country, ${selected.architecture} buildings`
+      : selected.climate;
     const seed = selected.kind === 'dungeon' ? selected.dungeonSeed : selected.citySeed;
     const nearest = selected.kind === 'dungeon' ? nearestSettlement(world, selected.global) : null;
     const generated = selected.kind === 'dungeon' && !(loose.has(String(selected.mif ?? '').toUpperCase()));
     card.innerHTML = `
       <h2>${dungeonLabel(selected)}</h2>
-      <p class="sub">${kindName} · ${selected.province} · ${selected.climate}${selected.coastal ? ' · coastal' : ''}</p>
+      <p class="sub">${kindName} · ${selected.province} · ${look}${selected.coastal ? ' · coastal' : ''}</p>
       <p class="sub">${days} day${days === 1 ? '' : 's'} of travel${nearest ? ` · nearest town ${nearest.name} (${nearest.distance} px)` : ''}</p>
       <p class="sub">${selected.kind === 'dungeon'
         ? `dungeon seed <code>${seed}</code> → ${generated
@@ -898,7 +1205,8 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     bar.innerHTML = `<span class="obj">${objective}</span>`
       + (side ? `<span class="side">${side}</span>` : '')
       + `<span class="pieces">Staff pieces ${quest.pieces}/8</span>`
-      + `<span class="hint">${overlay ? 'M or Esc to close · ' : ''}B the board · click a marker · drag to pan · wheel to zoom</span>`;
+      + `<span class="where">${shownProvince ? `${shownProvince.name} — Esc back to Tamriel` : 'Tamriel — click a province'}</span>`
+      + `<span class="hint">${overlay ? 'M or Esc to close · ' : ''}B the board · drag to pan · wheel to zoom</span>`;
   }
 
   /**
@@ -926,6 +1234,8 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     view.setPointerCapture(e.pointerId);
   }, { signal });
   view.addEventListener('pointermove', (e) => {
+    const rect = view.getBoundingClientRect();
+    pointerAt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     if (dragging) {
       const dx = e.clientX - dragging.x;
       const dy = e.clientY - dragging.y;
@@ -936,27 +1246,37 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       draw();
       return;
     }
-    const rect = view.getBoundingClientRect();
-    const hit = locationAt({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    const hit = locationAt(pointerAt);
     hovered = hit ? hit.location : null;
-    if (hovered) {
-      hoverLabel.textContent = describe(hovered);
+    const province = (!hovered && !shownProvince) ? provinceUnderPoint(pointerAt) : null;
+    if (hovered || province) {
+      hoverLabel.textContent = hovered ? describe(hovered) : `${province.name} — click to open its map`;
       hoverLabel.style.left = `${e.clientX - rect.left + 14}px`;
       hoverLabel.style.top = `${e.clientY - rect.top + 10}px`;
       hoverLabel.classList.add('on');
     } else {
       hoverLabel.classList.remove('on');
     }
-    view.style.cursor = hovered ? 'pointer' : (dragging ? 'grabbing' : 'grab');
+    view.style.cursor = (hovered || province) ? 'pointer' : (dragging ? 'grabbing' : 'grab');
   }, { signal });
   view.addEventListener('pointerup', (e) => {
     const wasDragging = dragging;
     dragging = null;
     if (!wasDragging || wasDragging.moved) return;
     const rect = view.getBoundingClientRect();
-    const hit = locationAt({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-    select(hit ? hit.location : null);
-    if (hit) draw();
+    const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const hit = locationAt(at);
+    if (shownProvince) {
+      select(hit ? hit.location : null);
+      draw();
+      return;
+    }
+    // On Tamriel a click is a click *on a province*: that is the door to its own map, and it is
+    // what Arena's own screen does with a province. The one mark on this picture that is not a
+    // province is the palace, and it keeps its own card.
+    if (hit && hit.location.kind === 'palace') { select(hit.location); draw(); return; }
+    const province = provinceUnderPoint(at);
+    if (province) openProvince(province);
   }, { signal });
   view.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -976,6 +1296,9 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     // player is exactly where they were. On the map's own page, Escape only drops the
     // selection (there is nowhere to go back to).
     if (overlay && (e.code === 'Escape' || e.code === 'KeyM')) { close(); return; }
+    // Escape walks back out of a province, which is the way the two-level screen is left: the
+    // continent is always one key or one click away.
+    if (e.code === 'Escape' && shownProvince) { backToTamriel(); return; }
     if (e.code === 'Escape') select(null);
     if (e.code === 'KeyB') { board.classList.toggle('on'); updateBoard(); }
     if (e.code === 'Enter' && selected) travel(selected);
@@ -1016,7 +1339,13 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       settlements: world.settlements().length,
       drawn: { width: art.width, height: art.height },
       viewport: { scale: viewport.scale, fit: viewport.fit, width: viewport.width, height: viewport.height },
-      hovered: hovered?.name ?? null,
+      // The word the hover label is showing, which for the 128 unnamed dungeons is the only thing
+      // that describes them — `hovered?.name` alone reports `null` for a marker the pointer is
+      // genuinely sitting on.
+      hovered: hovered ? (hovered.name || dungeonLabel(hovered)) : null,
+      // Which of the two levels is up, and — when a province's map is — which province.
+      view: shownProvince ? 'province' : 'tamriel',
+      province: shownProvince ? shownProvince.name : null,
       selected: selected ? { name: selected.name, kind: selected.kind, province: selected.province, climate: selected.climate, coastal: selected.coastal } : null,
       stage: chain.stages[quest.step]?.title ?? null,
       objective: currentObjective(quest, chain),
@@ -1024,6 +1353,18 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       day: radiant.day,
       boardOpen: board.classList.contains('on'),
       frames,
+      // The screen's own records, as the last frame drew them: which of the two marker records the
+      // map is on, how many times it has switched, which icons went down, and whose province plate
+      // is on the pointer. A test can only tell "the game's art" from "a circle" by reading this.
+      mapArt: {
+        screen: mapArtState.screen,
+        record: mapArtState.record,
+        blinking: mapArtState.blinking,
+        switches: mapArtState.switches,
+        icons: { ...mapArtState.icons },
+        plaques: [...mapArtState.plaquesDrawn],
+        warnings: [...mapArtState.warnings],
+      },
       // What fast travel did on this page: the journey it handed off, or the reason it
       // could not. A check that only reads `travelUrl` cannot tell travel from a no-op.
       travelled: dbg.travel,
@@ -1143,12 +1484,21 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       clue: s.clue?.title ?? null,
       clueMif: s.clue?.mif ?? null,
     })),
-    /** Screen position of a location's marker, for a test that clicks like a player. */
+    /**
+     * Screen position of a location's marker, for a test that clicks like a player.
+     *
+     * The places are drawn on their own province's map, so asking where one is **opens that
+     * province** first (the same single click a player makes) and then answers where the marker
+     * landed. `world` is still the location's pixel on Tamriel, which is what a check about the
+     * continent ("the east of the map is where Morrowind is") wants.
+     */
     markerAt: (name) => {
       const hit = world.byName(name);
       if (!hit) return null;
-      const p = toScreen(hit.global);
-      return { x: p.x, y: p.y, world: hit.global, name: hit.name };
+      const province = world.provinces.find((p) => p.id === hit.provinceID) ?? null;
+      if (province && shownProvince?.id !== province.id) openProvince(province);
+      const p = screenPointOf(hit);
+      return { x: p.x, y: p.y, world: hit.global, local: provincePointOf(hit), name: hit.name, province: hit.province };
     },
     select: (name) => { const hit = name ? world.byName(name) : null; select(hit); draw(); return hit ? hit.name : null; },
     travel: (name) => {
@@ -1157,6 +1507,138 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     },
     setZoom: (scale) => { viewport.scale = Math.max(1, Math.min(6, scale)); clamp(); draw(); return viewport.scale; },
     centreOn: (x, y) => { centerOn({ x, y }); draw(); return { x, y }; },
+    // ── the map's own iconography ───────────────────────────────────────────
+    /**
+     * The screen's records and colours: what was read out of the install, and what the last
+     * frame drew with them.
+     *
+     * A check that wants to hold "the map is drawn from the game's own art" has to read the
+     * records out of the page (`icon.lit` is the record's own pixel count for that frame) rather
+     * than trust the drawing code — the whole point of `D-35` is that the drawing code used to
+     * invent its own markers.
+     */
+    mapScreen: () => ({
+      screen: { record: MAP_SCREEN_RECORD, width: art.width, height: art.height },
+      records: { ...MARKER_RECORDS },
+      colors: {
+        ...MARKER_COLORS,
+        indices: { marker: mapScreen.icons.city?.steady?.colorIndex ?? null, blink: mapScreen.icons.city?.blinking?.colorIndex ?? null },
+        palette: {
+          steady: { ...mapScreen.colors.steady },
+          blinking: { ...mapScreen.colors.blinking },
+          plateBackground: { ...mapScreen.colors.plateBackground },
+          plateText: { ...mapScreen.colors.plateText },
+        },
+      },
+      blinkPeriodMs: BLINK_PERIOD_MS,
+      kinds: MARKER_KINDS.map((kind) => ({
+        kind,
+        ...MARKER_ICONS[kind],
+        steady: mapScreen.icons[kind]?.steady?.lit ?? 0,
+        blinking: mapScreen.icons[kind]?.blinking?.lit ?? 0,
+      })),
+      plates: mapScreen.plates.map((plate, index) => ({
+        index, name: plate.name, width: plate.width, height: plate.height,
+        background: plate.background, text: plate.text,
+      })),
+      drawn: { ...mapArtState.icons },
+      plaques: [...mapArtState.plaquesDrawn],
+      record: mapArtState.record,
+      blinking: mapArtState.blinking,
+      switches: mapArtState.switches,
+      // The nine hand-drawn province maps this install ships, and which one is open.
+      provinces: mapScreen.provinces.map((p) => ({ name: p.name, record: p.record, width: p.image.width, height: p.image.height })),
+      view: shownProvince ? 'province' : 'tamriel',
+      provincesOpened: [...openedProvinces],
+      warnings: [...mapArtState.warnings],
+    }),
+    /** Open a province's own map by name (`openProvince`), as a click on Tamriel does. */
+    openProvince: (name) => openProvince(name),
+    /** Back to Tamriel. */
+    backToTamriel: () => backToTamriel(),
+    /** Which level of the screen is up, and what the picture in it is. */
+    level: () => ({
+      view: shownProvince ? 'province' : 'tamriel',
+      province: shownProvince ? { name: shownProvince.name, id: shownProvince.id } : null,
+      record: currentPicture().record,
+      placesDrawn: Object.values(mapArtState.icons).reduce((a, b) => a + b, 0),
+      opened: [...openedProvinces],
+    }),
+    /** Where the map thinks the player is, as the marker it strobes. */
+    playerMarker: () => {
+      const hit = whereThePlayerIs();
+      if (!hit) return null;
+      const key = markerKey(hit);
+      return { name: hit.name, kind: hit.kind, province: hit.province, key, strobed: mapArtState.blinking === false };
+    },
+    /**
+     * What the last frame actually put on the screen for one location's marker.
+     *
+     * The pixels, not the intent: `lit` counts pixels of the canvas inside the icon's own
+     * rectangle that carry the palette's marker gold, and `expected` is the record's own lit count
+     * scaled to the view. A disc of the same bounding box would land nowhere near it in either
+     * number (`share` is what tells the two apart: these icons are outlines, 20-24 % of their own
+     * rectangle).
+     */
+    markerPixels: (name = null) => {
+      const hit = name ? world.byName(name) : selected;
+      if (!hit) return null;
+      const kind = markerKind(hit.kind);
+      const icon = kind ? MARKER_ICONS[kind] : null;
+      if (!icon) return null;
+      const s = Math.min(viewport.fit * viewport.scale, ICON_MAX_SCALE);
+      const dpr = viewport.dpr;
+      const p = screenPointOf(hit);
+      const width = Math.max(1, Math.round(icon.width * s * dpr));
+      const height = Math.max(1, Math.round(icon.height * s * dpr));
+      const x0 = Math.round((p.x - (icon.width * s) / 2) * dpr);
+      const y0 = Math.round((p.y - (icon.height * s) / 2) * dpr);
+      const cw = Math.min(width, view.width - x0);
+      const ch = Math.min(height, view.height - y0);
+      if (x0 < 0 || y0 < 0 || cw < 2 || ch < 2) return null;
+      let image = null;
+      try { image = ctx.getImageData(x0, y0, cw, ch); } catch { return null; }
+      const wanted = [mapScreen.colors.steady, mapScreen.colors.blinking];
+      let lit = 0;
+      for (let i = 0; i < image.data.length; i += 4) {
+        if (image.data[i + 3] < 128) continue;
+        if (wanted.some((c) => Math.abs(c.r - image.data[i]) <= 6 && Math.abs(c.g - image.data[i + 1]) <= 6 && Math.abs(c.b - image.data[i + 2]) <= 6)) lit++;
+      }
+      const area = (image.data.length / 4) || 1;
+      return {
+        name: hit.name, kind, province: hit.province,
+        record: mapArtState.record,
+        icon: { frame: icon.frame, width: icon.width, height: icon.height },
+        lit, area, share: lit / area,
+        expected: Math.round((mapScreen.icons[kind]?.steady?.lit ?? 0) * (s * dpr) ** 2),
+      };
+    },
+    /**
+     * Point the map at a spot as the pointer does, and say which province it landed in.
+     *
+     * A pointer move to *bare map*: the hover word and the label it belongs to go with it, or the
+     * real cursor (which a headless page does not have, and a player does) would decide what the
+     * plaque is allowed to show.
+     */
+    hoverAt: (x, y) => {
+      pointerAt = { x, y };
+      hovered = null;
+      hoverLabel.classList.remove('on');
+      const province = provincePlaque();
+      return province ? province.name : null;
+    },
+    /** The plate the screen holds for a province, and whether the last frame drew it. */
+    provincePlate: (name) => {
+      const index = plateIndexFor(name);
+      const plate = index >= 0 ? mapScreen.plates[index] : null;
+      return {
+        index,
+        name: plate?.name ?? null,
+        width: plate?.width ?? 0,
+        height: plate?.height ?? 0,
+        drawn: plate ? mapArtState.plaquesDrawn.includes(plate.name) : false,
+      };
+    },
     /** The terrain class under a world pixel, and the ASCII glyph for it. */
     terrainAt: (x, y) => ({ value: world.terrainAt({ x, y }), glyph: TERRAIN_GLYPH[world.terrainAt({ x, y })] ?? '?', climate: world.climateAt({ x, y }) }),
     closest: (x, y) => {

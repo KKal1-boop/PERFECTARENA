@@ -102,3 +102,38 @@ test('the install ships fourteen of these people families, and they are the meas
   assert.deepEqual(talkers.map((k) => k.key), ['FMGEN01', 'FMGEN02', 'FMGEN03', 'FMGEN04', 'FMGEN05',
     'MLGEN01', 'MLGEN02', 'MLGEN03', 'MLGEN04', 'MLGEN05']);
 });
+
+// ── the layout a sheet carries (D-42) ─────────────────────────────────────────
+//
+// **The frame count is a property of the family, and it is not decoration.** The five-angle
+// families are twelve-frame sheets — Arena's layout, walk 0–5, look 6/0/7/0, attack 8–11 — and the
+// male and female generics are one action per file (six frames, or nine for the set-1 pair). A
+// walking figure drawn from a twelve-frame sheet may therefore only play frames 0…5: before
+// `layout` existed, every person that is not a monster was given **every** frame as their stride,
+// so the town's watch walked through its own head-turn and its sword-swing (measured in
+// `.scratch/peopleProbe.mjs`, which is also where the numbers below come from).
+test('the layout is read from the family and matches the frames the archive ships', () => {
+  const frameCount = (file) => parseCfa(new Uint8Array(archive.get(file)), file).frames.length;
+  const byKey = new Map(kinds.map((kind) => [kind.key, kind]));
+  // The watch and the `BABE` family are the twelve-frame ones.
+  for (const key of ['GUARD0', 'BABE0']) {
+    const kind = byKey.get(key);
+    assert.equal(kind.layout, 'view', `${key} carries Arena's layout`);
+    assert.equal(frameCount(kindViewFile(kind, 3)), 12, `${key} ships twelve-frame views`);
+  }
+  // …and the town's own men and women are single actions, at six or nine frames.
+  for (const key of ['MLGEN01', 'MLGEN02', 'FMGEN01', 'FMGEN05']) {
+    const kind = byKey.get(key);
+    assert.equal(kind.layout, 'action', `${key} is one animation per file`);
+    assert.ok([6, 9].includes(frameCount(kind.actions.walk)), `${key}'s walk is 6 or 9 frames`);
+  }
+  // **The armoured roster is a third case, and it is why the layout cannot be read off a frame
+  // count alone**: `01CHNWLK.CFA` is six frames *and* one of five angles, because the roster puts
+  // the angle in the file's own set digit (`townsfolk.js`'s `outfitsFromFolk`). Six frames, one
+  // angle, one animation — so its whole sheet is its stride.
+  const armour = parseCfa(new Uint8Array(archive.get('01CHNWLK.CFA')), '01CHNWLK.CFA');
+  assert.equal(armour.frames.length, 6);
+  // A kind with no layout recorded another way defaults to the single-action reading (an unknown
+  // family must not silently lose frames it does not have).
+  assert.equal(kinds.every((kind) => kind.layout === 'view' || kind.layout === 'action'), true);
+});

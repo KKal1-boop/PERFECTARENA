@@ -23,6 +23,8 @@
  * @param {() => number} helpers.getPort
  * @returns {(page: object) => Promise<void>}
  */
+import { ARMOUR_WORDS } from '../../src/game/townsfolk.js';
+
 export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
   return async function suiteTownsfolk(page) {
     const path = await import('node:path');
@@ -205,6 +207,30 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     check('a walk cycle belongs to walking: no batch animates while standing still',
       animA.figures.length > 0 && animA.figures.length <= people.length && stray.length === 0,
       `${animA.figures.length} batches of ${people.length} people; moving ${animB.moving.join(', ')}; stray ${stray.map((s) => s.record).join(', ')}`);
+    // ── and the watch does not walk on its own sword-swing (D-42) ──────────────
+    //
+    // Arena's **twelve-frame** sheets (`GUARD0#` the watch, `BABE0#`) hold walk 0–5, look 6/0/7/0
+    // and attack 8–11 in one file, so a *walking* figure drawn from one may only show frames 0…5.
+    // Every person who is not a monster used to be given the whole sheet as a stride — the layout
+    // was read from the actor rather than from the art — which put the watch's head-turn and its
+    // sword-swing into its walk, on the street (`.scratch/peopleProbe.mjs` is the archive's own
+    // numbers: 12-frame view sheets against 6-and-9-frame single actions). Six samples over a
+    // second, because one pose out of six tells you almost nothing about a cycle.
+    const nonWalk = [];
+    for (let i = 0; i < 6; i++) {
+      const shot = await page.evalJs('window.__debug.animation().figures');
+      for (const record of shot ?? []) {
+        const match = /^([A-Z0-9]+\.CFA)#(\d+)$/.exec(record);
+        if (match && /^(GUARD|BABE)/.test(match[1]) && Number(match[2]) > 5) nonWalk.push(record);
+      }
+      await settle(160);
+    }
+    check('and the watch walks on its walk frames, not on its head-turn or its sword-swing',
+      nonWalk.length === 0,
+      nonWalk.length
+        ? `drawn on non-walk frames: ${[...new Set(nonWalk)].join(', ')}`
+        : `six samples of a peaceful street, no frame past 5 of a layout sheet (${animB.figures.length} batches drawn)`);
+
     check('and the town is alive: people really walk from cell to cell',
       walked.length > 0 || animB.walking > 0,
       `${walked.length} of ${folkB.length} people moved in 1.2 s, ${animB.walking} mid-step`);
@@ -327,17 +353,26 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     await settle();
 
     const panel = await speakTo('nearest');
-    // **Two shapes, because the game has two and this machine is the second one.** The heading
-    // a person reads as is their composed **name** when the sibling install's corpus loaded
-    // (`Elistan Mosswood — a man of the town`, S30 closed) and the unnamed form otherwise
-    // (`a person in chain mail`, `townsfolk.js`'s own `label`). The old assertion pinned the
-    // unnamed form alone, so it failed on every machine that *has* the corpus while the prose,
-    // the source and the topics all read correctly — a stale assertion, not a broken `T`
-    // (`docs/DEFECTS.md` D-10). What it still refuses is a panel with no heading at all, and the
-    // check below independently asserts that the corpus is what named them.
+    // **Three shapes, because the game has three and this suite has now met all of them.** The
+    // heading a person reads as is their composed **name** when the sibling install's corpus
+    // loaded (`Elistan Mosswood — a man of the town`, S30 closed) and the unnamed form otherwise
+    // (`a person in chain mail`, `townsfolk.js`'s own `label`) — and the **armoured roster is
+    // named too**, so a smith in a habit reads `Bathi — a person in a habit`. The two-shape
+    // restatement D-10 landed admitted the name only in front of the *unarmoured* families, so a
+    // run on 2026-10-17 failed here on exactly that heading while `talk()` was working perfectly:
+    // a third stale assertion under the same row, and this one is repaired the same way — by
+    // naming the shapes the modules can really produce rather than the ones a run happened to see.
+    //
+    // The vocabulary is the game's own (`ARMOUR_WORDS` for the roster, `peopleKinds`' four family
+    // labels for the rest), so a *fourth* description would fail this check rather than slip
+    // through it. What it refuses is unchanged: a panel with no heading, or one made of words this
+    // project never wrote.
+    const armourPhrases = Object.values(ARMOUR_WORDS).join('|');
+    const heading = new RegExp('^(?:.+ — )?(?:a person in (?:' + armourPhrases + ')'
+      + '|a man of the town|a woman of the town|a guard of the watch'
+      + '|a small figure of the LGLIT set|a stranger)$');
     check('T opens a conversation with the person in front of the player',
-      panel.shown === true
-      && (/^a person in /.test(panel.who ?? '') || / — a (man|woman) of the town$/.test(panel.who ?? '')),
+      panel.shown === true && heading.test(panel.who ?? ''),
       `shown ${panel.shown}: ${panel.who}`);
     // S30 closed: the street's folk carry the sibling install's own composed names —
     // the heading rides the name when the corpus is in, and the seam counts the named.

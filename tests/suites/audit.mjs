@@ -303,6 +303,58 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
       `blocks at cell ${JSON.stringify(wilds[0]?.beast?.wild?.cell ?? null)}: ${wilds.map((w, i) => `${w.climate} [${grids[i]}] ${(w.beast?.wild?.flats ?? 0)} flats`).join(' · ')}; a desert window and a temperate one share ${grids[0] === grids[1] ? 'every' : 'no'} block`);
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // S-E — the country you *walk*: the door a dungeon's exit stands at, and the
+    //       bearing a window slide must not steal (2026-10-16's two owner reports)
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    //   * *"when you exit a dungeon and go into the wilderness you exit a building not a png with a
+    //     dungeon entrace like normal arena"* — the exit stood the player on the **centre cell** of
+    //     the ruin's 64×64 block, which is a field, a lake or a courtyard as often as the doorway;
+    //   * *"you dont understand where you are going"* — every slide of the window re-booted the
+    //     page facing north, measured as yaw 0.35 going in and 0.00 coming back out.
+    //
+    // Both are read off the page rather than off a picture: `state().wild.ruin` carries the ruin's
+    // door and the cell the exit stands on (`game/dungeonSurface.js`'s `ruinDoorStand`), and the
+    // slide is forced the way a walk forces it — the trigger is nothing but a cell of the country
+    // past the window's own edge, so one teleport is one slide, without four minutes of walking.
+    const stonekeepSeed = await (async () => {
+      await page.goto(`http://localhost:${PORT}/?dungeon=Stonekeep&${q}`);
+      await ready('Stonekeep, for a door of its own');
+      return page.evalJs('window.__debug.state().location?.dungeonSeed ?? null');
+    })();
+    await page.goto(`http://localhost:${PORT}/?location=${encodeURIComponent(CLIMATES[0].name)}&wild=&ruin=${stonekeepSeed}&${q}`);
+    await ready('the country outside a dungeon');
+    const ruin = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.state().wild?.ruin ?? null)'));
+    const atDoor = JSON.parse(await page.evalJs('JSON.stringify({ cell: window.__debug.state().wild.cell, yaw: window.__debug.state().yaw })'));
+    check('S-E: a dungeon\u2019s exit stands the player at the ruin\u2019s own door, not in the middle of its block',
+      Boolean(ruin?.door && ruin?.stand) && ruin.atDoor === true,
+      `door ${JSON.stringify(ruin?.door)} (${ruin?.arch ? 'the ruin\u2019s own arch' : 'the built cell nearest the block\u2019s centre'}), stand ${JSON.stringify(ruin?.stand)}, player at ${JSON.stringify(atDoor.cell)} — block ${JSON.stringify(ruin?.block)} centre ${JSON.stringify(ruin?.cell)}`);
+    const towardDoor = ruin?.door && ruin?.stand
+      ? Math.atan2(ruin.door.row - ruin.stand.row, ruin.door.col - ruin.stand.col)
+      : null;
+    const offBy = towardDoor == null ? null
+      : Math.abs(((atDoor.yaw - towardDoor + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    check('S-E: …facing the door, so the way back down is the first thing the player sees',
+      offBy != null && offBy < 0.05,
+      `yaw ${atDoor.yaw.toFixed(3)} against ${towardDoor?.toFixed(3)} toward the door — off by ${offBy?.toFixed(3)} rad`);
+
+    const originBefore = JSON.parse(await page.evalJs('JSON.stringify({ row: window.__debug.state().wild.originRow, col: window.__debug.state().wild.originCol })'));
+    await page.evalJs('(() => { window.__debug.look(0.35, 0); window.__debug.teleportCell(34, 20); return true; })()');
+    await page.waitFor(`window.__debug.state().wild.originCol !== ${originBefore.col} || window.__debug.state().wild.originRow !== ${originBefore.row}`,
+      { label: 'the wilderness window slides under the player', timeoutMs: 60000 });
+    const slid = JSON.parse(await page.evalJs('JSON.stringify({ yaw: window.__debug.state().yaw, cell: window.__debug.state().wild.cell, origin: { row: window.__debug.state().wild.originRow, col: window.__debug.state().wild.originCol } })'));
+    const wantCell = { row: originBefore.row + 34, col: originBefore.col + 20 };
+    // The bearing is the reading (0.35 in, 0.35 out — measured 0.00 before the fix). The cell is
+    // allowed to move by `standNear`'s own repair radius: the cell the slide names can be inside a
+    // ruin's wall, and the arrival finds the nearest ground within ten cells of it. What it must
+    // **not** be is somewhere else entirely — a gate, a settlement's start point, or the ruin's
+    // centre cell — which is what "the country keeps no track of you" looked like.
+    check('S-E: a window slide keeps the player\u2019s bearing, and their ground to within a cell repair',
+      Math.abs(slid.yaw - 0.35) < 0.02
+      && Math.abs(slid.cell.row - wantCell.row) <= 12 && Math.abs(slid.cell.col - wantCell.col) <= 12,
+      `yaw 0.35 → ${slid.yaw.toFixed(3)}; cell ${JSON.stringify(slid.cell)} against the ${JSON.stringify(wantCell)} they stood on before; origin ${originBefore.col} → ${slid.origin.col}`);
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // S-C, a dungeon: the level with the most art in it
     // ═══════════════════════════════════════════════════════════════════════════
     await page.goto(`http://localhost:${PORT}/?interior=START.MIF&${q}`);

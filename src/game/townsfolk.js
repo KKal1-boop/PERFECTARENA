@@ -250,14 +250,20 @@ export function placeTownsfolk(opts) {
   // carries `views` (what `viewFileFor` reads) and, for the families that ship them, the
   // actions — walk, **talk** and die — so the street can hold a man in clothes who turns
   // to answer you rather than only figures in armour.
-  /** @type {{key: string, views: Record<number,string>, armour: string|null, label: string, actions: object|null}[]} */
+  /** @type {{key: string, views: Record<number,string>, armour: string|null, label: string, actions: object|null, layout: string}[]} */
   const roster = [
     ...outfits.map((outfit) => ({
       key: outfit.key, views: outfit.views, armour: outfit.armour,
       label: `a person in ${ARMOUR_WORDS[outfit.armour] ?? 'plain clothes'}`, actions: null,
+      // An armoured figure's walk sheet is **one animation** (6 frames, measured), so the whole
+      // sheet is the stride — there is no look or attack layout in it at all.
+      layout: 'action',
     })),
     ...(opts.kinds ?? []).filter((kind) => kind?.views?.[1]).map((kind) => ({
       key: kind.key, views: kind.views, armour: null, label: kind.label, actions: kind.actions ?? null,
+      // …and the watch and `BABE` carry Arena's twelve-frame layout, where frames 6…11 are a
+      // head-turn and a sword-swing (`peopleKinds.js` reads it off the family; D-42).
+      layout: kind.layout ?? 'action',
     })),
   ];
   if (!roster.length) return [];
@@ -281,6 +287,8 @@ export function placeTownsfolk(opts) {
       // sheet goes down in it instead of vanishing.
       kind: outfit.actions ? outfit.key : null,
       actions: outfit.actions,
+      /** 'view' = the sheet carries Arena's layout, so a stride is its first six frames only. */
+      layout: outfit.layout ?? 'action',
       facing,
       description: outfit.label ?? describePerson(file),
       place: {

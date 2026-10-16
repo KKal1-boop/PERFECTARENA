@@ -77,7 +77,8 @@ import { monsterArtAudit, monsterSlotAudit } from '../game/monsterArt.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
 import { decodeLevel } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
-import { CITY_BLOCKS_PER_SIDE, cityInfName, cityTemplateName } from '../game/tables/cityBlocks.js';
+import { CITY_BLOCKS_PER_SIDE, cityInfName, cityInfNames, cityTemplateName } from '../game/tables/cityBlocks.js';
+import { withGroundFloors } from '../arena/infFile.js';
 import { cityTypeOf } from '../arena/cityDataFile.js';
 import { cityTemplateVariant, wildernessSeed } from '../arena/cityDataSeeds.js';
 import { blockIdsFromListing, rmdName } from '../arena/rmdFile.js';
@@ -92,7 +93,7 @@ import {
 // nearest settlement's own wilderness, the door is a ruin block in it, and which ruin is a
 // property of the dungeon's own seed. See `game/dungeonSurface.js` for what is the install's
 // and what is this project's rule.
-import { nearestCountry, ruinBlockFor } from '../game/dungeonSurface.js';
+import { nearestCountry, ruinBlockFor, ruinDoorStand } from '../game/dungeonSurface.js';
 import { START_INTERIOR } from '../game/startFlow.js';
 import { loadWorldMap } from '../game/worldMap.js';
 import {    LAST_LOCATION_KEY, loadCharacter, loadQuestState, saveCharacter, saveQuestState,
@@ -100,7 +101,11 @@ import {    LAST_LOCATION_KEY, loadCharacter, loadQuestState, saveCharacter, sav
     loadGuildState, saveGuildState,
     loadWorldState, saveWorldState,
   } from '../game/save.js';
-import { doorStateAt, noteKill, setDoorState, visitPlace, worldSummary } from '../game/worldState.js';
+import {
+  doorStateAt, noteKill, setDoorState, setWorldClock, setWorldPlayer, visitPlace,
+  worldClock, worldPlayer, worldSummary,
+} from '../game/worldState.js';
+import { nameBanksFor } from '../game/provinceStyle.js';
 import { parseDfa } from '../arena/dfa.js';
 import { parseCfa } from '../arena/cfa.js';
 import { parseCif } from '../arena/cifFile.js';
@@ -120,7 +125,7 @@ import {
   cityDoors, serviceGreeting, serviceGreetings, shopForInteriorFile, shopSignKinds,
 } from '../game/shops.js';
 import { MONSTERS, monsterById } from '../game/monsters.js';
-import { actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
+import { LAYOUT_WALK_FRAMES, actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
 import { CombatFx, fitAttackToGround, insideAttack } from '../game/combatFx.js';
 import { fogForLevel, nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
 import { CombatFxPass } from '../engine/render/combatFxPass.js';
@@ -651,7 +656,26 @@ async function readWorldRequest(data, params) {
   }
 
   const kind = cityTypeOf(place.index);
-  const weather = 'clear';
+  // **Two climates, and this is where the second one is used** (`game/provinceStyle.js`, B18/D-41).
+  // `place.climate` is the *ground* — the country, the creatures and the sky, which is what the
+  // wilderness window around this city will be (below and at `:1592`) — while `place.architecture`
+  // is what the settlement itself is built from: Morrowind's cities are `MC*` on a desert ground,
+  // Elsweyr's are `DC*` on a temperate one. `place.weather` is a place whose sky does not stop
+  // doing one thing (measured: Winterhold, by the owner's own request).
+  const weather = place.weather ?? 'clear';
+  // **Two INFs for one settlement, when the two climates differ.** `infName` is the architecture's
+  // (its `@WALLS` table is what the player reads as the province's building style, and it is what
+  // the blocks and the ceiling use); `groundInfName` is the country's, and only its `@FLOORS` table
+  // is merged under the architecture (`infFile.withGroundFloors`). The owner's report is why this
+  // pair exists: *"MORROWIND NOW JUST SAYS DESERT BUT WHEN YOU GET INTO IT ITS COMPLETELY MOUNTAIN
+  // EVEN THE GROUND AND THERE IS NO DESERT LANDSCAPE WITH MOUNT ARCHITECTURE"* — a place whose
+  // label and whose floor disagreed.
+  const infs = cityInfNames({
+    ground: place.climate,
+    architecture: place.architecture ?? place.climate,
+    location: 'city',
+    weather,
+  });
   const request = {
     kind,
     climate: place.climate,
@@ -659,7 +683,8 @@ async function readWorldRequest(data, params) {
     coastal: place.coastal,
     blocksPerSide: CITY_BLOCKS_PER_SIDE[kind],
     seed: place.citySeed,
-    infName: cityInfName({ climate: place.climate, location: 'city', weather }),
+    infName: infs.infName,
+    groundInfName: infs.groundInfName,
     template: cityTemplateName({ type: kind, coastal: place.coastal, variant: cityTemplateVariant(place, place.coastal) }),
   };
   return { world, place, mapName: request.template, cityRequest: request };
@@ -1598,7 +1623,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (cameFromMemory) dbg.wildFromMemory = { at, after: remembered };
     }
 
-    const inf = await data.inf(infName);
+    // **The country's floors under the city's architecture** (B18/D-41): the settlement is built
+    // from its architecture's INF, and the ground half of that table — the `@FLOORS` entries — is
+    // replaced by the ground climate's own. Walls, flats, ceiling, sounds and text stay the
+    // architecture's, and two INFs whose floor tables differ in length are left alone (the merge
+    // says so rather than shifting an index).
+    let inf = await data.inf(infName);
+    if (cityRequest?.groundInfName) {
+      const countryInf = await data.inf(cityRequest.groundInfName);
+      const mixed = withGroundFloors(inf, countryInf);
+      inf = mixed.inf;
+      // Carried on the **request**, not in a `let` beside the loader: the report below reads
+      // `cityRequest` for every other per-level fact, and a fresh name inside this 9 900-line
+      // closure is exactly where the D-34 scope mistake hid.
+      cityRequest.groundFloors = { from: cityRequest.groundInfName, merged: mixed.merged, reason: mixed.reason };
+    }
     const level = decodeLevel(voxels, inf, {
       width: levelWidth,
       depth: levelDepth,
@@ -1978,7 +2017,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function rememberDoor(leaf) {
     setDoorState(worldMemory, memoryKey(current.index), leaf,
       { open: leaf.target > 0, locked: leaf.locked, lockLevel: leaf.lockLevel });
-    saveWorldState(worldMemory);
+    // A door is walked through at some hour, and the world keeps both: the door's state and the
+    // time of day it was opened at (`rememberClock` saves the world state itself).
+    rememberClock();
   }
   /**
    * The work the people of this town can offer.
@@ -2028,13 +2069,41 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // arrival point is its gate.
   const atParam = parseCell(params.get('at'));
   if (atParam) standNear(atParam.row, atParam.col);
+  // **A dungeon's door, when this page is a dungeon's exit.** `?ruin=` says which ruin of the
+  // country the door is in, and `ruinDoorStand` says where in it — the arch, and the open side of
+  // it — so the player comes up *at the door* with the ruin in front of them rather than on the
+  // block's centre cell, which is a field more often than not (see `game/dungeonSurface.js`).
+  const doorStand = standAtRuinDoor();
   // `?wild=row,col` the same way, in the window's own coordinates: the cell named is
   // a *wilderness* cell, and the window's origin moves to hold it.
   const wildStand = current.standCell;
-  if (wildStand) standNear(wildStand.row, wildStand.col);
+  if (!doorStand && wildStand) standNear(wildStand.row, wildStand.col);
+  // **A page that names no cell asks the world where the player was standing** (`worldState`'s
+  // `player`, written by `rememberClock`). The guard is the one D-32 taught: an explicit arrival —
+  // `?at=` from a gate crossing, a fast travel or a stair, a remembered wilderness cell, a ruin's
+  // own door, or a building's `?enter=` — is an *instruction about this arrival*, and only a load
+  // that names nothing (the tab closed and reopened, the last place restored from the save) reads
+  // the world's memory. `standNear` answers null for a cell it cannot stand in, which leaves the
+  // level's own spawn right where it was.
+  const wasStanding = atParam || doorStand || wildStand || entryCell ? null : worldPlayer(worldMemory);
+  if (wasStanding && wasStanding.place === memoryKey(current.index)) {
+    standNear(wasStanding.row, wasStanding.col, 6);
+  }
 
-  // Arrive facing out of the gate, the doorway or the room rather than into it.
-  if (!params.has('shot') && !params.has('yaw')) {
+  // Arrive facing out of the gate, the doorway or the room rather than into it — or, on a ruin's
+  // door, facing the way back down (the door's own answer).
+  const yawParam = Number(params.get('yaw'));
+  if (params.has('shot')) {
+    // The shot door poses the camera itself (`__shotYaw`).
+  } else if (params.has('yaw') && Number.isFinite(yawParam)) {
+    // **`?yaw=` is a player's own bearing, carried across a page.** A wilderness window slide
+    // (`maybeSlideWilderness`) and a gate crossing both boot a page for the ground the player is
+    // already standing on, and a boot that faces north every time is a player who has lost their
+    // compass: measured on the slide, yaw 0.35 came back 0.00. This applies the number.
+    cam.yaw = yawParam;
+  } else if (doorStand) {
+    cam.yaw = doorStand.yaw;
+  } else {
     cam.yaw = openYaw(current.level, current.spawn.x, current.spawn.z);
   }
 
@@ -2337,6 +2406,84 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @param {number} [radius]
    * @returns {{row: number, col: number}|null}
    */
+  /**
+   * **Stand at the ruin's own door**, on the page a dungeon's exit boots (`?ruin=`).
+   *
+   * `game/dungeonSurface.js`'s `ruinDoorStand` holds the rule and the reasoning; this is it
+   * wired to the window that is loaded — the block's cells through `walkableCell`, and the
+   * ruin's arch out of the cell's own `MAP1` byte (`decodeLevel` keeps it as `rawMap1`, and the
+   * `0x9` nibble is the doorway every `.INF` in this game reads a gate with).
+   *
+   * Answers null — and the caller falls back to the old stand cell — for a page with no `?ruin=`,
+   * one that named its own cell (`?wild=12,34` beats the door: a slide, a gate crossing and a
+   * save's remembered foot all name the ground the player is on), and for a ruin whose block has
+   * no built cell and no arch within it at all.
+   *
+   * @returns {{row: number, col: number, yaw: number, door: {row: number, col: number}}|null}
+   */
+  /**
+   * **The ruin's door, and the cell a player stands on to meet it** — in *grid* cells, so it
+   * answers the same way on any page of the same country (`docs/PORT_BLOCKS.md`, B-wild).
+   *
+   * The reading is `game/dungeonSurface.js`'s `ruinDoorStand`; what is here is the wiring: the
+   * ruin's own block, offset into the window the page has loaded, its cells through `walkableCell`
+   * and its arches out of the cell's own `MAP1` byte (`decodeLevel` keeps it as `rawMap1`, and the
+   * `0x9` nibble is the doorway every `.INF` in this game reads a gate with).
+   *
+   * @returns {{door: {row: number, col: number}, stand: {row: number, col: number}, yaw: number, open: number, built: number, arch: boolean}|null}
+   */
+  function ruinDoorCells() {
+    // Off `current`, like every other per-level fact the scene keeps: `wildRuin` is decided inside
+    // `loadLevel` and recorded there (`current.wildRuin`, see `ruinAtPlayer`).
+    const ruin = current?.wildRuin;
+    if (!ruin || !current?.wild) return null;
+    const originRow = current.wild.originRow ?? 0;
+    const originCol = current.wild.originCol ?? 0;
+    const row0 = ruin.block.blockRow * WILD_CHUNK - originRow;
+    const col0 = ruin.block.blockCol * WILD_CHUNK - originCol;
+    // Block-local → the window's own cells, and → the grid's (`+ origin`).
+    const windowCell = (row, col) => ({ row: row0 + row, col: col0 + col });
+    const gridCell = (cell) => ({ row: cell.row + originRow, col: cell.col + originCol });
+    const rawMap1At = (row, col) => {
+      const at = windowCell(row, col);
+      const level = current.level;
+      if (!level || at.row < 0 || at.col < 0 || at.row >= level.depth || at.col >= level.width) return 0;
+      return level.cells[at.row * level.width + at.col]?.rawMap1 ?? 0;
+    };
+    const answer = ruinDoorStand({
+      walkableAt: (row, col) => {
+        const at = windowCell(row, col);
+        return walkableCell(at.row, at.col);
+      },
+      archAt: (row, col) => ((rawMap1At(row, col) & 0xf000) >> 12) === 0x9,
+    });
+    if (!answer) return null;
+    return {
+      door: gridCell(windowCell(answer.door.row, answer.door.col)),
+      stand: gridCell(windowCell(answer.stand.row, answer.stand.col)),
+      yaw: answer.yaw,
+      open: answer.open,
+      built: answer.built,
+      arch: answer.arch,
+    };
+  }
+
+  /** Stand at the ruin's door, on the page a dungeon's exit boots. See `ruinDoorCells`. */
+  function standAtRuinDoor() {
+    // A page that named its own cell beats the door: a slide of the window, a gate crossing and a
+    // save's remembered foot all name the ground the player is already standing on.
+    if (!wildRequest || wildRequest.cell || params.has('at')) return null;
+    const answer = ruinDoorCells();
+    if (!answer) return null;
+    const at = {
+      row: answer.stand.row - (current.wild?.originRow ?? 0),
+      col: answer.stand.col - (current.wild?.originCol ?? 0),
+    };
+    if (!standNear(at.row, at.col, 3)) return null;
+    dbg.ruinDoor = { door: answer.door, stand: answer.stand, yaw: answer.yaw, open: answer.open, arch: answer.arch };
+    return { row: at.row, col: at.col, yaw: answer.yaw, door: answer.door };
+  }
+
   function standNear(row, col, radius = 10) {
     const direct = standAt(row, col);
     if (direct) return direct;
@@ -3144,6 +3291,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // scene it boots has its own, so travelling on from there is normal.
     if (life.leaving) return window.__arenaScene;
     life.leaving = true;
+    // **The hour goes with the player.** The scene that is about to be disposed is the only thing
+    // that knows what time it is here (`clockNow`), and the scene that replaces it decides its own
+    // hour from the world on the way in (`arrivalMinutes`). So the world is told *here*, before the
+    // new one is built: this line is B19's crossing, and without it every gate, stair and fast
+    // travel was a step back to ten in the morning (D-05).
+    rememberClock();
+    // **The forced hour belongs to the page it was typed on.** `?clock=<minutes>` is the probe door
+    // (`living` and `audit` drive the shutters and the sky with it) and a player's own way to stand
+    // in a town at a given hour; it is not a property of the world, and every transition builds its
+    // URL out of the one it came from. Left in, a session that began at `?clock=1380` would be
+    // pinned to eleven at night for ever — out of a city, up a stair, into a shop — and the world's
+    // own clock, written one line above, would be ignored at every arrival. Dropping it here, where
+    // the world's hour is written, is the same law `?at=` follows against a remembered cell (D-32):
+    // an explicit arrival is an instruction about *this* page, and the next page takes its hour from
+    // the world, exactly as a player's own travel does.
+    next.delete('clock');
     try {
       history.replaceState(history.state ?? null, '', `${location.pathname}?${next.toString()}${location.hash ?? ''}`);
     } catch { /* a page that cannot rewrite its URL still travels */ }
@@ -4097,7 +4260,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function nameThePeople(people, seed) {
     if (!peopleBanks || !Array.isArray(people)) return 0;
     const climate = skyClimateOf(current?.infName ?? infName)?.climate ?? 'T';
-    const pool = CLIMATE_NAME_BANKS[climate] ?? CLIMATE_NAME_BANKS.T;
+    // **Whose names these are is the province's question, not the climate's** (the owner's report,
+    // `docs/DEFECTS.md` D-41: *"in morrowind mostly dark elf npcs in skyrim mostly nords … all
+    // provinces should have a mix of people but mostly their people"*). The province's own pool
+    // comes first — weighted, its own people first (`game/provinceStyle.js`) — and a place with no
+    // province (a dungeon, a bare `?city=` page) falls back to the street's climate, which is the
+    // rule this always was.
+    const pool = nameBanksFor(place?.provinceID) ?? CLIMATE_NAME_BANKS[climate] ?? CLIMATE_NAME_BANKS.T;
     let named = 0;
     people.forEach((person, index) => {
       if (person.name) return;
@@ -5330,7 +5499,77 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const raw = params.get('clock');
     const forced = raw === null || raw === '' ? Number.NaN : Number(raw);
     if (Number.isFinite(forced)) return ((Math.trunc(forced) % 1440) + 1440) % 1440;
-    return 10 * 60;
+    // **…and when there is no forced hour, the world's own clock answers** (`worldState`'s
+    // `world.clock`, written on the way out of the last place). Before this, every arrival was ten
+    // in the morning: a player who left a town at dusk walked into the next one at breakfast, and
+    // the hour *never* came back — the owner's *"there is no persistency in the world like instead
+    // there is in daggerfall enhanced"*, in its simplest measurable form (D-05, B19). Ten in the
+    // morning stays the answer for a world that has never had an hour written to it.
+    return worldClock(worldMemory)?.minutes ?? 10 * 60;
+  }
+
+  /**
+   * The day the calendar is on: **the world's own when it is ahead of the save's**.
+   *
+   * `radiant.day` is advanced by the world map's travel (`travel()` prices a journey in days), and
+   * it is the day the *save* is on. The world state's own day is advanced by living through one —
+   * a player who stays in a town long enough to see the sun come round writes the next day down
+   * when they leave. The larger of the two is taken rather than one being picked, because a
+   * calendar that rewinds is worse than one that is early: neither writer can put time back.
+   *
+   * @returns {number}
+   */
+  function worldDay() {
+    return Math.max(radiant.day ?? 0, worldClock(worldMemory)?.day ?? 0);
+  }
+
+  /**
+   * Write the world's own clock from this level's, then save the world.
+   *
+   * **This is the whole of B19's first half.** A level's clock is the level's — it is built from
+   * the arrival minute plus the seconds this level has been standing (`clockNow`) — and every path
+   * that *replaces the page* (`goInPlace`: a gate, a fast travel, a stair, a wilderness slide)
+   * boots a new scene that asks `arrivalMinutes()` on the way in. So the hour a player leaves a
+   * place at is the hour the next place opens on, and a bare reload lands at the hour they left
+   * rather than at ten in the morning.
+   *
+   * Called from the transitions and from the saves the world already makes (a door, a kill), and on
+   * a slow tick so a tab closed mid-idle is a few minutes behind rather than a whole day.
+   */
+  function rememberClock() {
+    const clock = clockNow();
+    setWorldClock(worldMemory, worldDay() + (clock.turned ?? 0), clock.minutes);
+    // **…and where in the place the player was standing** (`worldState`'s `player`, the second of the
+    // world half's two loose fields). Written on the same events as the hour — every place change, the
+    // world's own saves and the slow tick — so a page that names no cell of its own puts the player
+    // back on their own corner instead of the level's spawn point (`worldPlayer`, read at boot).
+    // The cell is the **grid's own**, not the window's (`ruinAtPlayer`'s convention, and the one the
+    // `?wild=row,col` boot reads): a wilderness window slides, so the metre offsets under the player are
+    // relative to wherever the window happens to sit, and only `origin` makes them a place on Tamriel.
+    if (current?.motor?.pos) {
+      const feet = current.motor.pos;
+      const cell = {
+        row: Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0),
+        col: Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0),
+      };
+      setWorldPlayer(worldMemory, memoryKey(current.index), cell);
+    }
+    saveWorldState(worldMemory);
+  }
+
+  /**
+   * Whether this page's hour was **given** rather than remembered (`?clock=<minutes>`).
+   *
+   * The probe door (`living` and `audit` drive the shutters and the sky with it) and a player's
+   * own way to stand in a town at any hour. A forced hour is an instruction about *this arrival*,
+   * not a fact about the world — the same law `?at=` follows against a remembered wilderness cell
+   * (D-32) — so a forced page does not write the world's clock (`rememberClock`'s tick asks this).
+   *
+   * @returns {boolean}
+   */
+  function clockIsForced() {
+    const raw = params.get('clock');
+    return raw !== null && raw !== '' && Number.isFinite(Number(raw));
   }
 
   /**
@@ -5379,7 +5618,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * tavern fill.
    */
   function clockNow() {
-    return timeOfDay(radiant.day ?? 0, dbg.seconds ?? 0, { opensAt: arrivalMinutes() / 60 });
+    return timeOfDay(worldDay(), dbg.seconds ?? 0, { opensAt: arrivalMinutes() / 60 });
   }
 
   /**
@@ -6220,7 +6459,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function beginMonsterDeath(spawn) {
     noteKill(worldMemory, memoryKey(current.index), spawn.monster.id);
-    saveWorldState(worldMemory);
+    rememberClock();
     spawn.attack = null;
     spawn.death = { elapsed: 0 };
     spawn.walking = false;
@@ -8375,7 +8614,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           name: place.name,
           kind: place.kind,
           province: place.province,
+          // The **ground** this place's country has, the **pixel** the game's own data gives it, the
+          // **architecture** its settlement is built from, and a weather it never stops having — the
+          // four readings `game/provinceStyle.js` produces (B18/D-41). Reported because a browser
+          // suite has to be able to ask the running game which of them it used, rather than trust a
+          // separate Node run: `Morrowind is desert country built of mountain architecture` is a
+          // claim about this page.
           climate: place.climate,
+          terrainClimate: place.terrainClimate ?? place.climate,
+          architecture: place.architecture ?? place.climate,
+          weather: place.weather ?? null,
           coastal: place.coastal,
           citySeed: place.citySeed ?? null,
           dungeonSeed: place.dungeonSeed ?? null,
@@ -8408,6 +8656,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           climate: cityRequest.climate,
           weather: cityRequest.weather,
           inf: current.infName,
+          // The country's floors under this settlement, when the two climates differ: what the
+          // browser suite reads to hold "Morrowind’s cities stand on the ashlands".
+          groundInf: cityRequest.groundInfName ?? null,
+          groundFloors: cityRequest.groundFloors ?? null,
           blocksPerSide: cityRequest.blocksPerSide,
           start: current.city.start,
           reserved: current.city.reserved,
@@ -8457,12 +8709,37 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         // "where is that dungeon's door", so a browser suite can leave a dungeon, read the ruin
         // the exit chose and walk back in — without reading a pixel (`?ruin=` is what a dungeon's
         // exit hands over; see `dungeonCountryBoot`).
-        ruin: current.wildRuin ? {
-          seed: current.wildRuin.seed,
-          block: current.wildRuin.block,
-          cell: current.wildRuin.cell,
-          onRuin: Boolean(ruinAtPlayer()),
-        } : null,
+        ruin: (() => {
+          const ruin = current.wildRuin;
+          if (!ruin) return null;
+          const answer = ruinDoorCells();
+          const feet = current.motor?.pos ?? null;
+          const here = feet
+            ? {
+              row: Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0),
+              col: Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0),
+            }
+            : null;
+          return {
+            seed: ruin.seed,
+            block: ruin.block,
+            cell: ruin.cell,
+            onRuin: Boolean(ruinAtPlayer()),
+            // **The door, and where a player meets it** (`ruinDoorCells`, the reading the exit's
+            // own arrival stands on): the arch the rule chose, the cell a few paces out of it,
+            // and whether the door is the ruin's own arch or only its nearest built cell. Read
+            // off the country this page holds, so it answers the same on the page the exit
+            // booted and on the page a window slide left behind — the difference between a
+            // reading and a memory of one.
+            door: answer?.door ?? null,
+            stand: answer?.stand ?? null,
+            arrivalYaw: answer?.yaw ?? null,
+            arch: answer?.arch ?? null,
+            open: answer?.open ?? null,
+            // …and whether the player is standing on it, which is what the exit promises.
+            atDoor: answer && here ? here.row === answer.stand.row && here.col === answer.stand.col : null,
+          };
+        })(),
         flats: current.scenery?.flats?.length ?? 0,
         flatBatches: (current.sceneryBatches ?? []).length,
         flatNames: flatRecordNames(current.scenery?.flats ?? []).slice(0, 16),
@@ -8839,6 +9116,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       }
     }
     dbg.seconds += dt;
+    // ── the world's own clock keeps up with this level's ──────────────────────
+    // The hour is written on the way out of a place (`goInPlace`) and by the saves the world
+    // already makes (a door, a kill); this is the slow tick that covers standing still, so a tab
+    // closed while the player looks at a sunset keeps the sunset. A page whose hour came from
+    // `?clock=` never writes: a forced hour is an instruction about this arrival, not a fact about
+    // the world, and a probe that rewrote the world's clock would make the next bare load in a
+    // suite depend on the last one's parameter (`clockIsForced`).
+    if (!clockIsForced()) {
+      clockSaveIn -= dt;
+      if (clockSaveIn <= 0) {
+        clockSaveIn = CLOCK_SAVE_EVERY;
+        rememberClock();
+      }
+    }
     // ── walking onto a `*TRIG` cell fires it, once per level visit ────────────
     // The level's own rule (`game/levelTriggers.js`): the trigger's prose on the
     // notice, its `@SOUND` clip at the file's own rate — the same dev door and
@@ -8912,13 +9203,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const next = wildernessWindowOrigin(row, col);
     if (next.row === originRow && next.col === originCol) return;
     sliding = true;
-    dbg.windowSlide = { at: { row, col }, from: [originRow, originCol], to: [next.row, next.col] };
+    dbg.windowSlide = { at: { row, col }, from: [originRow, originCol], to: [next.row, next.col], yaw: cam.yaw };
     const onward = new URLSearchParams(params);
     onward.set('wild', `${row},${col}`);
+    // **The player keeps their bearing.** Since the slide boots a page for the very ground the
+    // player is standing on, the one thing it must not change is which way they are facing — and
+    // it did: measured, a walk on yaw 0.35 came back on yaw 0.00, which is a walk that turns you
+    // north every 64 cells (the owner: *"you dont understand where you are going"*).
+    onward.set('yaw', String(Math.round(cam.yaw * 1000) / 1000));
     void goInPlace(onward);
   }
 
-  /** How often the wild's own save keeps up with the walk, in seconds — GUESS: a tick a
+  /** How often the world's own clock is written while a level stands, in seconds — GUESS: often
+   * enough that a tab closed mid-idle is a few minutes behind, rare enough that a busy street is
+   * not writing the save every frame. */
+  const CLOCK_SAVE_EVERY = 20;
+  /** Seconds until the world's own clock is written again. */
+  let clockSaveIn = CLOCK_SAVE_EVERY;
+
+  /**
+   * How often the wild's own save keeps up with the walk, in seconds — GUESS: a tick a
    * player's tab wait will rarely miss. */
   const WILD_SAVE_EVERY = 4;
   /** Seconds until the wild's own save ticks again. */
@@ -9041,6 +9345,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (other === person || other.down || other.shop || other.walking || other.atHome) continue;
       if (Math.hypot(other.world.x - x, other.world.z - z) < PERSON_CLEARANCE) return true;
     }
+    // **And the player is somebody standing**, which is the whole of the law above: *the walkers
+    // hold; the standing are not shoved.* It was not counted here, and the two rules then fought
+    // each other — `pushPlayerFromPeople` sets the feet on the edge of any body they overlap, so a
+    // walker whose route crossed the player pushed them *along the route*: measured at Daggerfall's
+    // (30,40), a player who was standing still was carried **17 m in ten seconds at the walker's own
+    // 1.67 m/s** (`TOWN_SPEED`), straight down the street, with no key held and nothing in the
+    // console (D-47, `.scratch/driftProbe.mjs`). With the player counted, that walker jams (and after
+    // the three seconds the rule below already gives it, picks another goal) rather than towing a
+    // person who is not moving. The player's own side is untouched: walking *into* a body still puts
+    // the feet on its edge.
+    const feet = current?.motor?.pos;
+    if (feet && Math.hypot(feet[0] - x, feet[2] - z) < PERSON_CLEARANCE) return true;
     return false;
   }
 
@@ -9059,6 +9375,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function pushPlayerFromPeople() {
     if (!townsfolk.length || !current?.motor) return;
     const pos = current.motor.pos;
+    // A body only pushes the player **out**, never along: the overlap this repairs is the one the
+    // player's own step made (D-47), and a walker cannot drag anybody because `personInWay` stops it
+    // short of the player in the first place.
     const min = PERSON_RADIUS + PLAYER_RADIUS;
     for (const person of townsfolk) {
       // A person indoors is not a body the player can walk into: they are behind a door the
@@ -9385,7 +9704,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         ? Math.min(frames - 1, Math.floor(((dbg.seconds - (actor.downAt ?? dbg.seconds)) / FOLK_DIE_SECONDS) * frames))
         : actor.talkingArt
           ? Math.floor(dbg.seconds * TALK_FRAMES_PER_SECOND) % frames
-          : actorFrame(actor, frames, { attack: actor.attack });
+          // **A sheet with Arena's layout strides on its first six frames** (walk 0–5, look
+          // 6/0/7/0, attack 8–11): the town's watch and the `BABE` family are twelve-frame view
+          // sheets, and without this a walking guard played its own head-turn and sword-swing as
+          // part of its stride (D-42, measured in `.scratch/peopleProbe.mjs`: the armoured folk
+          // and the town's men and women are 6 or 9-frame single actions, the five-angle families
+          // are 12). The reading is the person's own (`peopleKinds.js`'s `layout`), never this
+          // scene's guess about who is wearing the art.
+          : actorFrame(actor, frames, {
+            attack: actor.attack,
+            walkFrames: actor.layout === 'view' ? LAYOUT_WALK_FRAMES : null,
+          });
       // **Which side of them the eye is on, decided with a deadband and remembered.** A
       // creature walking straight at the player sits on a knife edge (`mirrorFor`), and the
       // bare sine flipped the billboard left and right frame after frame — the owner's

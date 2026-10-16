@@ -300,9 +300,18 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     await page.waitFor('window.__debug?.combat && window.__debug.state().painted > 3', { timeoutMs: 90000, label: 'replayed dungeon' });
     const replay = await page.evalJs('window.__debug.combat()');
     const savedAfter = await page.evalJs('({q:localStorage.getItem("perfectarena.quest"),c:localStorage.getItem("perfectarena.character")})');
+    // **Which half of the claim failed, in the message** — the check is a conjunction of four, and
+    // "6 → 6 living enemies" names only the first: a replay whose roster came back whole but in a
+    // different order (or on different cells) read exactly like a replay that lost its creatures.
+    const why = replay.monsters.length !== census.length ? 'the count'
+      : replay.monsters.some((m) => !(m.health > 0)) ? 'a corpse'
+        : replay.monsters[0].id !== census[0].id ? 'the first creature’s identity'
+          : JSON.stringify(replay.monsters[0].cell) !== JSON.stringify(census[0].cell) ? 'the first creature’s cell'
+            : 'none';
     check('re-entering a dungeon restores its enemy population, including a previously killed enemy',
-      replay.monsters.length === census.length && replay.monsters.every((m) => m.health > 0)
-        && replay.monsters[0].id === census[0].id && JSON.stringify(replay.monsters[0].cell) === JSON.stringify(census[0].cell), `${census.length} → ${replay.monsters.length} living enemies`);
+      why === 'none',
+      `${census.length} → ${replay.monsters.length} living enemies; the mismatch is ${why} — `
+      + `first ${census[0]?.id} @ ${JSON.stringify(census[0]?.cell)} → ${replay.monsters[0]?.id} @ ${JSON.stringify(replay.monsters[0]?.cell)}, healths ${replay.monsters.map((m) => m.health).join(',')}`);
     const restoredDoor = (await page.evalJs('window.__debug.state().leaves')).find((leaf) => leaf.row === door.row && leaf.col === door.col);
     const historyAfter = await page.evalJs('window.__debug.worldMemory()');
     check('an opened dungeon door stays open after reload while enemies still respawn',

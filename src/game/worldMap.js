@@ -14,35 +14,81 @@
 // RNG seed (`cityDataSeeds.citySeed`), which is what makes a named location's city
 // the game's own city rather than a generic one.
 //
-// Climate comes from `TERRAIN.IMG` sampled at the location's global pixel, with
-// the original's quirk that a pixel of open sea is replaced by the sample 12
-// pixels to its left (which is why four of High Rock's settlements sit on water:
-// the game reads the coast behind them).
+// Climate comes from `TERRAIN.IMG` sampled at the location's global pixel. **Two
+// readings, both the original's own**, and the first of them was wrong here for a
+// long time in a way a player can see at once (D-38):
 //
-// A note on the terrain classes. The pixel values are 248 (sea) then six land
-// classes in three consecutive pairs. Which pair is temperate, which mountain and
-// which desert is **reconstructed** from the data, not read from a table: the
-// cities of Hammerfell — the game's desert province, with `D*C*` desert city art —
-// sample 253/254, and High Rock's sample 249/250, and High Rock is temperate. So
-// 249/250 = temperate, 251/252 = mountain, 253/254 = desert, which also matches the
-// order the original tests them in. Logged as S16 in PROGRESS.md.
+//   1. **Which pixel means which climate.** The image is 320×200 palette indices:
+//      248 sea, then six land classes — and the pairs are **not** in the order this
+//      file used to assume. Read off `OpenTESArena`'s own constants
+//      (`Assets/BinaryAssetLibrary.h`, `WorldMapTerrain`) and its `toClimateType`:
+//      **249/250 = mountain, 251/254 = temperate, 252/253 = desert**. The old table
+//      here had 249/250 temperate, 251/252 mountain, 253/254 desert — a shift of one
+//      pair, which put the **Imperial City in the desert** (it samples 254 = temperate),
+//      gave Skyrim a temperate country, and dressed Black Marsh in the wrong tileset.
+//      The reasoning that produced it was "Hammerfell is the desert province and its
+//      cities sample 253/254, High Rock is temperate and samples 249/250" — and it is
+//      the *second* half of that which was false: 249 is `MOUNTAIN1`, and High Rock's
+//      settlements are the game's mountain ones.
+//   2. **How a pixel is read.** `WorldMapTerrain::getFailSafeAt` does two things: it
+//      takes **every** sample twelve pixels to the left (a linear-index shift that
+//      wraps around the whole buffer — an error correction, applied whether or not the
+//      pixel is sea), and if *that* pixel is still sea it walks the four cardinal
+//      directions outward, one distance at a time, below → above → right → left, and
+//      takes the first land it finds; if there is none within 199 cells it answers 254
+//      (temperate) rather than nothing. This file used to read the pixel at the point
+//      itself, shifted left only when it was sea, and answered the sea constant when the
+//      shifted pixel was also sea — which is how a coastal location's climate could come
+//      back as the one thing it never is.
+//
+// Sources: `ArenaLocationUtils::getClimateType` (the global point → the fail-safe
+// sample → `toClimateType`) in `OpenTESArena/src/WorldMap/ArenaLocationUtils.cpp`;
+// `WorldMapTerrain::getFailSafeAt`/`toClimateType` and the `TERRAIN.IMG` index
+// constants in `OpenTESArena/src/Assets/BinaryAssetLibrary.{h,cpp}`.
+//
+// **And the ninth province, which Arena's file leaves empty (D-39, `game/cyrodiil.js`).**
+// Eight provinces name all 32 of their settlements; the Imperial Province — the middle of
+// Tamriel and the one a new game begins in — names one (the Imperial City) and leaves the
+// other 31 records as all-zero placeholders: no name, local (0,0), visibility 0. Read as
+// places, those 31 were **one** place: one world pixel (the province rectangle's corner),
+// one city seed (0, because `citySeed` is the packed local point), one country (0, because
+// `wildernessSeed` is the name's first four letters), an empty string for the map's label
+// and the marker card's title, and a `?location=` with nothing in it for fast travel. The
+// later games answered the question Arena left open, so this world takes **their** Cyrodiil —
+// Anvil and Kvatch on the Gold Coast, Skingrad in the West Weald, Bravil on Niben Bay,
+// Leyawiin at the Niben's mouth, Cheydinhal under the Valus Mountains, Bruma below the
+// Jerall pass, Chorrol in the Great Forest, and the villages, farms and priories around
+// them — through `fillImperialProvince`, which keeps the file's own named record exactly as
+// the file has it. `game/cyrodiil.js` carries what is sourced (the names, the kinds, the
+// directions) and what is this project's own (the pixel).
 
 import { parseCityData, questDungeonsOf, locationGlobalPoint, WORLD_MAP_SIZE } from '../arena/cityDataFile.js';
 import { citySeed, dungeonSeed, mainQuestDungeonMifName, wildernessSeed } from '../arena/cityDataSeeds.js';
+import { fillImperialProvince } from './cyrodiil.js';
 import { dungeonNameFor } from './dungeonNames.js';
+import { styleOf } from './provinceStyle.js';
 
 /** The terrain pixel that means open sea. */
 export const TERRAIN_SEA = 248;
 
 /**
- * Terrain class → climate. See this file's header for how the pairs were fixed.
+ * Terrain class → climate — **the game's own pairs** (`WorldMapTerrain`'s six index
+ * constants, `toClimateType`'s three groups). See this file's header: a table that says
+ * anything else here puts provinces in the wrong country, visibly, at once.
+ *
  * @type {Readonly<Record<number, 'temperate'|'mountain'|'desert'>>}
  */
 export const TERRAIN_CLIMATE = Object.freeze({
-  249: 'temperate', 250: 'temperate',
-  251: 'mountain', 252: 'mountain',
-  253: 'desert', 254: 'desert',
+  249: 'mountain', 250: 'mountain',
+  251: 'temperate', 254: 'temperate',
+  252: 'desert', 253: 'desert',
 });
+
+/** What the original answers when the sea's fail-safe finds no land at all. */
+export const TERRAIN_FALLBACK = 254;
+
+/** How far the fail-safe walks before it gives up — `getFailSafeAt`'s own 200. */
+export const FAIL_SAFE_REACH = 200;
 
 /** Class → a single character, for the ASCII evidence in `tools/world-dump.mjs`. */
 export const TERRAIN_GLYPH = Object.freeze({
@@ -64,9 +110,15 @@ export class WorldMap {
   constructor(opts) {
     const { cityData, terrain } = opts;
     const parsed = parseCityData(cityData);
+    // The Imperial Province's 31 placeholder records become Cyrodiil's places here, before
+    // any of them is given a pixel, a seed, a climate or a name (D-39). Everything below
+    // reads `this.provinces`, so nothing downstream can see a nameless settlement.
+    const filled = fillImperialProvince(parsed.provinces);
     /** @type {object[]} */
-    this.provinces = parsed.provinces;
-    this.warnings = parsed.warnings;
+    this.provinces = filled.provinces;
+    /** How many placeholder records the later lore gave a place to (31 in the released file). */
+    this.placed = filled.filled;
+    this.warnings = [...parsed.warnings, ...filled.warnings];
     this.terrain = terrain;
     this.width = WORLD_MAP_SIZE.width;
     this.height = WORLD_MAP_SIZE.height;
@@ -89,12 +141,21 @@ export class WorldMap {
           ? this.uniqueDungeonName(dungeonSeed(location, province.id), province.name,
             province.id * 64 + location.id)
           : '');
+        // The pixel's own class (D-38) and the **two climates a place actually has**: the ground it
+        // stands on (country, creatures, sky) and the architecture its settlement is built from
+        // (`TC*`/`MC*`/`DC*`). `game/provinceStyle.js` is the law of the second pair; a place it says
+        // nothing about gets the pixel's class for both, which is the game's own answer.
+        const terrainClimate = this.climateAt(global);
+        const style = styleOf({ provinceID: province.id, name, terrainClimate, global });
         this.locations.push({
           ...location,
           name,
           global,
           latitude: (WORLD_MAP_SIZE.height - global.y) / WORLD_MAP_SIZE.height,
-          climate: this.climateAt(global),
+          terrainClimate,
+          climate: style.ground,
+          architecture: style.architecture ?? style.ground,
+          weather: style.weather,
           coastal: this.isCoastal(global),
           citySeed: location.kind === 'dungeon' ? null : citySeed(location),
           wildernessSeed: location.kind === 'dungeon' ? null : wildernessSeed(location),
@@ -110,23 +171,38 @@ export class WorldMap {
   }
 
   /**
-   * The terrain class at a world pixel, applying the original's sea wrap.
+   * The terrain class at a world pixel — `WorldMapTerrain::getFailSafeAt`, exactly.
+   *
+   * Two rules, and both are the original's (this file's header says what the wrong
+   * version of them cost): every sample is the pixel **twelve to the left** of the one
+   * asked for, as a *linear index* shift that wraps around the whole 320×200 buffer; and
+   * a sample that is still sea walks the four cardinal directions outward — below,
+   * above, right, left, at each distance in turn — taking the first land it finds, or
+   * `TERRAIN_FALLBACK` (254, temperate) when 199 cells of search find none.
+   *
    * @param {{x: number, y: number}} point
    * @returns {number}
    */
   terrainAt(point) {
-    const index = (x, y) => {
-      const cx = Math.max(0, Math.min(this.width - 1, x));
-      const cy = Math.max(0, Math.min(this.height - 1, y));
-      return this.terrain.indices[cy * this.width + cx];
+    const count = this.width * this.height;
+    // `getFailSafeAt`'s own sampler: x + y·width − 12, wrapped into the buffer.
+    const sampled = (x, y) => {
+      let i = x + y * this.width - SEA_WRAP_PIXELS;
+      if (i < 0) i += count;
+      else if (i >= count) i -= count;
+      return this.terrain.indices[i];
     };
-    let value = index(point.x, point.y);
-    if (value !== TERRAIN_SEA) return value;
-    // A pixel of sea is replaced by the pixel 12 to its left, wrapping.
-    let x = point.x - SEA_WRAP_PIXELS;
-    if (x < 0) x += this.width;
-    value = index(x, point.y);
-    return value !== TERRAIN_SEA ? value : TERRAIN_SEA;
+    const here = sampled(point.x, point.y);
+    if (here !== TERRAIN_SEA) return here;
+    for (let distance = 1; distance < FAIL_SAFE_REACH; distance++) {
+      // Below, above, right, left — the order the original tests them in.
+      for (const [x, y] of [[point.x, point.y + distance], [point.x, point.y - distance],
+        [point.x + distance, point.y], [point.x - distance, point.y]]) {
+        const value = sampled(x, y);
+        if (value !== TERRAIN_SEA) return value;
+      }
+    }
+    return TERRAIN_FALLBACK;
   }
 
   /**
@@ -199,7 +275,11 @@ export class WorldMap {
     return name;
   }
 
-  /** All 288 settlements of the world. */
+  /**
+   * All 288 settlements of the world — 32 in each of the nine provinces, the Imperial
+   * Province's own 32 included once `fillImperialProvince` has placed them. Every one of
+   * them has a name and a pixel of its own; a nameless record is not a settlement.
+   */
   settlements() {
     return this.locations.filter((l) => l.kind !== 'dungeon');
   }

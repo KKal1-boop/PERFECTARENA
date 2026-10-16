@@ -29,6 +29,21 @@ export function makeDoorsSuite({ check, realErrors, shots, getPort }) {
     const arena = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
     const q = `arena=${encodeURIComponent(arena)}`;
     const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
+    /**
+     * Wait until the frame loop has **drawn this level**, before reading a figure count.
+     *
+     * `state().figures` is not a boot fact: the render loop writes it while it builds the live
+     * batches (`interior.js`'s `liveBatches`), so a read taken the instant `inside` appears can
+     * land one frame *before* the room's crowd is in it. The tavern's own read, four checks
+     * earlier, has the same shape and passed on the very run that the house's reported
+     * `0 billboards for 3 people` (doors 41/42). Four frames past the level swap is a real margin
+     * and cannot make the claim vacuous — a room whose family is never drawn holds `figures` at 0
+     * and still fails.
+     */
+    const awaitDrawn = async () => {
+      const from = await page.evalJs('window.__debug.state().painted');
+      await page.waitFor(`window.__debug.state().painted >= ${from + 4}`, { label: 'the room drawn', timeoutMs: 20000 });
+    };
     const cellOf = (state) => ({
       row: Math.floor(state.feet[0] / 2.5),
       col: Math.floor(state.feet[2] / 2.5),
@@ -180,6 +195,7 @@ export function makeDoorsSuite({ check, realErrors, shots, getPort }) {
     await page.pressKey('KeyE', false);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().inside !== null',
       { label: 'inside the tavern', timeoutMs: 90000 });
+    await awaitDrawn();
     const inn = await page.evalJs('window.__debug.state()');
     check('a tavern\'s door opens a tavern, with the tavern\'s keeper',
       /^TAVERN\d\.MIF$/.test(inn.map) && /^TAVERN\.INF$/.test(inn.inf) && inn.shops.keeperBank === 'tavern.dat',
@@ -227,6 +243,7 @@ export function makeDoorsSuite({ check, realErrors, shots, getPort }) {
     await page.pressKey('KeyE', false);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().inside !== null',
       { label: 'inside the house', timeoutMs: 90000 });
+    await awaitDrawn();
     const home = await page.evalJs('window.__debug.state()');
     check('a house\'s door opens a house, with somebody living in it',
       /^BS\d\.MIF$/.test(home.map) && home.shops.kind === 'house' && home.townsfolk >= 3,

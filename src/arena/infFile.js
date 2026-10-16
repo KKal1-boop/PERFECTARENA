@@ -50,6 +50,11 @@ export const MAX_TEXTURE_SLOT = 16;
  * @typedef {object} InfFile
  * @property {string} name
  * @property {InfVoxelTexture[]} voxelTextures  the ordered floor+wall table
+ * @property {number} floorTextureCount  how many of `voxelTextures` the `@FLOORS` section
+ *                  produced (the rest are the `@WALLS` table). Recorded because the two halves
+ *                  are one table in the file but two different things in the world: a city's
+ *                  **floors** are its country's climate and its **walls** are its architecture's
+ *                  (`withGroundFloors`, B18/D-41)
  * @property {string[]} flatTextures
  * @property {InfFlat[]} flats
   * @property {{file:string, index:number}[]} sounds  `@SOUND` lines: the filename and
@@ -149,6 +154,12 @@ export function parseInfText(text, name = '') {
       flushText();
       floor = newFloorState(); wall = newWallState(); flat = newFlatState();
       const tag = line.slice(1).trim().toUpperCase();
+      // The floors end where the walls begin: the file's one voxel table is two tables, and the
+      // boundary is the `@WALLS` tag. Recorded on the first one seen (an INF with no `@WALLS`
+      // section at all — a wilderness window — keeps every entry as a floor, which is what it is).
+      if (tag.startsWith('WALL') && inf.floorTextureCount == null) {
+        inf.floorTextureCount = inf.voxelTextures.length;
+      }
       section = tag.startsWith('FLOOR') ? 'floors'
         : tag.startsWith('WALL') ? 'walls'
         : tag.startsWith('FLAT') ? 'flats'
@@ -175,7 +186,49 @@ export function parseInfText(text, name = '') {
   }
   flushText();
   if (!sawCeiling) inf.ceiling.height = 100;   // INFCeiling::DEFAULT_HEIGHT
+  if (inf.floorTextureCount == null) inf.floorTextureCount = inf.voxelTextures.length;
   return inf;
+}
+
+/**
+ * **A country's ground under a city's architecture** (B18/D-41).
+ *
+ * The owner walked into Morrowind after the province law landed and said what the screen said:
+ * *"MORROWIND NOW JUST SAYS DESERT BUT WHEN YOU GET INTO IT ITS COMPLETELY MOUNTAIN EVEN THE
+ * GROUND AND THERE IS NO DESERT LANDSCAPE WITH MOUNT ARCHITECTURE"*. The law was right and the
+ * level was not, because a settlement's whole look comes from **one** `.INF`: Morrowind's cities
+ * are built from `MCN.INF` (the architecture the owner asked for) and therefore stood on the
+ * mountain's ground as well.
+ *
+ * An INF's voxel table is really two tables — the `@FLOORS` section's entries first, then the
+ * `@WALLS` section's — and the two halves are exactly the two things the provinces mean:
+ *
+ *   * the **floors** are the ground: sand, ash, tundra, the country under your feet;
+ *   * the **walls** and everything else are the architecture.
+ *
+ * So this takes the architecture's INF and puts the **ground climate's** floors under it, and
+ * nothing else: walls, flats, ceiling, sounds, keys and riddles are the architecture's own. Two
+ * INFs whose floor tables differ in length are **refused**, not blended — an index shift here would
+ * repaint the wrong voxel — and the caller is told why.
+ *
+ * @param {InfFile} architecture  the settlement's own `.INF` (its walls are the architecture)
+ * @param {InfFile} ground        the country's own `.INF` for this place (its floors are the ground)
+ * @returns {{inf: InfFile, merged: boolean, reason: string|null}}
+ */
+export function withGroundFloors(architecture, ground) {
+  const floors = architecture?.floorTextureCount ?? 0;
+  const groundFloors = ground?.floorTextureCount ?? 0;
+  if (!floors || !groundFloors) return { inf: architecture, merged: false, reason: 'an INF without a floor table' };
+  if (floors !== groundFloors) {
+    return { inf: architecture, merged: false, reason: `floor tables differ (${floors} vs ${groundFloors})` };
+  }
+  const voxelTextures = architecture.voxelTextures.slice();
+  for (let i = 0; i < floors; i++) voxelTextures[i] = ground.voxelTextures[i];
+  return {
+    inf: { ...architecture, voxelTextures, groundFloorsFrom: ground.name, merged: true, reason: null },
+    merged: true,
+    reason: null,
+  };
 }
 
 /**
