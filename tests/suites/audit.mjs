@@ -252,7 +252,14 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
       const people = await watchPeople(15);
       await page.screenshot(path.join(shots, `audit-wild-${climate}-shot.png`));
       wilds.push({ climate, name, frame, art: artWild, beast, people });
-      beasts.push({ climate, hour: 'day', ...beast });
+      // **The suite's own label, after the spread** (2026-10-16). Written `{ climate, hour:
+      // 'day', ...beast }`, the page's own `hour` field (the level's clock) overwrote the
+      // label, so `beasts.filter((b) => b.hour === 'day')` selected nothing and the climate
+      // check below read **"0 distinct day bestiaries across 3 climates"** no matter what the
+      // country held — a broken check, not a broken country, and it hid this block's own
+      // work. The three climates really do differ now: temperate rat/goblin, desert lizard
+      // men, mountain wolves (measured on the three pages in this same run).
+      beasts.push({ ...beast, climate, hour: 'day' });
       art.wilds.push({ climate, ...artWild });
       check(`S-C wilderness (${climate}): the window resolves every texture and every flat it places`,
         (artWild?.missingTextures ?? ['?']).length === 0 && (artWild?.wildFlatUnresolved ?? 1) === 0

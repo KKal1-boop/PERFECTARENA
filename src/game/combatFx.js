@@ -1,7 +1,36 @@
 // Arena-native combat presentation, following the reference engines' bounded particle pools.
 // Geometry is WORLD space. Camera changes never alter a strike's footprint.
+//
+// **Two channels, and only one of them is blood.** `burst()` is the tell of an *exchange* — a
+// parry's sparks, a block, a charge's dust — and its `'hit'` arm is the wound; `blood()` is a
+// landed blow's own spray, which is the whole of Arena's hit feedback and the thing the owner
+// found missing beside the original ("perfectarena has ugly battle particles … instead normal
+// arena … has its own blood particles", 2026-10-16 — D-20). The marks blood leaves on the
+// surface are `game/bloodEffect.js`'s; this file owns only the spray in the air.
 export const FX_MAX_PARTICLES = 192;
 export const FX_MAX_VERTICES = 16384;
+
+/**
+ * Arena's blood red — **one number for the whole program.**
+ *
+ * It arrived here as the `'hit'` arm's literal `[0.55, 0.06, 0.05]` (the value the D-20 row
+ * established when the amber spray was deleted), and `blood()` below emits the same red rather
+ * than a second, slightly different one: two reds in one fight is how a colour starts drifting.
+ * The *decal* is not tinted with it — a mark wears the engine's own blood art
+ * (`bloodEffect.js`'s `BLOOD_DECAL_TINT`).
+ */
+export const BLOOD_COLOUR = Object.freeze([0.55, 0.06, 0.05]);
+
+/**
+ * The spray's bounds, as a landed blow's own law.
+ *
+ * A blow at `power` 1 gives `min` particles, and each further point of power adds `perPower`
+ * *up to* `max` — so a graze and a charged heavy cannot be told apart by counting forever, and
+ * the pool's own `FX_MAX_PARTICLES` ceiling stays the outer bound. Project numbers, stated as
+ * such: Arena's particle counts live in `A.EXE`, which this checkout does not ship
+ * (`docs/PORT_BLOCKS.md` §1 rule 2).
+ */
+export const BLOOD_PARTICLES = Object.freeze({ min: 6, max: 12, perPower: 6 });
 
 export function attackFootprint(attack) {
   return { x: attack.origin.x, y: attack.origin.y + 0.035, z: attack.origin.z,
@@ -42,6 +71,8 @@ export class CombatFx {
     this.count = 0;
     this.telegraphs = 0;
     this.bursts = 0;
+    /** How many landed blows have sprayed blood (`blood()`), for the seam and the tests. */
+    this.bloodSprays = 0;
     /** The bolts in flight, set each frame by the scene (`game/ranged.js` owns their life). */
     this.bolts = [];
   }
@@ -55,7 +86,7 @@ export class CombatFx {
     const colour = outcome === 'parried' ? [1, 0.85, 0.3]
       : outcome === 'charge' ? [1, 0.78, 0.16]  // a charge stamps dust; the hold itself has no tell now
       : outcome === 'blocked' ? [0.6, 0.85, 1]
-      : outcome === 'dust' ? [0.65, 0.53, 0.35] : [0.55, 0.06, 0.05];
+      : outcome === 'dust' ? [0.65, 0.53, 0.35] : BLOOD_COLOUR;
     const count = heavy ? 14 : outcome === 'charge' ? 5 : 8;
     for (let i = 0; i < count; i++) {
       if (this.particles.length >= FX_MAX_PARTICLES) this.particles.shift();
@@ -65,6 +96,46 @@ export class CombatFx {
         vy: 0.9 + (i % 4) * 0.35, life: 0.48, age: 0, colour, size: heavy ? 0.07 : 0.045 });
     }
     this.bursts++;
+  }
+  /**
+   * A landed blow's blood, out of the wound.
+   *
+   * **Bounded, directional, and the same red every time.** The spray is `dir`'s own fan when the
+   * scene knows which way the blow drove the blood (an attacker's facing, a bolt's travel) and
+   * an even ring when it does not, so a blow from behind does not spray into the player's eyes.
+   * `power` is the blow's own: 1 for the hit as it landed, more for a charged or critical one —
+   * see `BLOOD_PARTICLES` for the band, and `FX_MAX_PARTICLES` for the ceiling the pool holds
+   * whatever this is asked for.
+   *
+   * @param {number} x @param {number} y @param {number} z  the wound, in world space
+   * @param {{power?: number, dir?: number[]|null}} [opts]  `dir` is `[dx, dz]`
+   * @returns {number} how many particles were emitted
+   */
+  blood(x, y, z, { power = 1, dir = null } = {}) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return 0;
+    const p = Number.isFinite(power) && power > 0 ? power : 1;
+    const wanted = BLOOD_PARTICLES.min + BLOOD_PARTICLES.perPower * (p - 1);
+    const count = Math.max(BLOOD_PARTICLES.min, Math.min(BLOOD_PARTICLES.max, Math.round(wanted)));
+    // The fan's own centre: the direction the blood was driven, or null for an even ring.
+    const aimed = Array.isArray(dir) && Number.isFinite(dir[0]) && Number.isFinite(dir[1]) && Math.hypot(dir[0], dir[1]) > 1e-6
+      ? Math.atan2(dir[0], dir[1]) : null;
+    const fan = 0.7;   // radians each side of `dir`, so a spray is a cone and not a line
+    let emitted = 0;
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= FX_MAX_PARTICLES) this.particles.shift();
+      const spread = 0.7 + (i % 3) * 0.25;
+      const angle = aimed === null
+        ? i / count * Math.PI * 2 + this.bursts * 0.73
+        : aimed + (count > 1 ? (i / (count - 1) * 2 - 1) : 0) * fan;
+      const speed = 1.7 * spread * (1 + (p - 1) * 0.15);
+      this.particles.push({
+        x, y, z, vx: Math.sin(angle) * speed, vz: Math.cos(angle) * speed,
+        vy: 0.9 + (i % 4) * 0.35, life: 0.48, age: 0, colour: BLOOD_COLOUR, size: 0.045,
+      });
+      emitted++;
+    }
+    this.bloodSprays++;
+    return emitted;
   }
   step(dt) {
     for (const p of this.particles) {

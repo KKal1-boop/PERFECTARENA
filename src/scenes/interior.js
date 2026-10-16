@@ -95,6 +95,10 @@ import { LAVA_FIELD, WATER_FIELD, parseRci, rciReport, rciTile } from '../arena/
 import { surfaceKind, surfaceLabel, surfacePlanes, surfaceScroll } from '../game/chasmSurface.js';
 import { imageToUpload, toRgba } from '../arena/palette.js';
 import { dangerOf, isHunting, monsterCountFor, spawnEncounter, stirTheLevel } from '../game/encounters.js';
+// The country's own population — its bestiary and its travellers (B17a). Arena's wilderness
+// tables lived in `A.EXE`, which this checkout does not ship, so the tables are this project's
+// and the module says so; what it replaces is a country with nothing alive in it at all.
+import { WILD_FOLK_MAX, wildernessPopulation } from '../game/wildernessBestiary.js';
 import {
   VIEWS as PEOPLE_VIEWS, fillTalkLine, folkCountFor, folkFromListing, greetingFor, personFighter,
   placeTownsfolk, talkCorpus, topicsFor, viewFacing, viewFileFor,
@@ -247,7 +251,14 @@ function inputOf(keys, pressed) {
     back: keys.has('KeyS'),
     strafe: (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
     jump: keys.has('Space'),
-    run: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+    // **A drawn weapon is a walk, not a run** — Arena's own law, and the owner's ask when
+    // they played the two games side by side (2026-10-16): *"for the combat to be better in
+    // perfectarena you shouldnt be able to run with your weapons unsheathed"*. The rig is the
+    // one that knows whether a frame is on screen (`weaponView.js`'s `drawn`, which is the
+    // state machine's own answer and not a second flag), so the key is read here and gated
+    // there: with the blade out the stride is the walk, and the run comes back when it is put
+    // away. Sheathing is a second long, so nothing is lost but the sprint.
+    run: (keys.has('ShiftLeft') || keys.has('ShiftRight')) && !weaponRig.drawn,
     crouch: pressed.has('KeyC'),
     sneak: keys.has('ControlLeft'),
     autoRun: false,
@@ -3080,8 +3091,39 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // time `populate` ran the page did not boot at all: `ReferenceError: roster is not
     // defined`, caught by opening a city in the browser.
     const rosterIds = (loaded.roster ?? []).map((r) => r.monster);
+    // ── the country (B17a: D-01b's empty fields and D-02a's empty roads) ────────
+    //
+    // **A wilderness window is not a level with no monsters in it; it is a country.** Its
+    // `.INF` (`TWN`/`DWN`/`MWN`) places scenery and no creature — the audit's own reading — so
+    // the roster came out empty, `monsterCountFor` answered 0, and a player who walked out of
+    // a city gate found a land with nothing alive in it (`docs/AUDIT-2026-10-15.md` §S-A/S-B).
+    // Arena's wilderness tables are `A.EXE`'s and are not in this checkout, so the population
+    // is this project's own rule (`game/wildernessBestiary.js`, stamped there) drawn per
+    // climate and per hour of the level's own clock: what lives here, and who is on the road.
+    const wilderness = Boolean(wildRequest) && !inhabited;
+    // **Whose `.INF` this is.** The loader's own `infName` is a local of the function that
+    // builds a level, and `populate` is a sibling of it, so the closure does not reach it (the
+    // first run of this wire threw `ReferenceError: infName is not defined` — caught on a real
+    // page by the `world` suite before the audit could even look). The name comes from the
+    // request's own climate when the gate named one, and from the assembled record otherwise:
+    // `current` is the loader's live record and may not be assigned yet on the first load, so
+    // the chain ends in the one `.INF` a wilderness window always has — the temperate clear
+    // country — rather than in a throw.
+    // **Whose country it is.** The audit's own wilderness walk asks for a climate by *name*
+    // (`?location=Rihad&wild=…`), because `?climate=` does not change a wild window's `.INF` —
+    // so the climate is the place's, not the request's and not the `.INF` letter's: reading it
+    // off the inf alone made every road temperate, which the same probe caught
+    // (`{rat: 4}` on all three climates, "0 distinct day bestiaries").
+    const wildInf = current?.infName ?? loaded.infName ?? 'TWN.INF';
+    const wildClimate = wildRequest?.climate
+      ?? place?.climate
+      ?? skyClimateOf(wildInf).climate
+      ?? 'temperate';
+    const wild = wilderness
+      ? wildernessPopulation({ climate: wildClimate, hour: clockNow().hour, seed, danger })
+      : null;
     const count = inhabited ? 0
-      : monsterCountFor({ danger, level: loaded.level, monsters: rosterIds });
+      : monsterCountFor({ danger, level: loaded.level, monsters: rosterIds, wilderness });
     const spawned = spawnEncounter({
       level: loaded.level, seed, danger, count, arrival,
       // **How deep this level is**, which is the other half of whose bestiary stands in it:
@@ -3089,7 +3131,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // depths field the rest (`encounters.rosterWindow`, D-15). `loaded.index` is the level's
       // index inside this map — 0 is where the player arrives.
       depth: loaded.index ?? 0,
-      minCells: inhabited ? 14 : 6, monsters: rosterIds,
+      // The wilderness fields its own country's bestiary; a dungeon fields its own `.INF`.
+      minCells: inhabited ? 14 : 6, monsters: wild ? wild.roster : rosterIds,
     });
 
     // Contract targets are separate from ordinary respawning enemies, on level one.
@@ -3142,6 +3185,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (inCity) { await populateTown(loaded); payBoardJobHere(); }
     // A building entered through its street door has one person in it: whoever keeps it.
     else if (entryCell) await populateShop(loaded);
+    // …and the country has travellers on it (`populateWilderness`): a road with nobody on it
+    // at noon is the other half of the same defect.
+    else if (wild && wild.count > 0) await populateWilderness(loaded, wild);
     else { townsfolk = []; closeTalk(); }
     updateCombatHud();
     return monsters;
@@ -3194,6 +3240,28 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // at 23:00, forty-eight people and all forty-eight of them indoors (D-01a).
     const trades = (loaded.peopleSpots ?? []).map((spot) => spot.role).filter(Boolean);
     placed.forEach((person, i) => { if (i < trades.length) person.role = trades[i]; });
+    return dressCrowd(placed, seed);
+  }
+
+  /**
+   * Dress a placed crowd: their art, their regard ids, their names.
+   *
+   * `populateTown` and `populateWilderness` differ in *who* is standing there — the trades
+   * their own blocks name, the travellers their climate and hour carry — and not at all in how
+   * a crowd is drawn, remembered or named. That half was `populateTown`'s tail; it lives here
+   * once so a road's traveller and a city's smith are the same kind of person to every system
+   * downstream (the billboard pass, the regard ledger, the talk panel).
+   *
+   * The per-outfit loop is the one subtlety, and it is a bug that was paid for: **every angle**
+   * of every outfit is loaded, because a person who cannot turn to face the player is the
+   * reported "npcs don't look at you", and an undersized batch silently loses a person while
+   * `indexCount` asks for indices the buffer does not hold (a GL error the `city` suite catches).
+   *
+   * @param {object[]} placed  figures from `placeTownsfolk`
+   * @param {number} seed
+   * @returns {Promise<object[]>} the crowd the scene holds
+   */
+  async function dressCrowd(placed, seed) {
     const perOutfit = new Map();
     for (const person of placed) {
       const entry = perOutfit.get(person.outfit.key) ?? { outfit: person.outfit, count: 0 };
@@ -3218,7 +3286,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       .map((person) => {
         // The cell they were *placed* on. They walk from it, so `place` moves and this does
         // not: it is what makes their offer, their regard and their walk's own draw the
-        // same on every visit to the town.
+        // same on every visit to the place.
         const home = { row: person.place.row, col: person.place.col };
         return {
           ...person,
@@ -3235,6 +3303,42 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     void ensurePeopleNames().then(() => nameThePeople(townsfolk, seed));
     if (placed.length && !townsfolk.length) console.warn('[townsfolk] this install has no people art');
     return townsfolk;
+  }
+
+  /**
+   * The country's travellers — the other half of B17a (D-01b).
+   *
+   * Out in the wild there is no settlement and no shop, so `populate` used to empty the list
+   * outright and the reported "NPCs that can't move — outside cities" was a country with *no*
+   * people in it, moving or otherwise. What stands on a wilderness window now is a small
+   * number of travellers the level's own climate and hour call for
+   * (`game/wildernessBestiary.js`: one to six by day, fewer at night), dressed by
+   * `dressCrowd` — the same art, the same regard keys, the same names as a street's crowd —
+   * and given the trades that hour implies (a road by day; the watch and a night walker
+   * after dark). Their own art is the install's 65 `.CFA` people files, so a traveller costs
+   * nothing that a townsperson does not already cost.
+   *
+   * @param {object} loaded  the `current` record `loadLevel` builds
+   * @param {{count: number, trades: string[]}} wild  `wildernessPopulation`'s answer
+   */
+  async function populateWilderness(loaded, wild) {
+    const seed = Math.round((wildRequest?.seed ?? 0) * 17 + mif.width * 5 + mif.height * 11 + 733);
+    const arrival = loaded.spawn ? { row: loaded.spawn.x - 0.5, col: loaded.spawn.z - 0.5 } : null;
+    // The outfits are the project's own roster of people (`folk`/`kinds`, from the install's
+    // own listing); the *trades* are what the hour says they are doing, cycled through the
+    // crowd so a road at noon is not six identical wanderers.
+    const placed = placeTownsfolk({
+      level: loaded.level,
+      folk,
+      kinds,
+      seed,
+      count: Math.min(wild.count, WILD_FOLK_MAX),
+      arrival,
+      minCells: 6,
+    });
+    const trades = wild.trades ?? [];
+    placed.forEach((person, i) => { if (trades.length) person.role = trades[i % trades.length]; });
+    return dressCrowd(placed, seed);
   }
 
   /**
@@ -4381,7 +4485,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       dbg.ripostes = (dbg.ripostes ?? 0) + 1;
       showNotice('Riposte!', 900);
     }
-    combatFx.burst(best.spawn.world.x, best.spawn.world.y + 0.9, best.spawn.world.z, 'hit', blow.damage > 10);
+    // **A landed blow is blood** (B09, and D-20's other half). Arena's own feedback for a
+    // wound is blood where the blow landed; the port sprayed a generic amber burst, which is
+    // the owner's "ugly battle particles … normal arena has its own blood particles". A parry,
+    // a block and a charge's dust keep their own colours, because those are the tells of a
+    // *defence* and the original shows them too (`game/combatFx.js`'s `BLOOD_COLOUR` is the one
+    // red, shared with the arm that used to carry it as a literal). What is still open in B09
+    // is the mark it leaves on the floor: `game/bloodEffect.js` turns a blow into the engine's
+    // own decal records, and wiring them to the decal pass needs the blood art's texture — see
+    // `docs/PORT_BLOCKS.md` §5.
+    combatFx.blood(best.spawn.world.x, best.spawn.world.y + 0.9, best.spawn.world.z, {
+      power: blow.damage > 10 ? 3 : 1,
+    });
     const monster = { ...best.spawn.monster, health: Math.max(0, best.spawn.monster.health - blow.damage) };
     best.spawn.monster = monster;
     // **A wound has weight.** Poise drains with every landed blow; emptying it *staggers* —

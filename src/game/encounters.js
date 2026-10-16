@@ -198,6 +198,17 @@ export function dangerOf(opts = {}) {
 }
 
 /**
+ * How many creatures a **wilderness** window holds: the two ends of the country's ladder, and
+ * the count a room-sized window keeps.
+ *
+ * Read against `monsters.js`'s own levels: the smallest number a road ever holds (3) is a pack
+ * of rats and a wolf, and the largest (12) is a stretch of country where four or five of them
+ * are worth killing at once. A window under 400 cells keeps the room's own count (2), because
+ * that is what it is — a shrine in a clearing, a farmyard.
+ */
+export const WILDERNESS_MONSTER_COUNT = Object.freeze({ small: 2, min: 3, max: 12 });
+
+/**
  * How many creatures a level of this danger and size holds.
  *
  * Arena's dungeons are populated places, not four-monster rooms, and the count here scales
@@ -209,11 +220,37 @@ export function dangerOf(opts = {}) {
  * @param {number} [opts.danger]
  * @param {{width: number, depth: number}} [opts.level]
  * @param {string[]} [opts.monsters]  the level's own roster, as `spawnEncounter` takes it
+ * @param {boolean} [opts.wilderness]  **a window of the country** (not a room somebody built):
+ *   the `.INF`-roster law below cannot apply to it, because no wilderness `.INF` names a
+ *   creature (`TWN`/`DWN`/`MWN` place three item flats and no monster) and the country is
+ *   not empty in the original — see `game/wildernessBestiary.js` and D-02a
  * @returns {number}
  */
 export function monsterCountFor(opts = {}) {
   const danger = opts.danger ?? 4;
   const size = (opts.level?.width ?? 0) * (opts.level?.depth ?? 0);
+  // ── the country is not a room (2026-10-16, D-02a) ────────────────────────────
+  //
+  // **A wilderness window names no creature, and that is not the same as having none.** The
+  // audit's S-B run (2026-10-15) found `TWN.INF`, `DWN.INF` and `MWN.INF` placing three item
+  // flats (`itemIndexes [15, 2, 14]`), none in the monster range — so `monsterRosterFromInf`
+  // answered `[]`, the "a level that names nothing gets none" law below answered 0, and every
+  // window of country in the game was empty of creatures. Arena's own wilderness table lived in
+  // `A.EXE`, which this data set does not ship (D11), so the count here is this project's rule
+  // and is stamped as such (`game/wildernessBestiary.js` holds the table itself, per climate and
+  // per half of the day).
+  //
+  // The ladder is deliberately the *same shape* as the room ladder below, one step gentler at
+  // the small end: a window of country is bigger than a shop and smaller than a dungeon's
+  // depths, and the danger of the place is what moves it (a stage-1 road holds four, an
+  // eighth-stage road can hold twelve). A window under 400 cells is still a *room-sized* window
+  // — a city's yard, a shrine in a clearing — and keeps the small count, exactly as the room
+  // law does.
+  if (opts.wilderness) {
+    if (size && size < 400) return WILDERNESS_MONSTER_COUNT.small;
+    const ladder = 4 + Math.floor(Math.max(0, danger - 2) / 4);
+    return Math.max(WILDERNESS_MONSTER_COUNT.min, Math.min(WILDERNESS_MONSTER_COUNT.max, ladder));
+  }
   // A level that names no monster of its own gets none. **The sentence that used to stand
   // here justified that law wrongly**, and the 2026-10-15 audit caught it (D-02b): it said
   // `start.inf` "lists keys, equipment and treasure and not one creature". Measured with
@@ -221,12 +258,12 @@ export function monsterCountFor(opts = {}) {
   // through lich — and the Imperial Dungeons field five of them. The law keeps its own
   // footing (a level that names nothing gets nothing); the false justification is gone.
   //
-  // **What it costs today is the whole country.** `TWN.INF`, `DWN.INF` and `MWN.INF` place
-  // three item flats and no creature (`itemIndexes [15, 2, 14]`, none in the monster range), so
-  // a wilderness window gets `[]` here and zero creatures — `docs/AUDIT-2026-10-15.md` §S-B.
-  // The per-terrain, per-hour bestiary that fills it is P1's, and until ACD.EXE is unpacked
-  // (P2) it is **this project's own** table, stamped as such. A level that names some keeps its
-  // own breed and gets a count by danger.
+  // **What it used to cost was the whole country** — `TWN.INF`, `DWN.INF` and `MWN.INF` place
+  // three item flats and no creature, so a wilderness window reached this line with `[]`. The
+  // wilderness clause above answers first now, and a window that names nothing **and is not
+  // wilderness** (a shop, a tavern, an inn's own `.INF`) still gets nothing, which is the law
+  // this line was always about. A level that names some keeps its own breed and a count by
+  // danger.
   if (opts.monsters && !opts.monsters.length) return 0;
   if (size && size < 400) return 2;                       // a shop, a cellar, a single room
   return Math.max(4, Math.min(14, 6 + Math.floor(Math.max(0, danger - 2) / 3)));
