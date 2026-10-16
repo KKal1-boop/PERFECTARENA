@@ -150,6 +150,65 @@ export const PLACE_STYLE = Object.freeze([
   { province: 2, name: 'Winterhold', weather: 'snow' },
 ]);
 
+/**
+ * WHAT A PROVINCE'S STREET IS MADE OF — the art its crowd is drawn from (block **B11**, D-45).
+ *
+ * The owner's own words: *"in morrowind mostly dark elf npcs in skyrim mostly nords and in
+ * blackmarsh i want lizard mans repurpused as npcs to simulate argonians … all provinces should
+ * have a mix of people but mostly their race of people"*.
+ *
+ * **The honest half, first: this install draws ONE human body.** `GLOBAL.BSA` ships no Dunmer
+ * skin, no Nord skin and no Khajiit — 340 `.CFA` files, and the human ones are the armoured roster
+ * (`0UNA`…`1MNK`), the citizens (`MLGEN`/`FMGEN`), the watch, `BABE` and `LGLIT`. The archive
+ * holds **no palette file at all** for a per-race recolour (measured: its extensions are
+ * `IMG MIF CFA SET INF DFA VOC RMD CIF XFM XMI` — no `.COL`, no `.PAL`), so Arena's own race
+ * transformation is a rule inside `ACD.EXE`, not shipped art — a named gap on this row, not
+ * something a table here can invent.
+ *
+ * **What the archive does have is the stand-in the owner asked for**: `LIZARD1.CFA`…`LIZARD6.CFA`,
+ * the Lizard Man's five directions and its death, read by `peopleKinds.js`'s
+ * `standInKindsFromListing` as the marsh's folk. That one is race-specific art and it is used as
+ * such.
+ *
+ * So a pool is a **weighted list of roster keys** — a key repeated is a key more likely drawn —
+ * naming the art a province's street is built from. A pool expresses what a province is *made of*
+ * (its trades, its armour, its guard); for the six provinces whose race this install cannot draw,
+ * that is the whole honest answer, and the module says so rather than pretending a recolour.
+ *
+ * Keys are `townsfolk.js`'s outfit keys (`<sex><armour>`, sex `0` a man and `1` a woman — the
+ * archive's own digit, `peopleKinds.js`'s header) and `peopleKinds.js`'s kind keys; `ARGONIAN` is
+ * the one stand-in. `tests/unit/provincestyle.test.mjs` holds every key in every pool against the
+ * roster the install actually provides, so a typo cannot quietly empty a city.
+ *
+ * @type {Readonly<Record<number, {pool: readonly string[], note: string}>>}
+ */
+export const PEOPLE_ART = Object.freeze({
+  // High Rock — Bretons: a temperate, mercantile street. Plain clothes and leather first.
+  0: { pool: ['MLGEN', 'FMGEN', 'BABE0', '0UNA', '0LTR', '1UNA', '1LTR', '0CHN', 'GUARD0'], note: 'a Breton province: the town\u2019s own men and women, the watch, and few soldiers' },
+  // Hammerfell — Redguards: the Alik'r, so more of the street carries a blade.
+  1: { pool: ['MLGEN', 'FMGEN', '0CHN', '0LTR', '1UNA', '1LTR', 'BABE0', '0BAR', 'GUARD0'], note: 'a Redguard province: chain and leather before cloth' },
+  // Skyrim — Nords: the frozen north, and the heaviest armour this archive draws.
+  2: { pool: ['MLGEN', 'FMGEN', '0BAR', '0PLT', '1BAR', '0CHN', 'BABE0', 'GUARD0', '0UNA'], note: 'a Nord province: barbarian and plate armour on the street' },
+  // Morrowind — Dunmer: this install draws no Dunmer, so the pool is the province\u2019s trade mix.
+  3: { pool: ['MLGEN', 'FMGEN', '0LTR', '0MAG', '1LTR', '1MAG', '0MNK', 'BABE0', 'GUARD0'], note: 'a Dunmer province: leather, robes and the mages\u2019 trade \u2014 the skin is the archive\u2019s own, and no Dunmer art ships' },
+  // Summurset Isle — Altmer: mages and robed folk before armour.
+  4: { pool: ['MLGEN', 'FMGEN', '0MAG', '1MAG', '0LTR', '0UNA', 'BABE0', 'GUARD0', '1LTR'], note: 'an Altmer province: mages\u2019 robes before armour' },
+  // Valenwood — Bosmer: foresters in leather and plain clothes.
+  5: { pool: ['MLGEN', 'FMGEN', '0LTR', '0UNA', '0MNK', '1LTR', 'BABE0', 'GUARD0', '1UNA'], note: 'a Bosmer province: leather and the monks\u2019 habit' },
+  // Elsweyr — Khajiit: this install draws no Khajiit; desert clothing and few soldiers.
+  6: { pool: ['MLGEN', 'FMGEN', '0UNA', '0LTR', '1UNA', 'BABE0', '0MNK', 'GUARD0'], note: 'a Khajiit province: plain desert clothing \u2014 no Khajiit art ships' },
+  // Black Marsh — Argonians: **the Lizard Man's own sheets stand in**, which is the owner\u2019s
+  // request and the one race-specific art this archive carries.
+  7: { pool: ['ARGONIAN', 'ARGONIAN', 'ARGONIAN', 'ARGONIAN', 'ARGONIAN', 'ARGONIAN', 'MLGEN', 'FMGEN', '0UNA', '0LTR', 'GUARD0'], note: 'an Argonian province: the Lizard Man\u2019s own sheets stand in for the Argonians this install does not draw' },
+  // The Imperial Province — Imperials: the civilised centre, plate and chain on its watch.
+  8: { pool: ['MLGEN', 'FMGEN', '0PLT', '0CHN', '1CHN', 'BABE0', 'GUARD0', '0LTR', '1LTR'], note: 'an Imperial province: the watch in plate and chain' },
+});
+
+/** The art a province's crowd is drawn from, or null for a province this table has none for. */
+export function peopleArtFor(provinceID) {
+  return PEOPLE_ART[provinceID] ?? null;
+}
+
 /** The bank pool a province's people are named from, or null for a province this table has none for. */
 export function nameBanksFor(provinceID) {
   return PROVINCE_STYLE[provinceID]?.people ?? null;

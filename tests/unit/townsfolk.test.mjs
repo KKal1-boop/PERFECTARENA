@@ -297,3 +297,70 @@ test('every townsperson the game places knows their outfit and where they are lo
   const again = placeTownsfolk({ level, folk, seed: 7, count: 8, arrival: { row: 20, col: 20 }, minCells: 2 });
   assert.deepEqual(again.map((p) => [p.file, Math.round(p.facing * 1e6)]), people.map((p) => [p.file, Math.round(p.facing * 1e6)]));
 });
+
+// ── and the province's own art is what a street is made of (D-45) ───────────────────────────
+//
+// `placeTownsfolk` takes an optional **pool** of roster keys — `game/provinceStyle.js`'s
+// `peopleArtFor` — so a province's street is mostly that province's own people (the owner's
+// *"all provinces should have a mix of people but mostly their race of people"*), including the
+// one race-specific stand-in this archive carries (the Lizard Man's sheets in Black Marsh). The
+// law is held on a synthetic street, so these four checks need no level and no browser.
+
+/** A plain 14×14 room of standable floor: what `placeTownsfolk` needs and nothing more. */
+function syntheticStreet(size = 14) {
+  const cells = [];
+  for (let i = 0; i < size * size; i++) cells.push({ solid: false, floor: { texture: 1 } });
+  return { cells, depth: size, width: size, cellSize: 2.5, floorY: 1 };
+}
+
+test('a province pool draws only the art it names, and every figure is one outfit', () => {
+  const level = syntheticStreet();
+  const people = placeTownsfolk({ level, folk, kinds: [], seed: 7, count: 30, art: ['0UNA'], minCells: 0 });
+  assert.equal(people.length, 30);
+  assert.deepEqual([...new Set(people.map((person) => person.outfit.key))], ['0UNA'],
+    'a pool of one key produces that one key and nothing else');
+  assert.ok(people.every((person) => person.description === `a person in ${ARMOUR_WORDS.UNA}`),
+    'and the description is the armour the archive\u2019s own name gives');
+});
+
+test('a weighted pool repeats a key to draw it more often, and still mixes', () => {
+  const people = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 11, count: 120,
+    art: ['0UNA', '0UNA', '0UNA', '0CHN'], minCells: 0,
+  });
+  const counts = {};
+  for (const person of people) counts[person.outfit.key] = (counts[person.outfit.key] ?? 0) + 1;
+  assert.ok(counts['0CHN'] > 0, 'the pool is a mix, not one figure repeated');
+  assert.ok(counts['0UNA'] > counts['0CHN'] * 1.5,
+    `the repeated key dominates: ${counts['0UNA']} plain clothes against ${counts['0CHN']} chain`);
+  assert.deepEqual(Object.keys(counts).sort(), ['0CHN', '0UNA'], 'and nothing outside the pool is drawn');
+});
+
+test('a key this install does not ship is dropped, and the roster is the fallback', () => {
+  // A province asks for art this checkout does not have: the draw falls back to the whole roster
+  // rather than to nobody, so a typo in a table can never empty a city's streets.
+  const people = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 3, count: 24,
+    art: ['ARGONIAN', 'NOPE'], minCells: 0,
+  });
+  assert.equal(people.length, 24);
+  const outfits = new Set(outfitsFromFolk(folk).map((outfit) => outfit.key));
+  const drawn = new Set(people.map((person) => person.outfit.key));
+  assert.ok([...drawn].every((key) => outfits.has(key)), 'every figure is one the roster knows');
+  assert.ok(drawn.size > 1, `the whole roster is back, not the empty pool: ${[...drawn].sort().join(', ')}`);
+  // No pool at all is the same answer: the whole roster, which is what a place with no province gets.
+  const bare = placeTownsfolk({ level: syntheticStreet(), folk, kinds: [], seed: 3, count: 24, minCells: 0 });
+  assert.equal(bare.length, 24);
+  assert.ok(bare.every((person) => outfits.has(person.outfit.key)));
+  assert.equal(new Set(bare.map((person) => person.outfit.key)).size, drawn.size,
+    'a missing pool and an empty roster-draw are the same street');
+});
+
+test('an empty pool is not a pool: the whole roster stands', () => {
+  const people = placeTownsfolk({ level: syntheticStreet(), folk, kinds: [], seed: 5, count: 40, art: [], minCells: 0 });
+  assert.equal(people.length, 40);
+  const outfits = new Set(outfitsFromFolk(folk).map((outfit) => outfit.key));
+  const drawn = new Set(people.map((person) => person.outfit.key));
+  assert.ok(drawn.size > 1, 'an empty pool means the roster, not one figure');
+  assert.ok([...drawn].every((key) => outfits.has(key)));
+});

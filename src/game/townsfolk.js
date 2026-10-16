@@ -212,6 +212,12 @@ export function describePerson(file) {
  *   (`peopleKinds.js`): the generic men and women with their walk/talk/die actions, and
  *   the watch. With them the street holds *people* rather than only fighters in armour,
  *   which is the reported "we ported the moving NPCs and are missing the rest".
+ * @param {string[]} [opts.art]  **the province's own art** (`game/provinceStyle.js`'s
+ *   `peopleArtFor`): a weighted list of roster keys — a key repeated is a key drawn more often —
+ *   naming the figures a province's street is built from (D-45, the owner's *"all provinces
+ *   should have a mix of people but mostly their race of people"*). Omitted or empty means the
+ *   whole roster, which is what a place with no province gets; a key this install does not ship
+ *   is dropped rather than replaced by a stranger, so a pool can never empty a street.
  * @param {number} [opts.seed]
  * @param {number} [opts.count]
  * @param {{row: number, col: number}|null} [opts.arrival]
@@ -278,11 +284,17 @@ export function placeTownsfolk(opts) {
     })),
   ];
   if (!roster.length) return [];
+  // **The province's own art, when it names any** (D-45). The pool is a list of roster *keys*, so
+  // a province can only ask for figures this install has; a key it does not have is dropped, and
+  // an emptied draw falls back to the whole roster rather than to nobody.
+  const byKey = new Map(roster.map((entry) => [entry.key, entry]));
+  const wantedArt = (opts.art ?? []).map((key) => byKey.get(String(key))).filter(Boolean);
+  const draw = wantedArt.length ? wantedArt : roster;
   const people = [];
   const free = pool.slice();
   for (let i = 0; i < wanted; i++) {
     const [place] = free.splice(random.nextBelow(free.length), 1);
-    const outfit = roster[random.nextBelow(roster.length)];
+    const outfit = draw[random.nextBelow(draw.length)];
     // A person is *looking* somewhere, and it is theirs: a deterministic yaw, so the same
     // stranger stands facing the same way every time the town is visited, and turns to
     // face the player as they pass (`viewFacing`).

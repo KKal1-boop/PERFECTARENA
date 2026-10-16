@@ -593,6 +593,33 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     }
     await page.evalJs('window.__debug.pause(false)');
 
+    // ── whose faces these are (D-45) ─────────────────────────────────────────
+    // The owner's second half: *"in morrowind mostly dark elf npcs in skyrim mostly nords in
+    // blackmarsh i want lizard mans repurpused as npcs to simulate argonians … all provinces
+    // should have a mix of people but mostly their race of people"*. This archive draws **one
+    // human body** and ships no palette to recolour it by race (measured: no `.COL`, no `.PAL`),
+    // so the half that is real art is the one the owner named — the Lizard Man's own sheets
+    // (`LIZARD1…6.CFA`) standing in for Black Marsh's folk. The check is the player's own: walk a
+    // Black Marsh street and most of it is lizard-folk; walk High Rock and none of it is.
+    await page.goto(`http://localhost:${getPort()}/?location=Lilmoth&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
+      { label: 'Lilmoth', timeoutMs: 120000 });
+    const marsh = await page.evalJs('window.__debug.people()');
+    const lizard = marsh.filter((person) => /^LIZARD[1-6]\.CFA$/.test(String(person.file)));
+    check('Black Marsh\'s streets are mostly lizard-folk, drawn from the Lizard Man\'s own sheets',
+      marsh.length > 0 && lizard.length * 2 > marsh.length,
+      `${lizard.length} of ${marsh.length} figures: ${[...new Set(lizard.map((p) => p.file))].sort().join(', ')}`);
+    check('and each of them is one figure at five directions, so the eye can walk around them',
+      lizard.length > 0 && lizard.every((person) => person.view >= 1 && person.view <= 5),
+      `views ${[...new Set(lizard.map((p) => p.view))].sort().join(',')}`);
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
+      { label: 'Daggerfall again', timeoutMs: 120000 });
+    const rock = await page.evalJs('window.__debug.people()');
+    check('and a province the archive draws no lizard-folk for has none',
+      rock.length > 0 && rock.every((person) => !/^LIZARD/.test(String(person.file))),
+      `${rock.length} figures, families ${[...new Set(rock.map((p) => p.family ?? 'armoured'))].sort().join(',')}`);
+
     // ── a dungeon has no townsfolk in it ──────────────────────────────────────
     await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&${q}`);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',

@@ -105,7 +105,7 @@ import {
   doorStateAt, noteKill, setDoorState, setWorldClock, setWorldPlayer, visitPlace,
   worldClock, worldPlayer, worldSummary,
 } from '../game/worldState.js';
-import { nameBanksFor } from '../game/provinceStyle.js';
+import { nameBanksFor, peopleArtFor } from '../game/provinceStyle.js';
 import { parseDfa } from '../arena/dfa.js';
 import { parseCfa } from '../arena/cfa.js';
 import { parseCif } from '../arena/cifFile.js';
@@ -172,7 +172,7 @@ import { ArenaRandom } from '../game/arenaRandom.js';
 import { playerSpriteFile } from '../game/playerSprite.js';
 // The archive's other people families (`game/peopleKinds.js`), read off the same listing
 // the armoured roster comes from: the town's men and women, and the watch.
-import { peopleKindsFromListing, actionFile } from '../game/peopleKinds.js';
+import { peopleKindsFromListing, standInKindsFromListing, actionFile } from '../game/peopleKinds.js';
 import { ART_BASELINE, SCREEN, canRunUnlessDrawn, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
 import { DUNGEON_BLOCKS_INF, DUNGEON_BLOCKS_MIF, assembleDungeon, spawnCellFor } from '../game/dungeonPlan.js';
 import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
@@ -2124,6 +2124,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   const rosterNames = (await data.bsa()).names();
   const folk = folkFromListing(rosterNames);
   const kinds = peopleKindsFromListing(rosterNames);
+  // …and the figures the archive draws for a race it has no citizen art for (**B11**, D-45): the
+  // Lizard Man's own sheets stand in as the marsh's folk (“lizard mans repurpused as npcs to
+  // simulate argonians”). A province asks for them by key (`provinceStyle.js`'s `PEOPLE_ART`), so
+  // they cost nothing anywhere the table does not name them.
+  const standIns = standInKindsFromListing(rosterNames);
   const talkLines = talkCorpus(library.talkTemplates);
   questReady = true;
 
@@ -3671,10 +3676,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   async function populateTown(loaded) {
     const seed = Math.round((loaded.city?.seed ?? 0) * 17 + mif.width * 5 + mif.height * 11 + 991);
     const arrival = loaded.spawn ? { row: loaded.spawn.x - 0.5, col: loaded.spawn.z - 0.5 } : null;
+    // **Whose street this is** (D-45): the province's own art first and most of all, the whole
+    // roster where no province is known (a bare `?city=` page, a dev door).
+    const art = peopleArtFor(place?.provinceID);
     const placed = placeTownsfolk({
       level: loaded.level,
       folk,
-      kinds,
+      kinds: art && standIns.length ? [...kinds, ...standIns] : kinds,
+      art: art?.pool ?? null,
       seed,
       count: folkCountFor(loaded.city?.kind ?? 'city'),
       arrival,
@@ -3790,10 +3799,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // The outfits are the project's own roster of people (`folk`/`kinds`, from the install's
     // own listing); the *trades* are what the hour says they are doing, cycled through the
     // crowd so a road at noon is not six identical wanderers.
+    const roadArt = peopleArtFor(place?.provinceID);
     const placed = placeTownsfolk({
       level: loaded.level,
       folk,
-      kinds,
+      kinds: roadArt && standIns.length ? [...kinds, ...standIns] : kinds,
+      art: roadArt?.pool ?? null,
       seed,
       count: Math.min(wild.count, WILD_FOLK_MAX),
       arrival,

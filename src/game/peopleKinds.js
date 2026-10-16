@@ -193,6 +193,73 @@ export function peopleKindsFromListing(names) {
 }
 
 /**
+ * THE RACES THIS INSTALL HAS NO CITIZEN ART FOR, and the art that stands in for them.
+ *
+ * The owner's own words: *"in blackmarsh i want lizard mans repurpused as npcs to simulate
+ * argonians"*. This archive draws exactly one human body (`MLGEN`/`FMGEN` and the armoured
+ * roster) and ships no palette to recolour it by race, so a province's folk cannot be drawn
+ * with their own skin — with **one** exception, and it is the one the owner named: the marsh's
+ * people are lizard-folk in the later games, and Arena ships the creature that looks like them,
+ * `LIZARD1.CFA`…`LIZARD6.CFA` (measured: five directions of 12/8/8/8/8 frames and a 3-frame
+ * death — the creature shape `game/monsterArt.js` reads for the Minotaur).
+ *
+ * **This is a substitution and it says so.** The figure is Arena's own art, drawn from Arena's
+ * own files; the *name* on it (`label`) is this project's, because Arena calls these sheets a
+ * monster and this is a shopkeeper. Nothing else in the crowd is invented.
+ *
+ * @type {ReadonlyArray<{key: string, label: string, sheets: string, note: string}>}
+ */
+export const RACE_STAND_INS = Object.freeze([
+  {
+    key: 'ARGONIAN',
+    label: 'a lizard-folk of the marsh',
+    sheets: 'LIZARD',
+    note: "the Lizard Man's own sheets (LIZARD1\u20265 + its death) stand in for the Argonians this install does not draw",
+  },
+]);
+
+/**
+ * Read the stand-in figures this install can actually draw (**B11**, D-45).
+ *
+ * A stand-in is a **kind** like any other, so the whole crowd path already knows what to do with
+ * it: the five directions come from the creature's five sheets (index 6 is its death, which is
+ * Arena's own rule — *"Death state is only in the last .CFA file"*, and `game/monsters.js` draws
+ * it the same way), and the layout is Arena's twelve-frame one.
+ *
+ * A stand-in whose sheets this install lacks is **not invented**: it is left out, so a province
+ * that asked for it simply keeps the human art it would otherwise have.
+ *
+ * @param {string[]} names  every record name in the archive (`BsaArchive#names()`)
+ * @returns {PersonKind[]}
+ */
+export function standInKindsFromListing(names) {
+  const have = new Set((names ?? []).map((n) => String(n).toUpperCase()));
+  const out = [];
+  for (const spec of RACE_STAND_INS) {
+    const views = {};
+    for (const view of DIRECTIONS) {
+      const file = `${spec.sheets}${view}.CFA`;
+      if (have.has(file)) views[view] = file;
+    }
+    const death = `${spec.sheets}6.CFA`;
+    if (!Object.keys(views).length) continue;
+    const walk = views[1] ?? Object.values(views)[0];
+    for (const view of DIRECTIONS) views[view] ??= walk;
+    const actions = { walk: { ...views } };
+    if (have.has(death)) actions.die = Object.fromEntries(DIRECTIONS.map((v) => [v, death]));
+    out.push({
+      key: spec.key,
+      label: spec.label,
+      views,
+      actions,
+      layout: 'view',
+      files: [...new Set([...Object.values(views), ...Object.values(actions).flatMap((m) => Object.values(m))])],
+    });
+  }
+  return out;
+}
+
+/**
  * What a kind plays for one action, seen from one direction.
  *
  * A kind's action is a **direction → file** reading (the archive draws one figure from five

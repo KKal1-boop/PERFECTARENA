@@ -32,8 +32,11 @@ import { loadWorldMap } from '../../src/game/worldMap.js';
 import { parseInf, decryptInf, withGroundFloors } from '../../src/arena/infFile.js';
 import { cityInfName, cityInfNames } from '../../src/game/tables/cityBlocks.js';
 import {
-  PLACE_STYLE, PROVINCE_STYLE, RACE_NAME_BANKS, SKYRIM_SNOW_LINE, nameBanksFor, raceOf, styleOf,
+  PEOPLE_ART, PLACE_STYLE, PROVINCE_STYLE, RACE_NAME_BANKS, SKYRIM_SNOW_LINE, nameBanksFor,
+  peopleArtFor, raceOf, styleOf,
 } from '../../src/game/provinceStyle.js';
+import { folkFromListing, outfitsFromFolk } from '../../src/game/townsfolk.js';
+import { actionFile, kindViewFile, peopleKindsFromListing, standInKindsFromListing } from '../../src/game/peopleKinds.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/ArenaProject/arena/ARENA';
 const haveInstall = fs.existsSync(path.join(ARENA, 'CITYDATA.64'))
@@ -257,4 +260,58 @@ test('Skyrim itself is the mix the owner asked for', { skip: noInstall }, async 
     assert.equal(place.climate, place.global.y >= SKYRIM_SNOW_LINE ? 'temperate' : 'mountain',
       `${place.name}: the line decides, at y ${place.global.y}`);
   }
+});
+
+// ── and what a province's street is made of (B11, D-45) ─────────────────────────────────────
+//
+// The owner's second half: *"in morrowind mostly dark elf npcs in skyrim mostly nords in
+// blackmarsh i want lizard mans repurpused as npcs to simulate argonians … all provinces should
+// have a mix of people but mostly their race of people"*. **This install draws one human body**
+// and ships no palette for a per-race recolour (its extensions hold no `.COL` and no `.PAL`), so
+// what a pool can honestly say is what a province's *street* is built from — and the one
+// race-specific stand-in the archive carries is the Lizard Man, which the owner named himself.
+test('every province\'s art pool names figures this install actually ships', { skip: noInstall }, async () => {
+  const archive = parseBsa(new Uint8Array(fs.readFileSync(path.join(ARENA, 'GLOBAL.BSA'))), 'GLOBAL.BSA');
+  const names = archive.names();
+  const rosterKeys = new Set([
+    ...outfitsFromFolk(folkFromListing(names)).map((outfit) => outfit.key),
+    ...peopleKindsFromListing(names).map((kind) => kind.key),
+    ...standInKindsFromListing(names).map((kind) => kind.key),
+  ]);
+  // Every province the game ships has a pool, and every key in it is a key the roster knows — a
+  // typo cannot quietly empty a city, because the draw would drop it and fall back.
+  assert.deepEqual(Object.keys(PEOPLE_ART).map(Number).sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  for (const [provinceID, row] of Object.entries(PEOPLE_ART)) {
+    assert.ok(row.pool.length >= 4, `province ${provinceID} names a street`);
+    assert.ok(row.note.length > 10, `province ${provinceID} says what its street is`);
+    for (const key of row.pool) {
+      assert.ok(rosterKeys.has(key), `province ${provinceID}: "${key}" is not a roster key (${[...rosterKeys].join(', ')})`);
+    }
+  }
+  assert.equal(peopleArtFor(3), PEOPLE_ART[3]);
+  assert.equal(peopleArtFor(99), null, 'a province the table does not know answers for nobody');
+  // **The marsh is the Lizard Man's, and mostly it** — the owner's own request, and the one
+  // race-specific art this archive carries.
+  const marsh = PEOPLE_ART[7].pool;
+  assert.ok(standInKindsFromListing(names).some((kind) => kind.key === 'ARGONIAN'),
+    'the archive ships `LIZARD1…6.CFA`, so the stand-in exists');
+  assert.ok(marsh.filter((key) => key === 'ARGONIAN').length * 2 > marsh.length,
+    `Black Marsh is mostly lizard-folk: ${marsh.join(', ')}`);
+});
+
+test('the Lizard Man is read as a stand-in figure, and invented where the art is absent', () => {
+  // The five directions are the creature's own sheets and index 6 is its death (Arena's rule:
+  // the death is only in the last `.CFA`), laid out as Arena's twelve-frame sheet.
+  const [marsh] = standInKindsFromListing(['LIZARD1.CFA', 'LIZARD2.CFA', 'LIZARD3.CFA', 'LIZARD4.CFA', 'LIZARD5.CFA', 'LIZARD6.CFA', 'SWORD.CIF']);
+  assert.equal(marsh.key, 'ARGONIAN');
+  assert.equal(marsh.label, 'a lizard-folk of the marsh');
+  assert.equal(marsh.layout, 'view');
+  assert.deepEqual([1, 3, 5].map((v) => kindViewFile(marsh, v)),
+    ['LIZARD1.CFA', 'LIZARD3.CFA', 'LIZARD5.CFA']);
+  assert.deepEqual([1, 4].map((v) => actionFile(marsh, 'die', v)), ['LIZARD6.CFA', 'LIZARD6.CFA']);
+  // A direction the archive did not give us answers with the front sheet — never another figure's.
+  const partial = standInKindsFromListing(['LIZARD2.CFA'])[0];
+  assert.deepEqual([1, 5].map((v) => kindViewFile(partial, v)), ['LIZARD2.CFA', 'LIZARD2.CFA']);
+  // No sheets, no stand-in: this module does not invent a figure the install does not have.
+  assert.deepEqual(standInKindsFromListing(['SWORD.CIF', 'RAT1.CFA']), []);
 });
