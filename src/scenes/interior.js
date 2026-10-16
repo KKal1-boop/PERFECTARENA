@@ -172,7 +172,7 @@ import { ArenaRandom } from '../game/arenaRandom.js';
 import { playerSpriteFile } from '../game/playerSprite.js';
 // The archive's other people families (`game/peopleKinds.js`), read off the same listing
 // the armoured roster comes from: the town's men and women, and the watch.
-import { peopleKindsFromListing } from '../game/peopleKinds.js';
+import { peopleKindsFromListing, actionFile } from '../game/peopleKinds.js';
 import { ART_BASELINE, SCREEN, canRunUnlessDrawn, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
 import { DUNGEON_BLOCKS_INF, DUNGEON_BLOCKS_MIF, assembleDungeon, spawnCellFor } from '../game/dungeonPlan.js';
 import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
@@ -3458,8 +3458,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     /** @type {Map<string, number>} */
     const wanted = new Map();
     for (const person of people ?? []) {
-      for (const file of Object.values(person?.actions ?? {})) {
-        if (file) wanted.set(file, (wanted.get(file) ?? 0) + 1);
+      // Each action is a **direction → file** reading (`peopleKinds.js`): the town's men and
+      // women carry five walk sheets, five talk sheets and five death sheets, and every one of
+      // them has to be loaded or a person who turns out of the front direction has no art.
+      for (const action of Object.values(person?.actions ?? {})) {
+        for (const file of Object.values(action ?? {})) {
+          if (file) wanted.set(file, (wanted.get(file) ?? 0) + 1);
+        }
       }
     }
     for (const [file, count] of wanted) {
@@ -8312,7 +8317,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // armoured outfits), and whether they are drawn in their **talk** sheet right now.
       family: person.kind ?? null,
       talking: Boolean(person.talkingArt),
-      actions: person.actions ? Object.values(person.actions).filter(Boolean) : [],
+      // Every sheet this one's family can play, flattened over the five directions: the seam a
+      // suite reads to find "the family's talk sheet" without knowing which direction it is in.
+      actions: person.actions ? Object.values(person.actions).flatMap((map) => Object.values(map ?? {})).filter(Boolean) : [],
       down: Boolean(person.down),
       description: person.description ?? null,
       facing: person.facing,
@@ -9662,13 +9669,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // loaded with the rest of their family (`loadPeopleActions`) — and while the panel is
       // open the figure stands in it and its frames run on their own clock below. A family
       // whose talk sheet this install lacks keeps the standing frame it always had.
-      const talk = person.actions?.talk
-        && talking?.person === person
-        && spriteSets.has(person.actions.talk) ? person.actions.talk : null;
+      // **Which direction the archive draws this one from** — 1 faces the eye, 5 shows the back
+      // — and every sheet below is asked for that direction, so a figure turns as the player
+      // walks round it (the owner's "going around them 360 animation"; D-47).
+      const view = viewFacing(person.facing, person.world.x, person.world.z, eye[0], eye[2]);
+      const talkFile = person.actions ? actionFile(person, 'talk', view) : null;
+      const talk = talking?.person === person && talkFile && spriteSets.has(talkFile) ? talkFile : null;
       person.talkingArt = talk;
       const file = talk ?? (person.attack
         ? viewFileFor(person.outfit, 1).replace('WLK.CFA', 'ATT.CFA')
-        : viewFileFor(person.outfit, viewFacing(person.facing, person.world.x, person.world.z, eye[0], eye[2])));
+        : viewFileFor(person.outfit, view));
       if (spriteSets.has(file)) person.file = file;
     }
     // Resolve each actor's frame first, then batch only identical file/frame/facing draws.
@@ -9688,7 +9698,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       let file = actor.file;
       // A fallen person draws their own death sheet for as long as the body lasts: the
       // family's `die` file when this install ships one (`peopleKinds.js`).
-      if (actor.down && actor.actions?.die && spriteSets.has(actor.actions.die)) file = actor.actions.die;
+      if (actor.down) {
+        // The death is a direction too (`peopleKinds.js`), so a body falls the way the eye saw it.
+        const dieFile = actor.actions ? actionFile(actor, 'die', viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2])) : null;
+        if (dieFile && spriteSets.has(dieFile)) file = dieFile;
+      }
       if (actor.monster?.sprite) {
         const action = actor.death ? 6 : actor.attack ? 1 : viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2]);
         const candidate = `${actor.monster.sprite}${action}.CFA`;

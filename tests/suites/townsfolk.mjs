@@ -548,6 +548,51 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       front.view === 1 && behind.view === 5 && front.file !== behind.file,
       `from ${front.file} (view ${front.view}) to ${behind.file} (view ${behind.view})`);
 
+    // ── and the town's own men and women turn too (D-47) ──────────────────────
+    // **This is the half the owner could not see.** The citizens' five directions used to be read
+    // as five *people* (`MLGEN01`…`MLGEN05` = "five men, one angle each"), so a man of the town
+    // was frozen in whichever direction the roster handed him and no port could walk around him —
+    // the reported *"they dont have a proper 360 walking animation or going around them 360
+    // animation"*. The digit is the direction (OpenTESArena's `0@XXX` template: first digit the
+    // gender, `@` the direction 1…5 — `peopleKinds.js`'s header carries the provenance), so the
+    // check picks a *citizen* and walks the eye from his face to his back: two directions of one
+    // family, not two strangers.
+    const walksOf = (files) => (files ?? []).filter((f) => /^(MLGEN0[1-5]W|FMGENW0[1-5])\.CFA$/.test(String(f)));
+    const directionOf = (file) => {
+      const m = /^MLGEN0([1-5])W/.exec(String(file)) ?? /^FMGENW0([1-5])/.exec(String(file));
+      return m ? Number(m[1]) : null;
+    };
+    let citizen = null;
+    let citizenAt = -1;
+    for (let tries = 0; tries < 10 && citizenAt < 0; tries++) {
+      await page.evalJs('window.__debug.pause(true)');
+      const list = await page.evalJs('window.__debug.people()');
+      citizenAt = list.findIndex((p) => !p.atHome && !p.walking && /^(MLGEN|FMGEN)/.test(String(p.family)));
+      if (citizenAt >= 0) citizen = list[citizenAt];
+      else { await page.evalJs('window.__debug.pause(false)'); await settle(300); }
+    }
+    check('the street holds one of the town\'s own men or women to walk around',
+      citizenAt >= 0 && citizen !== null,
+      citizen ? `${citizen.description} (${citizen.family})` : 'no citizen was standing in ten tries');
+    if (citizenAt >= 0) {
+      const walks = walksOf(citizen.actions);
+      check('a citizen family carries five walk directions, not one',
+        new Set(walks).size === 5,
+        `${citizen.family}: ${walks.join(' ') || 'none'}`);
+      const faceAt = { x: citizen.world.x + Math.sin(citizen.facing) * 4, z: citizen.world.z + Math.cos(citizen.facing) * 4 };
+      const backAt = { x: citizen.world.x - Math.sin(citizen.facing) * 4, z: citizen.world.z - Math.cos(citizen.facing) * 4 };
+      await page.evalJs(`window.__debug.teleport(${faceAt.x}, 2.5, ${faceAt.z})`);
+      await page.waitFor(`window.__debug.people()[${citizenAt}].view === 1`, { label: 'citizen faces the eye', timeoutMs: 10000 });
+      const cFront = (await page.evalJs('window.__debug.people()'))[citizenAt];
+      await page.evalJs(`window.__debug.teleport(${backAt.x}, 2.5, ${backAt.z})`);
+      await page.waitFor(`window.__debug.people()[${citizenAt}].view === 5`, { label: 'citizen shows the back', timeoutMs: 10000 });
+      const cBack = (await page.evalJs('window.__debug.people()'))[citizenAt];
+      check('and a man or woman of the town is drawn from direction 1 to direction 5 as the eye moves',
+        cFront.view === 1 && cBack.view === 5 && directionOf(cFront.file) === 1 && directionOf(cBack.file) === 5,
+        `${cFront.file} (view ${cFront.view}) → ${cBack.file} (view ${cBack.view})`);
+    }
+    await page.evalJs('window.__debug.pause(false)');
+
     // ── a dungeon has no townsfolk in it ──────────────────────────────────────
     await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&${q}`);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',

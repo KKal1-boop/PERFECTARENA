@@ -115,11 +115,15 @@ export const VIEWS = Object.freeze([1, 2, 3, 4, 5]);
 /**
  * Fold the install's roster into outfits.
  *
- * A person's **outfit** is one armour writing under one of the archive's two figure
- * families, and the archive ships **five angles of it** — `01CHNWLK`…`05CHNWLK` are the
- * same person seen from five sides. The first version of `placeTownsfolk` picked a random
- * *file* out of the roster, which is a random *angle*: a townsman stood with his back to
- * the player, or in profile, forever — the reported "npcs don't look at you, they have a
+ * A person's **outfit** is one armour writing under one of the archive's two **sexes**,
+ * and the archive ships **five directions of it** — `01CHNWLK`…`05CHNWLK` are the same
+ * person seen from five sides. The two digits mean what OpenTESArena's human template says
+ * they mean (`ExeData.h`'s `0@XXX`: the first digit is the gender, `0` a man and `1` a
+ * woman; the second is the direction 1…5, which is also what this module's own widths
+ * show — 40/55/69/56/38 px across the five, symmetric about a profile, and identical for
+ * every armour word). The first version of `placeTownsfolk` picked a random *file* out of
+ * the roster, which is a random *direction*: a townsman stood with his back to the
+ * player, or in profile, forever — the reported "npcs don't look at you, they have a
  * static random png that maybe pictures them turned back or to the side".
  *
  * @param {{file: string, set: string, armour: string}[]} folk
@@ -260,7 +264,14 @@ export function placeTownsfolk(opts) {
       layout: 'action',
     })),
     ...(opts.kinds ?? []).filter((kind) => kind?.views?.[1]).map((kind) => ({
-      key: kind.key, views: kind.views, armour: null, label: kind.label, actions: kind.actions ?? null,
+      key: kind.key, views: kind.views, armour: null, label: kind.label,
+      // **Each action is a direction → file reading** (`peopleKinds.js`): the archive draws one
+      // figure from five sides, so the town's men and women carry five walk sheets, five talk
+      // sheets and five death sheets, and the scene asks by the direction the eye is in. Before
+      // this reading the five directions were five *people*, each frozen in one direction — the
+      // owner's "they dont have a proper 360 walking animation or going around them 360
+      // animation" (D-47).
+      actions: kind.actions ?? null,
       // …and the watch and `BABE` carry Arena's twelve-frame layout, where frames 6…11 are a
       // head-turn and a sword-swing (`peopleKinds.js` reads it off the family; D-42).
       layout: kind.layout ?? 'action',
