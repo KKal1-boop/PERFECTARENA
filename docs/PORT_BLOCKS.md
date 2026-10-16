@@ -1,0 +1,167 @@
+# PORT_BLOCKS — the port, advanced one whole system at a time
+
+The owner's own words, 2026-10-16, after playing this port beside the original:
+
+> *"what you are doing each session is nearly not enough you should maybe make a way to more
+> systematically and cleanly really import basically copypaste/recreate actual arena code to go
+> forward in blocks otherwise we will never go on."*
+
+This file is that way. It is the **work order**: every session takes whole blocks from the queue
+at the bottom, closes them, and moves the next one up. A block is a *system of the original*, not
+a symptom: "resting" is a block, "the pile of loot is too big" is a row in `docs/DEFECTS.md`
+inside its block.
+
+---
+
+## 1. What a "block" is, and what closes it
+
+A block is closed when **all six** of these are true. The order matters — it is the order that
+stops a session from guessing.
+
+1. **The source of truth is named.** One of:
+   * a file in the install (`arena/ARENA/…`: `START.MIF`, `IMPPAL1.INF`, `WATERANI.RCI`,
+     `TEMPLATE.DAT`, `INTRO.FLC`, …) — the bytes are the law;
+   * a text corpus in the install (`QUESTION.TXT`, `CITYINTR`, `TEMPLE.DAT`, `READ.ME`, …);
+   * a **reference implementation**, quoted with its file and line, when the number lives in
+     the executable: OpenTESArena (MIT) is the one this project uses
+     (`ArenaWeaponUtils`, `ArenaAnimUtils`, `ArenaChasmUtils`, `VoxelDoorUtils`, `INFFile`).
+2. **`A.EXE` is not in this checkout.** `ls arena/ARENA` is 153 loose files plus
+   `GLOBAL.BSA` — `ACD.EXE`, `INSTALL.EXE`, `ULTRAMID.EXE`, `ARENA.BAT`, no `A.EXE`. So every
+   table that lived in the executable (spawn tables, weapon animation timing, rest rolls, the
+   fixed quest text) is **not** readable here. A block that needs one either quotes
+   OpenTESArena's extraction of it, or states plainly that the number is *this project's own
+   rule* and stamps it as such in the module header. Never a third option.
+3. **The law lives in a module, not in a scene.** `src/scenes/interior.js` is 9 000 lines of
+   wiring; anything that can be *decided* (a size, a swing angle, a fog density, a start
+   destination, a hunt) belongs in `src/game/*.js` where a Node test can hold it. This is what
+   made D-16, D-17, D-21, D-25 and this session's two blocks closable at all.
+4. **A probe measures before/after.** "It looks better" is not a measurement: every row in
+   `docs/DEFECTS.md` says what the probe printed before and after. Probes live in `.scratch/`
+   (a few lines, throwaway) or, when they keep earning their place, in `tests/`.
+5. **A Node unit test holds the law**, and **a browser suite holds the player's half** — the
+   thing the owner would see. A change that only has a unit test has not been seen; a change
+   that only has a browser check has no law under it.
+6. **The docs move with it**: a `docs/DEFECTS.md` row goes `OPEN → FIXED` **pointing at the
+   commit hash that closed it** (the repo's own convention: the row is rewritten in a follow-up
+   commit, once the hash exists), and `docs/AGENT_STATE.md` names the next three steps.
+
+---
+
+## 2. The ledger
+
+`[x]` closed and held by a passing check · `[~]` working, with a named gap · `[ ]` not started.
+"Check" is the test that fails if the block regresses.
+
+| id | block | source of truth | module | state | check |
+|---|---|---|---|---|---|
+| B01 | Asset + format readers | `GLOBAL.BSA`, loose `.IMG/.SET/.CFA/.CIF/.MIF/.RMD/.INF/.FLC/.VOC/.RCI/.COL` | `src/arena/*` | `[x]` | `unit/mif`, `unit/flats`, `unit/voc`, `unit/cutscene`, `unit/doors` |
+| B02 | Level data → world: cells, flats, colliders, arrival | the install's `*.MIF` + `*.INF` | `mifFile/mifLevel/mifMesh/flats` | `[~]` **D-13 mirrored-start unmeasured** | `unit/mif`, `unit/flats`, `dungeonplay` |
+| B03 | Generated levels (the dungeons the install does not ship) | 29 raw blocks in `GLOBAL.BSA` | `dungeonPlan.js` | `[x]` | `unit/dungeonplan`, `generated` |
+| B04 | Doors: hinges, swing, locks, keys | `IMPPAL1.INF` doors, OpenTESArena `VoxelDoorUtils` | `doors.js` | `[x]` (D-17) | `unit/doors`, `doors` |
+| B05 | Chasms: water, lava, falling, **swimming/passing through water** | `WATERANI.RCI`/`LAVAANI.RCI`, OpenTESArena `ArenaChasmUtils` | `chasmSurface.js`, `interior.js:updateWater` | `[~]` **D-18/D-18a open** | `unit/mif` (chasm cells), `interior` |
+| B06 | First person: the weapon in hand, the swing, empty hands | `HAND.CIF`, `SWORD.CIF`, `AXE.CIF`, `MACE.CIF`, `HAMMER.CIF`, `STAFF.CIF` + OpenTESArena `ArenaWeaponUtils` | `weaponView.js`, `items.js` | `[x]` (D-14b) | `unit/weapon`, `unit/items`, `chargen`, `gear` |
+| B07 | Billboards: five views, walk/attack/death cycles, facing | OpenTESArena `ArenaAnimUtils` | `actorAnimation.js` | `[x]` (D-25) | `unit/actoranimation`, `townsfolk`, `actioncombat` |
+| B08 | Combat rules: to-hit, damage, poise, stagger, parry/riposte | Arena's own stat table (`SPELLS.LST`, `.INF` `*ITEM` stats) | `combat.js`, `combatStyle.js` | `[x]` | `unit/combat`, `actioncombat`, `combat` |
+| B09 | Combat **presentation**: blood, tells, no invented particles | the original's own look (no wind-up bursts) | `combatFx.js`, `engine/combat/bloodDecals.js` | `[~]` **the owner's "ugly battle particles"** — amber bursts are gone (D-20); the Arena scene still does not lay the engine's blood | `combat` |
+| B10 | Rest: a tavern room, a camp in the wild, **a dungeon that hears you** | the original's own behaviour (roll is `A.EXE`, not shipped) | `services.js` (`rest`), `interior.js:rest`, `encounters.js` (`stirTheLevel`) | `[x]` (D-19, this session) | `unit/hunt` |
+| B11 | Townsfolk, day plans, trades, regard | `NAMEGEN.DAT`, `.INF` `*ITEM` people, `GLOBAL.BSA` crowd sheets | `townsfolk.js`, `livingWorld.js`, `peopleKinds.js` | `[~]` **D-01b open** (nobody outside cities; wilderness bestiary missing) | `living`, `townsfolk`, `regard` |
+| B12 | Shops, guilds, temples, services | `TEMPLATE.DAT`, `.INF` menus | `shops.js`, `services.js`, `guilds.js` | `[x]` | `commerce`, `guilds`, `unit/shops` |
+| B13 | Radiant quests **given by NPCs** | `TEMPLATE.DAT` + `.INF` people | `radiantQuests.js` | `[x]` | `unit/radiant`, `radiant`, `bounties` |
+| B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
+| B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
+| B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
+| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js` | `[~]` **D-22**: a 128×128 window per climate, no relief/coast/roads, no encounters of its own | `world`, `wildfoot`, `unit/wilderness` |
+| B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
+| B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
+| B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
+| B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
+| B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs` | `[ ]` **D-03/D-24** | `tools/assetcoverage.mjs` (report only) |
+
+---
+
+## 3. The owner's comparison, mapped
+
+Every row of the 2026-10-16 report, with the block that owns it. Full rows live in
+`docs/DEFECTS.md`; this is the index.
+
+| report | block | status |
+|---|---|---|
+| "after character creation a cutscene missing … you start in the imperial dungeon" | B15 | **closed this session** — creation → `INTRO.FLC` → `START.MIF` (D-12) |
+| "it looks like the version in perfectarena is a mirrored version of that" | B02 | **open** — needs a measurement, not a guess (§5, queue 1) |
+| "attack animation is fists … instead in perfectarena is always the dagger" | B06 | closed (D-14b: `HAND.CIF` for empty hands, the class's weapon in the pack) |
+| "the pile of loot with a helm is bigger than it should be" | B02 | closed (D-16) |
+| "when doors open they clip into the wall" | B04 | closed (D-17) |
+| "passing through the water to other rooms like sewers" | B05 | **open** (D-18/D-18a) |
+| "resting spawns enemies or moves enemies to you" | B10 | **closed this session** (D-19: `stirTheLevel` + `isHunting`) |
+| "ugly battle particles" | B09 | half closed (D-20 removed the invented bursts); blood is the original's own feedback and is still to land in the scene |
+| "ENEMIES FLIP LEFT AND RIGHT FOR NO REASON" | B07 | closed (D-25) |
+| "there is no fog in dungeons" | B18 | closed (D-21: enclosed levels 0.012 → 0.040) |
+| "normal arena has wilderness … you teleport around and cant even get out of a city" | B17 | **open** (D-22, the structural one) |
+| "biomes texture changing depending on night or snow" | B18 | **open** (D-23) |
+| "a lot of assets missing … and features" | B22 | **open** (D-03/D-24) |
+| "shouldn't be able to run with your weapons unsheathed" | B06 | **open** — small, and it is Arena's own law: a drawn weapon is a walk, not a run (queue 3) |
+
+---
+
+## 4. What this session closed (2026-10-16, part two)
+
+**B15 — the start of a game.** `game/startFlow.js` (new) holds the law: which URL is a game
+start (`isGameStart`), where creation hands the player on (`destinationParams`: a character made
+*just now* wakes in `START.MIF`; anyone else still lands on the world map), and when the opening
+movie is owed (`openingGate`: **once per new game, not once per tab** — the session flag alone was
+the reported missing cutscene). `main.js` and `scenes/newGame.js` both follow it, and the New Game
+path now plays `INTRO.FLC` before booting the dungeon. Seen on real pages: `chargen` 41/41 (the
+dungeon it lands in is `START.MIF`, with the cell door and the escape objective),
+`menu` (New Game → creation → the Imperial Dungeons, the opening reported as played or honestly
+skipped). `tests/unit/startflow.test.mjs` holds the law.
+
+**B10 — a sleep in a dungeon is heard.** `encounters.js` gained `stirTheLevel` (a camp rouses
+every living creature with a deadline, `spawn.huntingUntil`, and a corpse hears nothing) and
+`isHunting` (a creature's own band, **or** a hunt it heard, from anywhere in the level);
+`interior.js`'s camp rest uses them, and a disturbed sleep passes the day without handing back the
+wounds — the player did not get the sleep they paid a day for. The original's own roll (chance,
+hours, wake-up call) is `A.EXE`'s and is stamped as this project's rule in the module header.
+`tests/unit/hunt.test.mjs` holds it.
+
+---
+
+## 5. The queue — what the next sessions take, in order
+
+Each entry names **the first probe**, because a block starts with a measurement.
+
+1. **B02 · is the start dungeon mirrored?** (D-13.) Probe: render `START.MIF`'s cell grid as
+   text (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) and compare it against the original's
+   own screen — the cell door, the stair (`GATE.IMG`), the room the arrival point is in, and the
+   direction the player faces on arrival. A mirror can only come from `mifMesh`'s x/z mapping,
+   the camera's handedness, or the arrival yaw; whichever it is, it is one line and one test.
+   *Then* walk the same probe over the eight quest dungeons and the palace, which the owner
+   reports as "all glitched".
+2. **B05 · water you can pass through** (D-18/D-18a). Probe: per level, count flooded cells that
+   separate two otherwise-disjoint walkable regions (`tools/mif-dump.mjs` + a BFS). If a level
+   *needs* the water to get anywhere, that is the original's swimming and this port's blocked
+   wall; the block then ports `ArenaChasmUtils.allowsSwimming` properly (enter the water, swim,
+   climb out) instead of the current wade.
+3. **B06 · a drawn weapon is a walk** (owner, 2026-10-16). Probe: with the rig drawn, does the
+   run speed still apply? Then: `motor`'s run gate reads the rig's state. Small, one test.
+4. **B09 · blood, not sparks.** The engine already has `engine/combat/bloodDecals.js` (lands in
+   the Daggerfall side). Probe: what a landed blow leaves on the floor and on the walls in the
+   Arena scene; then wire the decals into `combatFx`, and delete any remaining invented burst.
+5. **B17 · the country** (D-22, P3/P4). The largest block: leave a city gate on foot, walk a
+   continuous Tamriel (relief, coast, roads, per-climate terrain), meet people (D-01b) and
+   creatures (D-02a) there, and enter wild buildings.
+6. **B18 · weather that moves and a ground that knows the season** (D-23): the front, the
+   per-climate ground mix, snow on the ground, and the night/snow variants of city art.
+7. **B22 · asset coverage** (D-03/D-24): the 1 691 BSA records named by nothing are where the
+   missing screens, tilesets, crowd sheets and speech live — a census block, then a wiring block.
+
+---
+
+## 6. Keeping this file honest
+
+* A block's state changes **only** with the check that holds it. "Working on it" is not a state
+  in this table; `[~]` requires a named gap in the same cell.
+* Dependencies are real: B05 cannot be settled before B02 (a flooded cell you cannot walk to is
+  not a route), B17 needs B11's wilderness people and creatures, B18's ground needs B17's
+  terrain.
+* When a block's number comes from `A.EXE`, the module header says so. `docs/DECISIONS.md` D11
+  is the standing rule.

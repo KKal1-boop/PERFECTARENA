@@ -232,5 +232,74 @@ export function monsterCountFor(opts = {}) {
   return Math.max(4, Math.min(14, 6 + Math.floor(Math.max(0, danger - 2) / 3)));
 }
 
+// ── RESTING IN A DUNGEON ROUSES THE LEVEL (2026-10-16) ─────────────────────────
+//
+// The owner, playing both games side by side: *"resting spawns enemies or moves enemies to
+// you in normal arena and perfectarena doesnt"*. In Arena a dungeon is not a hotel: you camp,
+// and the noise of a living body in a quiet corridor carries — the creatures that were
+// standing somewhere in the level walk to you, and what wakes you is a blade, not a night's
+// sleep.
+//
+// This port had the camp (`interior.js`'s `rest`), the healing and the passing day, and a
+// level whose creatures only ever noticed a player who walked into their band (`AGGRO`, 34
+// world units). A creature on the far side of the level never moved for a sleeping player, so
+// resting was strictly free. What is *not* reconstructed here is the original's own roll
+// (`A.EXE`, D11): the number of hours, the chance and the wake-up call are this project's,
+// stamped as such, and the shape of it — the level comes to you — is the one the owner
+// described.
+
+/**
+ * How long a creature roused by a sleeper keeps coming, in the scene's own seconds.
+ *
+ * A minute is long enough to cross a level's worth of corridor at a walk and short enough
+ * that a player who fights their way out is not followed for the rest of the visit.
+ */
+export const HUNT_SECONDS = 60;
+
+/**
+ * Rouse the level: whoever is alive in it starts hunting the sleeper.
+ *
+ * The mark is a deadline on the creature itself (`spawn.huntingUntil`), not a flag on the
+ * level, so a creature killed on the way stops being a threat with the rest of it, and the
+ * band it hunts in (`isHunting`) needs nothing else to know about the sleep.
+ *
+ * @param {object[]} spawns the scene's live spawns
+ * @param {number} seconds the scene's own clock (`dbg.seconds`)
+ * @param {{hold?: number}} [opts]
+ * @returns {{roused: number}} how many creatures are now coming
+ */
+export function stirTheLevel(spawns, seconds, { hold = HUNT_SECONDS } = {}) {
+  const now = Number(seconds) || 0;
+  const until = now + Math.max(0, Number(hold) || 0);
+  let roused = 0;
+  for (const spawn of spawns ?? []) {
+    if (!spawn || spawn.down) continue;
+    if ((spawn.monster?.health ?? 1) <= 0) continue;   // a corpse does not hear anything
+    // A deadline is never *shortened*: a creature already hunting keeps the later one.
+    spawn.huntingUntil = Math.max(Number(spawn.huntingUntil) || 0, until);
+    roused++;
+  }
+  return { roused };
+}
+
+/**
+ * Is this creature hunting the player right now?
+ *
+ * Its own band is the ordinary case (`AGGRO` in `interior.js`): a creature notices a player it
+ * can see nearby. Roused by a sleep, it comes from anywhere in the level until its deadline
+ * passes — which is what makes the walk back out of a dungeon after a night's camp a walk
+ * with company.
+ *
+ * @param {{huntingUntil?: number}|null|undefined} spawn
+ * @param {number} distance world units
+ * @param {number} now the scene's own seconds
+ * @param {{aggro?: number}} [opts]
+ * @returns {boolean}
+ */
+export function isHunting(spawn, distance, now, { aggro = Infinity } = {}) {
+  if (distance <= aggro) return true;
+  return (Number(spawn?.huntingUntil) || 0) > (Number(now) || 0);
+}
+
 /** How many species this install has, for the tests and the HUD. */
 export const MONSTER_SPECIES = MONSTERS.length;

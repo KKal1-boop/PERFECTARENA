@@ -163,11 +163,19 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
     await page.screenshot(path.join(shots, 'm4-chargen-done.png'));
 
     // ── and creation hands the player on ─────────────────────────────────────
+    //
+    // **Where it hands them on is Arena's own first step**: a locked cell in the Imperial
+    // Dungeons (`game/startFlow.js`), not the world map. The owner, playing both games side by
+    // side (2026-10-16): "after character creation a cutscene missing in perfectarena you
+    // start in the imperial dungeon". A `?chargen` URL is a dev door (this suite is one), so
+    // the opening movie is not played in front of it — that half of the law is the menu
+    // suite's, which starts a game the way a player does.
     const beforeLeave = await page.evalJs('location.href');
     await page.clickSelector('#chargen-panel #cg-play');
     let entered = true;
     try {
-      await page.waitFor('window.__debug?.scene === "worldmap"', { label: 'the world map', timeoutMs: 60000 });
+      await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
+        { label: 'the Imperial Dungeons', timeoutMs: 120000 });
     } catch {
       entered = false;
     }
@@ -179,8 +187,14 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
       (await page.evalJs('!document.getElementById("chargen") || !document.getElementById("chargen").classList.contains("on")')) === true);
     // Report *why* it did not arrive rather than only that it did not.
     check('finishing creation enters the world', entered, entered ? '' : await page.evalJs('JSON.stringify({ href: location.href, scene: window.__debug?.scene ?? null, boot: window.__bootError ? String(window.__bootError) : null, errs: window.__debug?.pageErrors ?? [] })'));
-    const carried = await page.evalJs('window.__debug.character ? window.__debug.character() : null');
-    check('the world map knows who the player is', Boolean(carried?.name), carried ? `${carried.name}, ${carried.className}` : 'the map does not expose the character');
+    const standing = await page.evalJs('window.__debug.state()');
+    check('and the world it enters is the Imperial Dungeons, the quest\'s first step',
+      standing?.map === 'START.MIF' && /Escape Imperial Dungeons/i.test(String((await page.evalJs('window.__debug.quest()'))?.objective ?? '')),
+      `${standing?.map} · ${(await page.evalJs('window.__debug.quest()'))?.objective}`);
+    // The sheet creation made is read **from where the player is standing** (`interior.js`'s
+    // `player()`), which is the same object the HUD and the fight read.
+    const carried = await page.evalJs('window.__debug.player ? window.__debug.player() : null');
+    check('the dungeon knows who walked in', Boolean(carried?.name), carried ? `${carried.name}, ${carried.className}` : 'the scene does not expose the character');
 
     // ── what the new character carries into the dungeon, and what is in hand ─────────────────
     //

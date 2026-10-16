@@ -16,12 +16,20 @@
 //   ?test                 the hand-made courtyard from Milestone 2
 //   ?shot                 a fixed vantage, for the screenshot tests
 //
+// A URL that asks for **nothing** is a new game, and a new game is Arena's own first ten
+// minutes: creation, the opening movie, and a locked cell in the Imperial Dungeons
+// (`game/startFlow.js`). A URL that names a scene is a deep link and is taken at its word.
+//
 // Arena's data is read at runtime from a folder the *player* picks; nothing is
 // bundled with the game. See docs/DECISIONS.md D9 and docs/ARCHITECTURE.md §1.
 
 import { Renderer } from './engine/render/renderer.js';
 import { crashText } from './engine/ui/crashText.js';
 import { loadCharacter } from './game/save.js';
+// Where a game begins — the opening movie, then the Imperial Dungeons. The law is a module
+// of its own (`game/startFlow.js`) so it can be tested without a renderer; this file only
+// boots what it decides.
+import { asksForScene, destinationParams, isGameStart, openingGate } from './game/startFlow.js';
 
 /** Every uncaught error and console error the page produces, for the tests. */
 function installErrorTrap() {
@@ -93,16 +101,19 @@ async function bootFromPickedFolder(canvas, renderer, params, status) {
           try {
             // Nobody has a character until creation has happened, and creation is a
             // page of its own: it needs the same data source.
-            if (needsCharacter(params)) {
+            const fresh = needsCharacter(params);
+            if (fresh) {
               const { bootChargen } = await import('./scenes/chargen.js');
               // Creation resolves in this page, and the scene the player asked for is
               // booted with the folder they just picked still open.
               await bootChargen(canvas, renderer, params, status, source);
-              if (isGameStart(params)) await showOpening(status, params, source);
-              await run(canvas, renderer, destinationParams(params), status, source);
+              // A character made just now is greeted by Arena's own opening movie and then
+              // wakes in the Imperial Dungeons (`game/startFlow.js`).
+              if (isGameStart(params)) await showOpening(status, params, source, { fresh: true });
+              await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
             } else {
-              if (isGameStart(params)) await showOpening(status, params, source);
-              await run(canvas, renderer, params, status, source);
+              if (isGameStart(params)) await showOpening(status, params, source, { fresh: false });
+              await run(canvas, renderer, destinationParams(params, { fresh: false }), status, source);
             }
             document.getElementById('boot')?.classList.add('hidden');
             window.__ready = true;
@@ -147,22 +158,6 @@ async function run(canvas, renderer, params, status, source) {
 }
 
 /**
- * Is this a person **starting the game**, or a scene named on the URL?
- *
- * Arena greets a new game with its own opening movie (`INTRO.FLC`), and this is where that
- * belongs: after a character exists or has just been made, and only when the URL did not name
- * a scene of its own. `?interior=START.MIF` is a deep link (and every suite uses one), so
- * playing a 1994 movie in front of it would break the request rather than honour the game.
- * `?nointro` is the player's own escape from it, and `?cutscene=INTRO.FLC` plays it on demand.
- *
- * @param {URLSearchParams} params
- * @returns {boolean}
- */
-function isGameStart(params) {
-  return !asksForScene(params) && !params.has('chargen') && !params.has('nomake') && !params.has('nointro');
-}
-
-/**
  * The opening movie, **once per session** — the same law the fanfare walks (`game/fanfare.js`):
  * a page per level means a scene swap would otherwise replay a two-minute movie, while an
  * ordinary reload of the page still starts a new session and still greets the player.
@@ -170,15 +165,20 @@ function isGameStart(params) {
  * @param {(m: string) => void} status
  * @param {URLSearchParams} params
  * @param {import('./arena/browserSource.js').ArenaSource|null} source
+ * @param {{fresh?: boolean}} [opts] `fresh` = this boot created the character, so the movie is
+ *   owed whatever the tab has seen before (`game/startFlow.js`'s `openingGate`)
  */
-async function showOpening(status, params, source) {
+async function showOpening(status, params, source, { fresh = false } = {}) {
   const GREETED = 'pa.intro.greeted';
+  let seen = false;
   try {
-    if (sessionStorage.getItem(GREETED) === '1') {
-      window.__debug.opening = { skipped: 'this session has already seen the opening' };
-      return null;
-    }
+    seen = sessionStorage.getItem(GREETED) === '1';
   } catch { /* no storage: the opening is offered every boot, which is the honest default */ }
+  const due = openingGate({ fresh, seen });
+  if (!due.show) {
+    window.__debug.opening = { skipped: due.why };
+    return null;
+  }
   try {
     const { showMovie } = await import('./scenes/cutscenePlayer.js');
     const played = await showMovie('INTRO.FLC', {
@@ -197,21 +197,6 @@ async function showOpening(status, params, source) {
 }
 
 /**
- * Does this URL name a scene of its own?
- *
- * Used by the dev door, which boots creation only when the page asked for *nothing*: a URL
- * like `?interior=START.MIF` is a request to stand in that dungeon, and booting a character
- * creation screen in front of it would break every scripted run and every deep link.
- *
- * @param {URLSearchParams} params
- * @returns {boolean}
- */
-function asksForScene(params) {
-  return ['map', 'worldmap', 'location', 'dungeon', 'dungeonSeed', 'interior', 'mif', 'city', 'wild', 'at', 'enter', 'level', 'cutscene', 'movie']
-    .some((key) => params.has(key));
-}
-
-/**
  * Creation is the player's first page: a folder has been chosen, but nobody has
  * been made yet. The hand-made courtyard is the exception — it is a renderer
  * regression test and needs no one to be anybody.
@@ -222,27 +207,6 @@ function asksForScene(params) {
 function needsCharacter(params) {
   if (params.has('test')) return false;
   return !loadCharacter();
-}
-
-/**
- * Where the player goes once creation is over: the scene the URL asked for, or the
- * world map when it asked for nothing in particular.
- *
- * Creation is not a destination, so its own parameters are dropped — `chargen`,
- * `nomake`, the creation `seed`, a forced `class` — and the rest of the URL's
- * intent (`location`, `dungeon`, `city`, `interior`, `test`) is carried through.
- * Driving the destination from here, rather than navigating to it, is what keeps a
- * hand-picked Arena folder alive across creation (see `leave` in `scenes/chargen.js`).
- *
- * @param {URLSearchParams} params
- * @returns {URLSearchParams}
- */
-function destinationParams(params) {
-  const out = new URLSearchParams(params);
-  for (const key of ['chargen', 'nomake', 'seed', 'class', 'back']) out.delete(key);
-  const scenes = ['map', 'worldmap', 'location', 'dungeon', 'interior', 'city'];
-  if (!scenes.some((key) => out.has(key))) out.set('map', '');
-  return out;
 }
 
 /**
@@ -316,8 +280,8 @@ async function boot() {
       await bootChargen(canvas, renderer, params, status, source);
       // …and then the game's own opening, for a person who just started playing. A `?chargen`
       // URL is a dev door (its own suite drives it), so it is asked for by name, not given.
-      if (isGameStart(params)) await showOpening(status, params, source);
-      await run(canvas, renderer, destinationParams(params), status, source);
+      if (isGameStart(params)) await showOpening(status, params, source, { fresh: true });
+      await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
       document.getElementById('boot')?.classList.add('hidden');
       window.__ready = true;
       return;

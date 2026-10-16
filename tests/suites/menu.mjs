@@ -8,9 +8,12 @@
 //     monster they cannot see;
 //   * **New Game is a new game** — `clearSave()` takes the character, the quest, the job
 //     board and the regard ledger, character creation comes up **in the same page** (the
-//     player's Arena folder cannot survive a navigation — `scenes/newGame.js`), and the map
-//     the new character lands on has a quest at step 0 and a world that has never heard of
-//     them.
+//     player's Arena folder cannot survive a navigation — `scenes/newGame.js`), and the new
+//     character lands where Arena puts one: **a locked cell in the Imperial Dungeons**, at the
+//     quest's own first stage, in a world that has never heard of them (`game/startFlow.js`).
+//     The movie that comes before it is `INTRO.FLC`, and it is played here by the same
+//     `showMovie` every other cutscene beat uses; a machine without the file still starts,
+//     because a movie is never a dependency.
 //
 // Nothing here is asserted from a flag the flow sets about itself: the save is read out of
 // `localStorage`, the panel is read out of the DOM, the frames are the scene's own count,
@@ -202,27 +205,41 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
     // suite does that clicking, and what is being proved *here* is the exit.)
     await page.evalJs('window.__debug.gotostep("done")');
     await page.clickSelector('#chargen-panel #cg-play');
-    await page.waitFor('window.__debug?.scene === "worldmap" || !!window.__bootError', { label: 'the world map after creation', timeoutMs: 120000 });
-    check('and Enter Tamriel lands the new character on the world map, in the same page',
-      (await page.evalJs('window.__debug?.scene')) === 'worldmap' && /(^|[?&])map/.test(await page.evalJs('location.search')),
-      await page.evalJs('location.search'));
+    // Arena's own first ten minutes, and the owner's report that this port skipped them
+    // (2026-10-16): *"after character creation a cutscene missing in perfectarena you start in
+    // the imperial dungeon"*. The landing is the **Imperial Dungeons**, not the world map.
+    await page.waitFor('window.__debug?.scene === "interior" || !!window.__bootError', { label: 'the Imperial Dungeons after creation', timeoutMs: 120000 });
+    const boot = await page.evalJs('window.__bootError || null');
+    check('and Enter Tamriel wakes the new character in the Imperial Dungeons, in the same page',
+      !boot && (await page.evalJs('window.__debug?.scene')) === 'interior'
+      && /interior=START\.MIF/.test(await page.evalJs('location.search')),
+      boot ? String(boot).slice(0, 200) : await page.evalJs('location.search'));
+    check('the opening movie was played or honestly skipped, never silently missing',
+      Boolean(await page.evalJs('window.__debug.opening'))
+      && (await page.evalJs('window.__debug.opening.played === true || typeof window.__debug.opening.skipped === "string" || typeof window.__debug.opening.error === "string"')),
+      JSON.stringify(await page.evalJs('window.__debug.opening ?? null')));
 
-    const chain = await page.evalJs('window.__debug.chain()');
-    const world = await page.evalJs('JSON.stringify({ quest: window.__debug.quest(), regard: window.__debug.regard().tally, day: window.__debug.state().day })');
-    const started = JSON.parse(world);
-    check('the new game starts from nothing: the first stage, no pieces, nothing visited, an empty journal',
-      started.quest.stage === chain[0].title && started.quest.pieces === 0
-      && started.quest.visited.length === 0 && started.quest.entries.length === 0,
-      `${started.quest.stage} · ${started.quest.pieces} pieces · ${started.quest.entries.length} entries`);
+    const started = JSON.parse(await page.evalJs(
+      'JSON.stringify({ quest: window.__debug.quest(), regard: window.__debug.regard(), day: window.__debug.regard().day })'));
+    check('the cell is the quest\'s own first stage: escape the Imperial Dungeons',
+      started.quest.step === 0 && /Escape Imperial Dungeons/i.test(started.quest.objective),
+      `step ${started.quest.step}: ${started.quest.objective}`);
+    check('the new game starts from nothing: no pieces, an empty journal',
+      started.quest.pieces === 0 && started.quest.entries.length === 0,
+      `${started.quest.pieces} pieces · ${started.quest.entries.length} entries`);
     check('the world has never heard of the new character',
-      started.regard.known === 0 && started.regard.friends === 0 && started.regard.hostile === 0,
-      JSON.stringify(started.regard));
+      started.regard.tally.known === 0 && started.regard.tally.friends === 0 && started.regard.tally.hostile === 0,
+      JSON.stringify(started.regard.tally));
     check('and the calendar is back to its first day', started.day === 1, `day ${started.day}`);
 
     // ── the map's own door, and that its button can be pressed ───────────────
+    // The door on the map's sheet is a second way into the same flow, so it is opened here
+    // rather than walked to: the new game it starts is the one just checked above.
     // The sheet is `pointer-events: none` so clicks fall through it to the markers behind
     // it, so the new-game button has to opt back in. A click *here* is the proof: it is a
     // real press at the button's own coordinates.
+    await page.goto(`http://localhost:${getPort()}/?map&${q}`);
+    await page.waitFor('window.__debug?.scene === "worldmap"', { label: 'the world map', timeoutMs: 120000 });
     check('the map offers the same door on its sheet', await page.evalJs('!!document.getElementById("map-newgame")'));
     await page.clickSelector('#map-newgame');
     check('and it asks first, with its own warning on the sheet',

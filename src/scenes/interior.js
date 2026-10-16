@@ -94,7 +94,7 @@ import { parseCif } from '../arena/cifFile.js';
 import { LAVA_FIELD, WATER_FIELD, parseRci, rciReport, rciTile } from '../arena/rciFile.js';
 import { surfaceKind, surfaceLabel, surfacePlanes, surfaceScroll } from '../game/chasmSurface.js';
 import { imageToUpload, toRgba } from '../arena/palette.js';
-import { dangerOf, monsterCountFor, spawnEncounter } from '../game/encounters.js';
+import { dangerOf, isHunting, monsterCountFor, spawnEncounter, stirTheLevel } from '../game/encounters.js';
 import {
   VIEWS as PEOPLE_VIEWS, fillTalkLine, folkCountFor, folkFromListing, greetingFor, personFighter,
   placeTownsfolk, talkCorpus, topicsFor, viewFacing, viewFileFor,
@@ -3928,7 +3928,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         spawn.walking = false;
         continue;
       }
-      const chased = distance <= AGGRO;
+      // Its own band, **or a sleep it heard**: a creature roused by the player's camp hunts
+      // from anywhere in the level until its deadline (`encounters.js`'s `isHunting`).
+      const chased = isHunting(spawn, distance, dbg.seconds, { aggro: AGGRO });
       spawn.fleeing = chased && wantsToFlee(spawn.monster, spawn.stamina);
       // Guard-to-guard: a fleeing creature runs *away* from the player, keeps its facing
       // turned on them (it is still a thing that may be cut down), and never begins a blow.
@@ -5742,12 +5744,32 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (waterAt().submerged || current.motor.pos[1] < current.level.floorY * CELL_SIZE - 0.2) {
       showNotice('Find dry, level ground before resting.', 2400); return false;
     }
-    player = { ...player, health: player.maxHealth ?? player.health,
-      ...(player.maxSpellPoints != null ? { spellPoints: player.maxSpellPoints } : {}) };
+    // ── the level hears you ────────────────────────────────────────────────────
+    //
+    // **A dungeon is not a hotel.** In Arena a camp in a quiet corridor is heard: the
+    // creatures standing somewhere in the level walk to the sleeper, and what wakes the
+    // player is company rather than a night's rest — the owner's report (2026-10-16):
+    // "resting spawns enemies or moves enemies to you in normal arena and perfectarena
+    // doesnt". So the sleep is rolled against the level's own living creatures
+    // (`encounters.js`'s `stirTheLevel`): if any is left alive, it comes, and the rest is
+    // **disturbed** — the day still passes (the calendar is the same clock a job's deadline
+    // is measured on, `game/radiantQuests.js`), but the wounds and the spell points are not
+    // handed back, because the player did not get the sleep they paid a day for.
+    const { roused } = stirTheLevel(monsters, dbg.seconds);
+    const disturbed = roused > 0;
+    if (!disturbed) {
+      player = { ...player, health: player.maxHealth ?? player.health,
+        ...(player.maxSpellPoints != null ? { spellPoints: player.maxSpellPoints } : {}) };
+    }
     radiant = advanceDays(radiant, 1);
     saveRadiantState(radiant); savePlayer();
-    dbg.lastRest = { cost: 0, days: 1, day: radiant.day, camp: true };
-    showNotice('You make camp and rest. A day passes; health and spell points are restored.', 3400);
+    dbg.lastRest = { cost: 0, days: 1, day: radiant.day, camp: true, roused, disturbed };
+    showNotice(disturbed
+      ? (roused === 1
+        ? 'Something in the dark heard you sleep. It is coming.'
+        : `Something in the dark heard you sleep. ${roused} of them are coming.`)
+      : 'You make camp and rest. A day passes; health and spell points are restored.',
+    disturbed ? 4200 : 3400);
     updateCombatHud(); updateObjectiveHud(); updateInventoryPanel();
     return true;
   }
