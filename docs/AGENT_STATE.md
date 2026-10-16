@@ -11,9 +11,10 @@ that holds them, the reports mapped onto them, and the ordered queue with each b
 **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
 LAST GREEN: unit **`469/469`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — seven
-new checks, `unit/stride.test.mjs`. Browser: **`movement` 9/9** (new this pass: every movement key
+new checks, `unit/stride.test.mjs`. Browser: **`movement` 11/11** (new this pass: every movement key
 held leaves the frame counter climbing, the stride measured, the city gate walked through) ·
-`world` + `living` + `audit` **88/88** · `world` + `dungeonplay` + `combat` **75/75**. The full
+`world` + `living` + `audit` **88/88** · `world` + `dungeonplay` + `combat` **75/75** (and, after
+D-32's fix, unit **469/469** and `movement` **11/11** re-run on the fixed tree). The full
 nineteen-suite sweep has **not** been run this pass, and `chargen`/`menu` were not re-run (nothing
 touched creation). Earlier browser runs, for the record:
 **`audit` 51/51 — the audit is green for the first time** (it has been red on the wilderness since
@@ -140,7 +141,14 @@ the player stands at the world cell **three cells out (7.5 m)** where the push r
 arrival cell again**, so the approach was returned to where it began. Cause read off the code: the
 window slide re-places the player from the **remembered entry cell** (`interior.js:1508`) rather
 than the cell they are standing on, and `GATE_STEP` (3) disagrees with `GATE_WALK_REACH` (3.2 m).
-Both are small and the failing probe is written; it is the queue's item 0.
+**Superseded the same session, and both of those readings were wrong** (`dbf4058`): the probe that
+reads `dbg.windowSlide` showed no slide at all, and a second reading of the boot found the real
+cause at one line — `rememberedWild` refused memory only when the URL had no `location=`, while
+`crossGate` keeps `location=` and adds `?at=`, so the save's remembered wilderness cell beat the
+player's own arrival and the crossing rebuilt the **country** at the cell they had left from. The
+guard now refuses memory when the URL asks for the settlement (it is what the comment above it
+always said) and `movement` **11/11** holds both halves. The one cause still open on that row:
+`GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m).
 
 NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
 0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report),
@@ -167,8 +175,10 @@ a 128×128 window, not a country — the owner: "you teleport around and cant ev
 The blocks those belong to are B11 and B17 in `docs/PORT_BLOCKS.md`; B17 is the largest block in
 the ledger and is the owner's own "we will never go on" risk.
 
-OPEN DEFECTS (top): D-32 (the country returns the player to the arrival cell, and the gate's reach
-and its own placement disagree — queue 0) · D-13 (the mirrored start — B02) · D-28 (dungeon depth —
+OPEN DEFECTS (top): D-28 (dungeon depth — B23, the queue's item 0) · D-13 (the mirrored start —
+B02) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced,
+needs the place or a sweep) · D-18 · D-18a (water — B05) · and the gate's own leftover: `GATE_STEP`
+against `GATE_WALK_REACH` on D-27's row. ~~D-32~~ **closed `dbf4058`** · D-28 (dungeon depth —
 B23) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced, needs
 the place or a sweep) · D-18 · D-18a (water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
 no relief, coast or roads — B17) · D-23 (weather that moves, a ground that knows the season —
