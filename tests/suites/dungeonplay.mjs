@@ -120,5 +120,97 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
     await page.screenshot(path.join(shots, 'dungeon-original-fixtures.png'));
     check('dungeon interaction has no console errors', realErrors(page.consoleErrors()).length===0,
       realErrors(page.consoleErrors()).map(q=>q.text).join(' | ').slice(0,400));
+
+    // ── a dungeon's way out is the country, not the map (D-34) ────────────────
+    //
+    // The owner, playing the port beside the original: *"STILL EXITING A DUNGEON JUST SHOWS YOU
+    // THE MAP NOT THE FUCKING WILDERNESS"*. The way out is the level's own `*LEVELUP` art — the
+    // same `E` every stair uses — and what must come back is the **country**: the ruin block this
+    // dungeon's own seed picks in the country of its nearest settlement (`game/dungeonSurface.js`),
+    // the world map down, and the way back in under the player's feet. A dungeon reached by fast
+    // travel or a dev door — never walked into from the country — is the case that used to end
+    // on the map, so it is the case this walks.
+    const dungeonUrl = `http://localhost:${getPort()}/?dungeon=Stonekeep&arena=${encodeURIComponent(arena)}`;
+    await page.goto(dungeonUrl); await ready();
+    await page.evalJs('window.__debug.pause(true)');
+    const here = await page.evalJs('({ location: window.__debug.state().location, wild: window.__debug.state().wild, mapOpen: window.__debug.state().mapOpen })');
+    check('the page knows which dungeon it stands in, and that dungeon\'s own seed',
+      here.location?.kind === 'dungeon' && typeof here.location?.dungeonSeed === 'number' && here.wild === null,
+      JSON.stringify(here.location));
+    const stairs = await page.evalJs('window.__debug.stairs()');
+    const outCell = await page.evalJs(`(() => {
+      const d = window.__debug, s = d.state();
+      for (let r = 0; r < s.size[1]; r++) for (let c = 0; c < s.size[0]; c++) {
+        const q = d.cellAt(r, c);
+        if (q && q.stair === 'up') return { row: r, col: c };
+      }
+      return null;
+    })()`);
+    check('the dungeon has an up stair — the way out, from the level\'s own art',
+      stairs.up > 0 && Boolean(outCell), JSON.stringify({ up: stairs.up, down: stairs.down, cell: outCell }));
+    if (!outCell) throw new Error('No up stair to leave Stonekeep by');
+    await page.evalJs(`window.__debug.teleportCell(${outCell.row},${outCell.col})`);
+    await key('KeyE');
+    await page.waitFor('window.__debug?.state && window.__debug.state().wild && window.__debug.state().painted > 3',
+      { timeoutMs: 120000, label: 'the country outside the dungeon' });
+    const country = await page.evalJs('({ wild: window.__debug.state().wild, mapOpen: window.__debug.state().mapOpen, location: window.__debug.state().location })');
+    check('leaving a dungeon by its own stairs puts the player in the open country, with the map down',
+      country.wild !== null && country.mapOpen === false && country.location?.kind !== 'dungeon',
+      JSON.stringify({ blocks: country.wild?.blocks, mapOpen: country.mapOpen, at: country.wild?.cell }));
+    check('…and the ruin the exit chose is this dungeon\'s own door, in that country',
+      country.wild?.ruin?.seed === here.location.dungeonSeed && country.wild.ruin.onRuin === true,
+      JSON.stringify(country.wild?.ruin ?? null));
+    check('…standing at the ruin, not at the settlement\'s gate',
+      Boolean(country.wild?.ruin) && Math.abs(country.wild.cell.row - country.wild.ruin.cell.row) <= 32
+      && Math.abs(country.wild.cell.col - country.wild.ruin.cell.col) <= 32,
+      JSON.stringify({ feet: country.wild?.cell, door: country.wild?.ruin?.cell }));
+    await page.screenshot(path.join(shots, 'dungeon-out-in-the-country.png'));
+    await key('KeyE');
+    await page.waitFor('window.__debug?.state && window.__debug.state().location?.kind === "dungeon"',
+      { timeoutMs: 120000, label: 'back down into the ruin' });
+    const back = await page.evalJs('({ location: window.__debug.state().location, wild: window.__debug.state().wild, notice: window.__debug.state().notice })');
+    check('E in the ruin goes back down into that same dungeon — the round trip closes',
+      back.location?.dungeonSeed === here.location.dungeonSeed && back.wild === null,
+      JSON.stringify({ seed: back.location?.dungeonSeed, notice: back.notice }));
+    check('the dungeon round trip has no console errors', realErrors(page.consoleErrors()).length===0,
+      realErrors(page.consoleErrors()).map(q=>q.text).join(' | ').slice(0,400));
+
+    // ── the *first* dungeon a player ever leaves ──────────────────────────────
+    //
+    // `START.MIF` is the one dungeon `CITYDATA` has no record of — character creation hands every
+    // new player to it (`game/startFlow.js`) — so it is the first exit anybody takes, and it used
+    // to end on the world map. Its country is the one nearest the Imperial Palace's own marker
+    // (`interior.js`'s `OPENING_DUNGEON_POINT`), which the map builds at the continent's centre:
+    // this project's rule, because the original's own answer is in `A.EXE`.
+    await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&arena=${encodeURIComponent(arena)}`);
+    await ready();
+    await page.evalJs('window.__debug.pause(true)');
+    const opening = await page.evalJs('({ location: window.__debug.state().location, wild: window.__debug.state().wild })');
+    check('the opening dungeon has no location record of its own — which is why its exit needed a rule',
+      opening.location === null && opening.wild === null, JSON.stringify(opening));
+    const wayOut = await page.evalJs(`(() => {
+      const d = window.__debug, s = d.state();
+      for (let r = 0; r < s.size[1]; r++) for (let c = 0; c < s.size[0]; c++) {
+        const q = d.cellAt(r, c);
+        if (q && q.stair === 'up') return { row: r, col: c };
+      }
+      return null;
+    })()`);
+    check('the way out of the Imperial Dungeons is the level\'s own stair art',
+      Boolean(wayOut), JSON.stringify(wayOut));
+    if (!wayOut) throw new Error('START.MIF has no way-out art to leave by');
+    await page.evalJs(`window.__debug.teleportCell(${wayOut.row},${wayOut.col})`);
+    // `E` twice at most: the first press can be the escape *objective* (a new game's own step),
+    // and the second is the stair — exactly what a player who walks out does.
+    let inCountry = false;
+    for (let press = 0; press < 3 && !inCountry; press++) {
+      await key('KeyE');
+      await new Promise((r) => setTimeout(r, 400));
+      inCountry = await page.evalJs('Boolean(window.__debug?.state && window.__debug.state().wild)');
+    }
+    check('…and leaving it comes up in the open country, with the map down',
+      inCountry && await page.evalJs('window.__debug.state().mapOpen === false'),
+      JSON.stringify(await page.evalJs('({ at: window.__debug.state().wild?.cell, settlement: window.__debug.state().location?.name, mapOpen: window.__debug.state().mapOpen })')));
+    await page.screenshot(path.join(shots, 'opening-dungeon-out-in-the-country.png'));
   };
 }

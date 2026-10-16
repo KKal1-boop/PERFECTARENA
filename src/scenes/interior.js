@@ -77,10 +77,17 @@ import { cityTemplateVariant, wildernessSeed } from '../arena/cityDataSeeds.js';
 import { blockIdsFromListing, rmdName } from '../arena/rmdFile.js';
 import { collectFlats, flatBaseY, flatRecordNames, flatSize, isTreeArt, SPRITE_SCALE } from '../game/flats.js';
 import {
-  CITY_ORIGIN, CITY_RING, WILD_WINDOW, buildWildernessWindow, generateWildernessIndices,
+  CITY_ORIGIN, CITY_RING, WILD_CHUNK, WILD_WINDOW, buildWildernessWindow, generateWildernessIndices,
   isCityCell, wildernessBlockLists, wildernessInfName, wildernessWindowOrigin,
   readWildRequest,
 } from '../game/wilderness.js';
+// **Where a dungeon's door is, out in the country** — the rule behind the owner's *"STILL
+// EXITING A DUNGEON JUST SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*: the country is the
+// nearest settlement's own wilderness, the door is a ruin block in it, and which ruin is a
+// property of the dungeon's own seed. See `game/dungeonSurface.js` for what is the install's
+// and what is this project's rule.
+import { nearestCountry, ruinBlockFor } from '../game/dungeonSurface.js';
+import { START_INTERIOR } from '../game/startFlow.js';
 import { loadWorldMap } from '../game/worldMap.js';
 import {    LAST_LOCATION_KEY, loadCharacter, loadQuestState, saveCharacter, saveQuestState,
     loadRadiantState, saveRadiantState, lootStillEmpty, markLootTaken, loadRegard, saveRegard,
@@ -238,6 +245,19 @@ const GATE_STEP = 3;
  * walking past the wall from throwing the player into the country.
  */
 const GATE_WALK_REACH = 3.2;
+
+/**
+ * Where the **opening dungeon** stands, as a world-map pixel — the palace's own marker.
+ *
+ * `START.MIF` is the one dungeon `CITYDATA` has no record for: it is a bare map file, so it has
+ * no `global` pixel of its own, and the game hands every new character to it (`game/startFlow.js`).
+ * Its exit therefore needs *a* point to ask the world where its country is, and the honest one is
+ * the Imperial Palace's own marker — the map builds that marker at the continent's centre
+ * (`scenes/worldmap.js`: `{ x: 172, y: 106 }`, the same default `lastLocationGlobal` falls back
+ * to), and Arena's Imperial Dungeons lie under the palace. Stamped as this project's rule: the
+ * original's own answer lives in `A.EXE` and is not in this checkout.
+ */
+const OPENING_DUNGEON_POINT = Object.freeze({ x: 172, y: 106 });
 
 /**
  * DOM key codes the player holds, and how each of them drives the motor.
@@ -922,7 +942,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /**
    * The wilderness block grid, once per page (see `wildernessGrid`).
-   * @type {{seed: number, indices: Uint8Array, counts: Record<string, number>, blocks: number}|null}
+   * @type {{seed: number, indices: Uint8Array, categories: string[], counts: Record<string, number>, blocks: number}|null}
    */
   let wildGrid = null;
 
@@ -1077,7 +1097,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * time the page loads, and two settlements never share it.
    *
    * @param {number} seed
-   * @returns {Promise<{seed: number, indices: Uint8Array, counts: Record<string, number>, blocks: number}>}
+   * @returns {Promise<{seed: number, indices: Uint8Array, categories: string[], counts: Record<string, number>, blocks: number}>}
    */
   async function wildernessGrid(seed) {
     if (wildGrid && wildGrid.seed === seed) return wildGrid;
@@ -1093,7 +1113,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     }
     const { lists } = wildernessBlockLists(blocks);
     const drawn = generateWildernessIndices(seed, lists);
-    wildGrid = { seed, indices: drawn.indices, counts: drawn.counts, blocks: blocks.size };
+    // `categories` comes along with the grid: it is what says *which* blocks are the country's
+    // ruins, which is what a dungeon's door is decided against (`game/dungeonSurface.js`).
+    wildGrid = { seed, indices: drawn.indices, categories: drawn.categories, counts: drawn.counts, blocks: blocks.size };
     return wildGrid;
   }
 
@@ -1496,9 +1518,29 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let wild = null;
     let gateCell = null;
     let standCell = null;
+    /**
+     * **The ruin this country's dungeon came out of** (`?ruin=<seed>`, see `ruinAtPlayer`).
+     *
+     * A dungeon's exit boots this page with the dungeon's own seed and *no* cell, because the
+     * door is out here in a ruin — and which ruin is a rule rather than a fact the URL carries
+     * (`game/dungeonSurface.js`: the country's own ruin list, drawn from the dungeon's seed). So
+     * the page works it out against the grid it has just built, stands the player at it, and `E`
+     * there goes back down (`interact`'s ruin branch).
+     *
+     * The parameter rides along through a gate crossing (`crossGate` deletes the country's own
+     * parameters but not this one), so walking into the town and back out of it leaves the ruin
+     * the way down it was — the country is the same country either way.
+     * @type {{seed: number, block: {blockRow: number, blockCol: number}, cell: {row: number, col: number}}|null}
+     */
+    let wildRuin = null;
     if (wildRequest) {
       const seed = wildRequest.seed ?? place?.wildernessSeed ?? cityRequest?.seed ?? 20232;
       const grid = await wildernessGrid(seed);
+      const ruinSeed = params.has('ruin') ? Number(params.get('ruin')) : null;
+      if (Number.isFinite(ruinSeed)) {
+        const ruin = ruinBlockFor(grid.categories, ruinSeed);
+        if (ruin) wildRuin = { seed: ruinSeed, block: { blockRow: ruin.blockRow, blockCol: ruin.blockCol }, cell: { row: ruin.row, col: ruin.col } };
+      }
       // Where the window is. `?wild=row,col` names a cell; without one the player
       // arrives at the settlement's own start point — the foot of its gate, the same
       // cell the city page arrives on, because both places share one grid.
@@ -1520,7 +1562,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
             return same ? cell : null;
           } catch { return null; }
         })();
-      const at = remembered ?? wildRequest.cell ?? gateCell;
+      // **The ruin beats the gate, and an explicit cell beats both.** A page booted by a
+      // dungeon's exit carries `?ruin=` and no cell, so the player stands at the ruin the
+      // dungeon's door is in — the way back down — while a page that names a cell (`?wild=12,34`,
+      // the gate crossing, a slide of the window) still lands exactly there, and the save's
+      // remembered cell answers a bare `?wild`.
+      const at = wildRequest.cell ?? wildRuin?.cell ?? remembered ?? gateCell;
       const cameFromMemory = Boolean(remembered);
       const origin = wildernessWindowOrigin(at.row, at.col);
       status(`wilderness · seed ${seed} · blocks ${grid.counts.normal ?? 0} normal + ${grid.counts.village ?? 0} village + ${grid.counts.dungeon ?? 0} ruins`);
@@ -1853,7 +1900,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       index, level, rawLevel: mifLevel, built, mesh, collider, motor, inf, infName, uploaded, missing, openSky, outdoor,
       triggers: triggerCells,
       spawn, cam, city, doors, shopKinds: city ? shopSignKinds(inf) : null,
-      wild, scenery, sceneryBatches, standCell, sampler, surfaces,
+      wild, scenery, sceneryBatches, standCell, wildRuin, sampler, surfaces,
       leaves: leafSpots, loot: lootSpots, lootBatches,
       spawns, roster, peopleSpots: spawns.people, furniture: furnishing.props.length,
       lightSources: sceneLightSources(scenery.flats.map((flat) => ({ ...flat,
@@ -2721,24 +2768,183 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
-   * Leave the place the player is in: the street, or the dungeon.
+   * Leave the place the player is in: the street, the dungeon, or the country.
    *
    * Inside a building the way out is the street cell of its own doorway — the rule
    * `interact()` already uses for `E` in the doorway, and the same one the install's own
-   * `GATE`/`*LEVELUP` art means. Out in the country or in a dungeon there is no back door to
-   * walk through: the world map is the surface, so leaving opens it, with the notice saying
-   * so (the map is an overlay over the running game, so nothing is lost by it).
+   * `GATE`/`*LEVELUP` art means. A **dungeon's** way out is the country it stands in
+   * (`dungeonCountryBoot`), which is what the original does and what the owner asked for. The
+   * world map is what is left for a place with no country to compute — a settlement's own back
+   * door — and even there it is an overlay over the running game, so nothing is lost by it.
    *
-   * @returns {{to: 'street'|'map', href?: string}} what happened
+   * @returns {{to: 'street'|'wilderness'|'map'|'none', href?: string}} what happened
    */
   function leaveThePlace() {
     if (backHref) {
       const left = leaveDoor();
       return left ? { to: 'street', href: left.to } : { to: 'street' };
     }
+    // **A dungeon's way out is the country, not a menu.** This used to open the world map,
+    // reasoning that "the map is the surface" — it is not: Arena puts the player back **on the
+    // surface at the dungeon's door**, under the sky, and the map is something they open
+    // deliberately. The owner, 2026-10-16: *"STILL EXITING A DUNGEON JUST SHOWS YOU THE MAP NOT
+    // THE FUCKING WILDERNESS"*. So the exit boots the wilderness page (`?wild=`, the same URL
+    // `crossGate` builds). **And the door does not depend on the player having walked in from
+    // the country**: the surface cell the world remembers is used when there is one (a walk in
+    // and back out returns exactly where they went in), and when there is not, the dungeon's own
+    // record says where its country is and which ruin its door is in — that is the case a fast
+    // travel or a dev door leaves, and the case that used to end on the map.
+    if (!current?.city && place?.kind === 'dungeon') {
+      const remembered = (() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem(LAST_LOCATION_KEY) ?? 'null');
+          return saved?.wild && Number.isFinite(saved.wild.row)
+            ? { row: Math.round(saved.wild.row), col: Math.round(saved.wild.col), name: saved.name ?? null }
+            : null;
+        } catch { return null; }
+      })();
+      if (remembered) {
+        const next = new URLSearchParams(params);
+        for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wildseed']) next.delete(key);
+        if (remembered.name) next.set('location', remembered.name);
+        next.set('wild', `${remembered.row},${remembered.col}`);
+        const folder = source?.arenaPath ?? params.get('arena') ?? null;
+        if (folder) next.set('arena', folder);
+        dbg.leave = { to: 'wilderness', cell: { row: remembered.row, col: remembered.col }, place: remembered.name };
+        showNotice('You climb out into the open air.', 3000);
+        void goInPlace(next);
+        return { to: 'wilderness' };
+      }
+      // **No cell remembered? The dungeon still has a country.** A dungeon's door is a property
+      // of its own record — the nearest settlement's wilderness, and the ruin its seed picks out
+      // of it (`game/dungeonSurface.js`) — so the exit computes it and stands the player at the
+      // ruin, in the open air, with the way back down under their feet.
+      const boot = dungeonCountryBoot();
+      if (boot) {
+        dbg.leave = { to: 'wilderness', place: boot.place, seed: boot.seed, ruin: boot.ruin, cell: null };
+        showNotice(`You climb out into the open country outside ${boot.place}.`, 3200);
+        void goInPlace(boot.next);
+        return { to: 'wilderness' };
+      }
+      // Nothing to compute from: the record has no world pixel, or the world has no settlement
+      // with a wilderness of its own. Say so rather than pretend the map is the sky.
+      showNotice('You climb out of the dark — but this install ships no country here to stand you in.', 3400);
+      dbg.leave = { to: 'none', reason: 'no country for this dungeon' };
+      return { to: 'none' };
+    }
+    // **The opening dungeon is the one dungeon `CITYDATA` has no record of.** `START.MIF` is a
+    // bare map file, so there is no `global` pixel to ask the world where its country is — and
+    // this is the *first* dungeon a player ever leaves (character creation hands them to it,
+    // `game/startFlow.js`), which is exactly where the owner's report came from. Arena's
+    // Imperial Dungeons lie under the Imperial Palace, and the map carries the palace's own
+    // marker at the continent's centre (`scenes/worldmap.js`): so the country is the one nearest
+    // that marker, and the player comes up in it. Stamped as this project's rule — `A.EXE` holds
+    // the original's own answer and is not in this checkout.
+    if (!current?.city && !wildRequest && !place && !entryCell && !backHref && mapName === START_INTERIOR) {
+      const boot = dungeonCountryBoot(OPENING_DUNGEON_POINT, null);
+      if (boot) {
+        dbg.leave = { to: 'wilderness', place: boot.place, seed: boot.seed, ruin: null, cell: null, reason: 'the opening dungeon has no record of its own' };
+        showNotice(`You climb out into the open country outside ${boot.place}.`, 3200);
+        void goInPlace(boot.next);
+        return { to: 'wilderness' };
+      }
+    }
     showNotice('You step back out under the sky.', 3000);
     void openWorldMap();
     return { to: 'map' };
+  }
+
+  /**
+   * **The country outside a dungeon**, as the URL a page load would have used.
+   *
+   * `crossGate`'s twin, for the other end of the journey: it names the settlement whose own
+   * wilderness the country is, hands the page the settlement's wilderness seed, and — when the
+   * dungeon has a seed of its own — names the **ruin** the door is in (`?ruin=`), so the country
+   * page stands the player at it and lets them walk back down (`interact`'s ruin branch).
+   *
+   * Everything about it is read rather than invented: the settlement comes from the world map's
+   * own records (`game/dungeonSurface.js`'s `nearestCountry`, the rule fast travel uses), the
+   * country's seed is that settlement's, and the ruin is one of the blocks the country's own grid
+   * draws (`classifyBlock`). A picked folder travels with the scene (`source.arenaPath`), the
+   * dev door's `?arena=` rides along, and the dungeon's own parameters are dropped — the page
+   * that comes back must not still be told it is in a dungeon.
+   *
+   * @param {{x: number, y: number}} [point]  the dungeon's world-map pixel (default: its record's)
+   * @param {number|null} [dungeonSeed]
+   * @returns {{next: URLSearchParams, place: string, seed: number, ruin: number|null}|null}
+   */
+  function dungeonCountryBoot(point = place?.global, dungeonSeed = place?.dungeonSeed ?? null) {
+    if (!point) return null;
+    const settlement = nearestCountry(world, point);
+    if (!settlement) return null;
+    const seed = settlement.wildernessSeed >>> 0;
+    const next = new URLSearchParams(params);
+    for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'ruin', 'location', 'dungeon', 'dungeonSeed']) next.delete(key);
+    next.set('location', settlement.name);
+    // A bare `?wild` is "the country of this location": no cell is named, so the page's own
+    // rules choose the arrival — the ruin below when one is named, the save's remembered cell
+    // when it belongs to this settlement, and the gate otherwise.
+    next.set('wild', '');
+    next.set('wildseed', String(seed));
+    if (dungeonSeed != null) next.set('ruin', String(dungeonSeed));
+    const folder = source?.arenaPath ?? params.get('arena') ?? null;
+    if (folder) next.set('arena', folder);
+    return { next, place: settlement.name, seed, ruin: dungeonSeed ?? null };
+  }
+
+  /**
+   * **The ruin the player is standing in**, if this country holds the dungeon they came out of.
+   *
+   * The whole ruin **block** counts as the door, not the one cell the exit aimed at: a ruin is
+   * 64×64 cells of courtyards and walls, the page stands the player at its centre and then
+   * repairs that cell to the nearest ground (`standNear`), so a test of one cell would leave a
+   * player two paces off the mark with no way back down. `null` when the country has no ruin of
+   * its own (`?ruin=` absent — a country entered from a city gate, or an install whose `.RMD`s
+   * hold no ruin blocks).
+   *
+   * @returns {{seed: number, block: {blockRow: number, blockCol: number}, cell: {row: number, col: number}, at: {row: number, col: number}}|null}
+   */
+  function ruinAtPlayer() {
+    // Off `current`, like every other per-level fact the scene keeps (`standCell`, `wild`): the
+    // ruin is decided inside `loadLevel` and read from the frame loop and from `interact`.
+    const ruin = current?.wildRuin;
+    if (!ruin || !current?.motor?.pos) return null;
+    const feet = current.motor.pos;
+    const cell = {
+      row: Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0),
+      col: Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0),
+    };
+    const row0 = ruin.block.blockRow * WILD_CHUNK;
+    const col0 = ruin.block.blockCol * WILD_CHUNK;
+    const inside = cell.row >= row0 && cell.row < row0 + WILD_CHUNK
+      && cell.col >= col0 && cell.col < col0 + WILD_CHUNK;
+    return inside ? { ...ruin, at: cell } : null;
+  }
+
+  /**
+   * **The way down**: back into the dungeon this ruin is the door of.
+   *
+   * By **seed**, not by name — the 128 dungeon records this install leaves unnamed are addressed
+   * by their number everywhere else in the game (`scenes/worldmap.js`'s `travelUrl`), and the
+   * dungeon page resolves the record from that one number: its name, its `.MIF` when the install
+   * ships one, or the pieces it is assembled from when it does not.
+   *
+   * @param {{seed: number, at: {row: number, col: number}}} ruin
+   * @returns {boolean} always true — the caller is `interact`
+   */
+  function enterRuin(ruin) {
+    const record = world.locations.find((l) => String(l.dungeonSeed) === String(ruin.seed)) ?? null;
+    const next = new URLSearchParams(params);
+    // The country's own parameters go: the page that comes back is a dungeon, and a stale
+    // `location=`/`wild=` would have it build a settlement (and then the country again).
+    for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'ruin', 'location', 'dungeon']) next.delete(key);
+    next.set('dungeonSeed', String(ruin.seed));
+    const folder = source?.arenaPath ?? params.get('arena') ?? null;
+    if (folder) next.set('arena', folder);
+    dbg.ruinEnter = { seed: ruin.seed, name: record?.name ?? null, cell: ruin.at };
+    showNotice(`You climb down into ${record?.name ?? 'the dark of the ruin'}.`, 3000);
+    void goInPlace(next);
+    return true;
   }
 
   /**
@@ -6626,6 +6832,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       crossGate(gate, gate.to === 'wilderness');
       return true;
     }
+    // ── the ruin ───────────────────────────────────────────────────────────────
+    // Standing in the ruin a dungeon's door is in: `E` goes back down. A country has no doors
+    // and no shops, so the only `E` out here is this one (and the gate above) — and it is the
+    // other half of a dungeon's exit, which stands the player at exactly this block
+    // (`leaveThePlace`). `wildRuin` is null anywhere but a country page booted by that exit.
+    const ruin = ruinAtPlayer();
+    if (ruin) {
+      enterRuin(ruin);
+      return true;
+    }
     // ── the doors ──────────────────────────────────────────────────────────────
     // In a city, an `E` in a shop's doorway walks in; inside a building, an `E` on the
     // street cell they came in by walks back out (see `enterDoor`/`leaveDoor`).
@@ -8231,6 +8447,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           );
         })(),
         gate: gateAtPlayer(),
+        // **The ruin, and whether the player is standing in it.** The country's own answer to
+        // "where is that dungeon's door", so a browser suite can leave a dungeon, read the ruin
+        // the exit chose and walk back in — without reading a pixel (`?ruin=` is what a dungeon's
+        // exit hands over; see `dungeonCountryBoot`).
+        ruin: current.wildRuin ? {
+          seed: current.wildRuin.seed,
+          block: current.wildRuin.block,
+          cell: current.wildRuin.cell,
+          onRuin: Boolean(ruinAtPlayer()),
+        } : null,
         flats: current.scenery?.flats?.length ?? 0,
         flatBatches: (current.sceneryBatches ?? []).length,
         flatNames: flatRecordNames(current.scenery?.flats ?? []).slice(0, 16),

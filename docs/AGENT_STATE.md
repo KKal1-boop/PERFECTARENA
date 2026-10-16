@@ -1,17 +1,21 @@
-# AGENT_STATE (updated 2026-10-16, seventh pass)
+# AGENT_STATE (updated 2026-10-16, eighth pass)
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
 `docs/DEFECTS.md` with their own sections** and are the work list. **D-01a, D-01b, D-02a, D-12,
-D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25 and D-26 are closed, and D-27 is closed for the
-both directions** (walking out, and back in — `dbf4058`). Both reports
+D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25, D-26 and D-34 are closed, and D-27 is closed for
+the both directions** (walking out, and back in — `dbf4058`). Both reports
 ask for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` is
 that work order — **23** system-level blocks with their source of truth, their module, the check
 that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
 **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN: unit **`469/469`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — seven
-new checks, `unit/stride.test.mjs`. Browser: **`movement` 11/11** (new this pass: every movement key
+LAST GREEN (this pass): unit **`476/476`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
+test`) — seven new checks, `unit/dungeonsurface.test.mjs`. Browser: **`dungeonplay` 20/20** (17 of
+them one walk: a dev-door dungeon → its own stair → the country at the ruin its seed picks → `E`
+back down, plus the opening dungeon → the country outside Riverhold) · **`mainquest` 62/62** ·
+**`movement` 11/11** · **`world` 28/28**. Previous pass's record: unit **`469/469`, exit 0** — seven
+new checks, `unit/stride.test.mjs`. Browser: **`movement` 11/11** (new then: every movement key
 held leaves the frame counter climbing, the stride measured, the city gate walked through) ·
 `world` + `living` + `audit` **88/88** · `world` + `dungeonplay` + `combat` **75/75** (and, after
 D-32's fix, unit **469/469** and `movement` **11/11** re-run on the fixed tree). The full
@@ -21,8 +25,41 @@ touched creation). Earlier browser runs, for the record:
 it was written) · `world` **28/28** · `combat` + `actioncombat` **82/82** · `chargen` **41/41** ·
 `menu` · `dungeonplay` **10/10** (the camp the level hears).
 
-IN PROGRESS: nothing half-edited. Working tree clean; `docs/` of this pass committed after the code
-(`5cccb80`).
+IN PROGRESS: nothing half-edited. `src/game/dungeonSurface.js` + `tests/unit/dungeonsurface.test.mjs`
+are new; `interior.js` (the exit, the `?ruin=` country page, `E` at the ruin) and
+`tests/suites/dungeonplay.mjs` (two new walks) moved with them. The ninth pass's first item is
+§5 item 0 in `docs/PORT_BLOCKS.md` (dungeon depth), unless the owner's report is louder.
+
+WHAT THIS PASS PROVED (eighth pass, 2026-10-16 part five — D-34, and `docs/PORT_BLOCKS.md` §4c):
+* **D-34 — a dungeon's way out is the country, not the map.** The owner: *"STILL EXITING A DUNGEON
+  JUST SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*. The exit called `openWorldMap()` for
+  anything without a back door, defended by the comment *"the world map is the surface"* — it is
+  not, and the port had no rule for where a dungeon's door is (it never needed one: the only exit
+  it had ever served was the one walked into from the country, which used D-32's memory). New
+  **`src/game/dungeonSurface.js`**: the country is the wilderness of the settlement **nearest the
+  dungeon's world-map pixel** (the fast-travel rule; the palace skipped — no wilderness seed), the
+  door is a **ruin block** of that country's drawn grid (22 of 66 scenery blocks classify as ruins),
+  and which ruin is **one draw from the dungeon's own seed** (`ArenaRandom`, the grid's own
+  `(next() & 0xff) % list.length` habit) — the same, deterministic answer every time, so a player can
+  walk back in. `leaveThePlace` boots that country (`?location=&wild&wildseed=&ruin=`, `crossGate`'s
+  twin), the country page stands the player at the ruin (`state().wild.ruin`), and `E` there goes
+  back down by seed (`enterRuin`). The **opening dungeon** (`START.MIF` — no `CITYDATA` record, and
+  the *first* exit a player ever takes) uses the Imperial Palace's own marker at the continent's
+  centre (`OPENING_DUNGEON_POINT`), stamped as this project's rule (`A.EXE` holds the original's).
+  Measured on real pages (`dungeonplay` 20/20): `?dungeon=Stonekeep` (seed 3969902143) + its own
+  `up` stair + real `E` → **`mapOpen: false`**, country blocks `[63,29,25,70]`, player at
+  **(1568, 3360)** = the centre of **ruin block (24, 52)**, `wild.ruin.onRuin true`; real `E` again →
+  the same dungeon; and `?interior=START.MIF` → the open country outside **Riverhold**. Unit:
+  `unit/dungeonsurface.test.mjs` 7/7. **Gap named on the row**: a ruin the exit did *not* name is
+  inert — the country's own ruins are not doors yet (the draw run backwards, or a record written the
+  first time a door is used).
+* **A fault found by measuring, and the reason the first attempt was wrong.** `wildRuin` was first
+  declared beside `wild`/`standCell` in the level loader, where it is a **`loadLevel` local** — so
+  `ruinAtPlayer()` read an undeclared name, `interact()` rejected, and **`E` stopped doing anything
+  in every dungeon** (`dungeonplay` 2/6 on the first run: loot `0 → 0 → 0`, a door `0 → 0`).
+  Attributed in a `git worktree` at the baseline (`a7d3f99` was 10/10), then fixed by carrying it on
+  `current` like every other per-level fact. Worth keeping: a new module inside a 9 600-line closure
+  is where scope mistakes hide, and the suite caught it in one run.
 
 WHAT THIS PASS PROVED, SIXTH PASS (block by block; full detail: `docs/DEFECTS.md`, `docs/ASSETS.md`):
 * **B17a closed (`5cccb80`) — the country is inhabited (D-01b, D-02a).** A wilderness window's
@@ -153,12 +190,20 @@ always said) and `movement` **11/11** holds both halves. The one cause still ope
 `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m).
 
 NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
-0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report),
-   and the same pass settles **D-27's open half**: the walk *back* into a city from the country.
-   Probe the gate first (`.scratch/gateback.mjs` is one run from an answer: the country's own
-   `gateCells`, the arrival cell's bearing from it, then the same push inward), because a door that
-   works one way is the same complaint half-fixed. Then the dungeon probe: per shipped dungeon,
-   `levelCount`, each stair's cell and which levels are wet.
+0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
+   Probe: per shipped dungeon, `levelCount`, each stair's cell and which levels are wet; then
+   assemble the second level the way the original's own second level reads. **D-27's open leftover
+   rides with it**: `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m), so a crossing
+   arrives 7.5 m out where the push's own reach is 3.2 — Arena's gate puts the player in the
+   opening, and one cell arithmetic settles it.
+0a. **B17 · the country's ruins as doors** (the gap named on D-34). A ruin is a door because a
+   dungeon's seed points at it; walk to the same country from a city gate and `E` there does
+   nothing. Cheapest honest rule: give each ruin block an identity from the country's own grid
+   (the draw run backwards — ruin index → seed → the record that seed names), so every ruin the
+   grid drew is enterable, and the exit's own ruin is the same door by construction. Probe first:
+   how many ruin blocks a country draws (measured: 22 of 66 blocks are ruins, and one country's
+   grid drew `[63,29,25,70]` in its window) and whether a backwards draw lands on a `CITYDATA`
+   dungeon record whose country is that same settlement.
 1. **B02 · is the start dungeon mirrored?** (D-13) — the owner's "looks like a mirrored version".
    Probe `START.MIF`'s cell grid (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) against what the
    original shows: the cell door, the `GATE.IMG` stair, the arrival room, the arrival yaw. A
@@ -179,8 +224,10 @@ the ledger and is the owner's own "we will never go on" risk.
 
 OPEN DEFECTS (top): D-28 (dungeon depth — B23, the queue's item 0) · D-13 (the mirrored start —
 B02) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced,
-needs the place or a sweep) · D-18 · D-18a (water — B05) · and the gate's own leftover: `GATE_STEP`
-against `GATE_WALK_REACH` on D-27's row. ~~D-32~~ **closed `dbf4058`** · D-28 (dungeon depth —
+needs the place or a sweep) · D-18 · D-18a (water — B05) · D-34's named gap (the country's own
+ruins are not doors yet — B17, queue item 0a) · and the gate's own leftover: `GATE_STEP`
+against `GATE_WALK_REACH` on D-27's row. ~~D-32~~ **closed `dbf4058`** · ~~D-34~~ **closed this pass**
+(`dungeonSurface.js`; the exit boots the country at the ruin the dungeon's seed picks) · D-28 (dungeon depth —
 B23) · D-29 (enemies: three numbers per dungeon) · D-30 (the "minotaur" NPC: not reproduced, needs
 the place or a sweep) · D-18 · D-18a (water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
 no relief, coast or roads — B17) · D-23 (weather that moves, a ground that knows the season —

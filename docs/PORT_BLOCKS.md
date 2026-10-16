@@ -70,7 +70,7 @@ stops a session from guessing.
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
 | B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
-| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **the walk back in works (`dbf4058`) — D-32 was the save's remembered wilderness cell overriding the explicit `?at=` arrival; the only cause left on that row is `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
+| B17 | Wilderness, leaving a city on foot, **and a dungeon's own door out here** | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks, `CITYDATA.64`'s 144 dungeon records | `wilderness.js`, `wildernessBestiary.js`, **`dungeonSurface.js`** | `[~]` **(D-34 closed with `dungeonSurface.js` + `leaveThePlace`): a dungeon's way out is the country, not the map** — the country is the wilderness of the settlement nearest the dungeon's world-map pixel, the door is a ruin block of that country's drawn grid chosen by the dungeon's own seed, the country page stands the player at it (`state().wild.ruin`) and `E` goes back down by seed. Measured: `?dungeon=Stonekeep` (seed 3969902143) → the country at cell **(1568, 3360)** = the centre of ruin block **(24, 52)**, `onRuin: true`, then the same dungeon again; `START.MIF` (no record of its own) → the country outside Riverhold. **Gap named**: a ruin nothing points at is inert — the country's ruins are not doors yet (queue §5 item 0). **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **the walk back in works (`dbf4058`) — D-32 was the save's remembered wilderness cell overriding the explicit `?at=` arrival; the only cause left on that row is `GATE_STEP` (3 cells = 7.5 m) against `GATE_WALK_REACH` (3.2 m)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
 | B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
@@ -168,6 +168,51 @@ and passes the day: "You make camp and rest.").
 
 ---
 
+## 4c. What this pass closed (2026-10-16, part five)
+
+**B17 · a dungeon's door is out in the country** (D-34; the owner: *"STILL EXITING A DUNGEON JUST
+SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*). The exit opened the **world map**, and the comment
+that defended it was the tell — *"the world map is the surface"*. It is not. New
+`src/game/dungeonSurface.js` holds the rule and says in its own header which half is the install's
+and which is this project's:
+
+* **the country** is the wilderness of the settlement **nearest the dungeon's world-map pixel**
+  (the rule fast travel already uses, `nearestSettlement`; a settlement with no wilderness seed —
+  the palace — is skipped rather than answered with);
+* **the door** is a **ruin block** of that country's drawn grid — 22 of the 66 scenery blocks are
+  ruins (`classifyBlock`) — chosen by **one draw from the dungeon's own seed** (`ArenaRandom`, the
+  same `(next() & 0xff) % list.length` habit the grid itself picks block ids with), and the door is
+  that block's centre cell;
+* **RECONSTRUCTED, and stamped so**: the original's per-dungeon entrance coordinate lives in
+  `A.EXE`, which is not in this checkout. Nothing about the *country* is invented — the ruin is one
+  of the blocks the settlement's own grid drew.
+
+Measured on real pages (`dungeonplay`, 17 checks on one walk, booted at `?dungeon=Stonekeep` —
+Hammerfell, seed 3969902143, `39699021.MIF`: **a dungeon reached by a dev door, never walked into
+from the country**, which is exactly the case that used to end on the map):
+
+* its own `*LEVELUP` stair (the level's art; one `up` cell at 1,39) and the real `E` → **the
+  country**, `mapOpen: false`, window blocks `[63,29,25,70]`, player at wilderness cell
+  **(1568, 3360)** = the centre of **ruin block (24, 52)**;
+* `state().wild.ruin` = `{ seed: 3969902143, block: {blockRow: 24, blockCol: 52},
+  cell: {row: 1568, col: 3360}, onRuin: true }`;
+* the real `E` again → **back down into the same dungeon**: the round trip closes;
+* and the **opening dungeon** — `START.MIF`, the one dungeon `CITYDATA` has no record of, and the
+  **first** exit every player takes (`startFlow.js` hands them to it) → the open country outside
+  **Riverhold**, the settlement nearest the Imperial Palace's own marker at the continent's centre
+  (`OPENING_DUNGEON_POINT`; this project's rule again, and named in the code).
+
+`tests/unit/dungeonsurface.test.mjs` 7/7 holds the rule (a ruin is a block of the drawn grid, the
+door is that block's centre, one dungeon one door, two ruins split over 64 seeds, no ruin → null,
+the country skips a settlement with no wilderness seed, the whole answer is stable).
+
+**The named gap on this block.** A ruin is a door *because a dungeon's seed points at it* — so a
+country entered from a city gate has ruins that nothing points at, and `E` there does nothing. The
+other direction (walk into a ruin first, whatever the country) needs an identity per ruin: either
+the draw run backwards from the grid, or a record written the first time a door is used.
+
+---
+
 ## 5. The queue — what the next sessions take, in order
 
 Each entry names **the first probe**, because a block starts with a measurement.
@@ -240,7 +285,10 @@ is the row's next task.
    Arena scene; then wire the decals into `combatFx`, and delete any remaining invented burst.
 5. **B17 · the country** (D-22, P3/P4). The largest block: leave a city gate on foot, walk a
    continuous Tamriel (relief, coast, roads, per-climate terrain), meet people (D-01b) and
-   creatures (D-02a) there, and enter wild buildings.
+   creatures (D-02a) there, and enter wild buildings. **A dungeon's door out here is closed
+   (§4c, D-34)**, and what is left of the *door* part is the country's own ruins as entrances — a
+   ruin nothing points at is inert today, which is one rule (an identity per ruin block) and the
+   cheapest thing left on this block after that.
 6. **B18 · weather that moves and a ground that knows the season** (D-23): the front, the
    per-climate ground mix, snow on the ground, and the night/snow variants of city art.
 7. **B22 · asset coverage** (D-03/D-24, and the owner's "you should port much more from arena" =
