@@ -178,7 +178,7 @@ Each entry names **the first probe**, because a block starts with a measurement.
    cell (D-32) — the walk back is *undone*, not unwritten. Two small causes: the slide must keep the
    player's own cell, and `GATE_STEP` between two *adjacent* pages should be **1 cell** (which is
    what Arena's own gate reads as). The failing probe exists (`.scratch/gatein.mjs`) and is the
-   acceptance test: cell (1992, 2112) → the city page within a second of holding `W`, no snap-back.
+   acceptance test: cell (1992, 2113) → the city page within a second of holding `W`, no snap-back.
 1. **B02 · is the start dungeon mirrored?** (D-13.) Probe: render `START.MIF`'s cell grid as
    text (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) and compare it against the original's
    own screen — the cell door, the stair (`GATE.IMG`), the room the arrival point is in, and the
