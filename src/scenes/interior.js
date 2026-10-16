@@ -230,6 +230,16 @@ const CITY_SUN_SCALE = 0.95;
 const GATE_STEP = 3;
 
 /**
+ * How close to the gate's own cell a **push** has to be to cross it, in world units.
+ *
+ * One cell is `CELL_SIZE` (2.5); a player standing in the street behind the gate is one cell
+ * from it and a player pressed up against the gateway is nearer still, so this is one cell
+ * plus the slack a body radius leaves. Two cells back is out of reach, which is what keeps
+ * walking past the wall from throwing the player into the country.
+ */
+const GATE_WALK_REACH = 3.2;
+
+/**
  * DOM key codes the player holds, and how each of them drives the motor.
  *
  * The motor's contract is DFU's: `forward` and `strafe` are signed **axes** (−1…1), so
@@ -2791,6 +2801,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
+   * The same conversion the other way: a settlement cell as a cell of the level now standing.
+   *
+   * `gateCellAt` answers in the settlement's own coordinates (a city page *is* the settlement;
+   * a wilderness page holds it at `CITY_ORIGIN`), and a player's feet are in level
+   * coordinates, so anything that measures the distance to a gate has to come back.
+   *
+   * @param {{row: number, col: number}} cell  settlement coordinates
+   * @returns {{row: number, col: number}} level coordinates
+   */
+  function gateLevelCell(cell) {
+    const origin = current?.wild ?? null;
+    return origin
+      ? { row: cell.row - origin.originRow + CITY_ORIGIN, col: cell.col - origin.originCol + CITY_ORIGIN }
+      : { row: cell.row, col: cell.col };
+  }
+
+  /**
    * Is this level cell the settlement's gate?
    *
    * On the settlement's outermost line, open (air, or the `0x9` gateway voxel itself),
@@ -2837,14 +2864,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!level) return [];
     /** @type {Set<string>} */
     const sides = new Set();
-    const local = (lr, lc) => {
-      const origin = current?.wild ?? null;
-      return origin
-        ? { row: lr - origin.originRow + CITY_ORIGIN, col: lc - origin.originCol + CITY_ORIGIN }
-        : { row: lr, col: lc };
-    };
     for (const [lr, lc] of settlementWallCells()) {
-      const { row, col } = local(lr, lc);
+      const { row, col } = gateLevelCell({ row: lr, col: lc });
       const gate = gateCellAt(row, col);
       if (gate) sides.add(gate.axis);
     }
@@ -2957,6 +2978,56 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     dbg.gate = { to: gate.to, axis: gate.axis, from: { row: gate.row, col: gate.col }, target };
     void goInPlace(next);
     return { to: gate.to, ...target };
+  }
+
+  /** Seconds before a second push at a gate may cross it (a crossing boots a scene). */
+  let gatePushLock = 0;
+
+  /**
+   * **Walk through the gate** — no keypress, because a gate is a door and a door is walked at.
+   *
+   * The owner, playing the port on 2026-10-16: *"still you cant go out of cities and into the
+   * wilderness gates dont work there is no door to bring you to the wilderness"*. The gate was
+   * there and `E` had crossed it since it was written (`crossGate`), but the wall's one opening
+   * holds the game's own gateway — a **solid** `0x9` voxel painted with `PGATE.IMG` — so a
+   * player who walks at it the way they walk at a doorway simply stops against the art. A
+   * crossing behind a keypress looks, from the player's side, exactly like no door at all.
+   *
+   * So the push crosses it: within one cell of the gateway, with the frame's own stride aimed
+   * at it (the two lines `startRoll` moves a roll by, so "the way the player is pushing" is
+   * spelled once in this file's terms). Walking *along* the wall beside the opening does not
+   * cross — the stride has to be aimed at the gate — and the lock gives the scene that boots
+   * a beat to stand before the next push can cross again.
+   *
+   * @param {{forward: number, strafe: number}} input the frame's own input
+   * @param {number} dt seconds since the last frame
+   * @returns {boolean} whether this frame crossed the gate
+   */
+  function maybeWalkThroughGate(input, dt) {
+    gatePushLock = Math.max(0, gatePushLock - dt);
+    const forward = Number(input?.forward) || 0;
+    const strafe = Number(input?.strafe) || 0;
+    if (gatePushLock > 0 || life.leaving || !(forward || strafe) || !current?.motor) return false;
+    const gate = gateAtPlayer();
+    if (!gate) return false;
+    const cell = gateLevelCell(gate);
+    const feet = feetOf();
+    // The level's own axes: **x carries the row and z carries the column** (`cellAtWorld`, and
+    // the seam's `teleportCell`, are the same convention) — the first version of this swapped
+    // them, and the rule then measured the distance to the wrong cell entirely.
+    const dx = (cell.row + 0.5) * CELL_SIZE - feet[0];
+    const dz = (cell.col + 0.5) * CELL_SIZE - feet[2];
+    const distance = Math.hypot(dx, dz) || 1;
+    if (distance > GATE_WALK_REACH) return false;
+    const mx = Math.sin(cam.yaw) * forward + Math.cos(cam.yaw) * strafe;
+    const mz = Math.cos(cam.yaw) * forward - Math.sin(cam.yaw) * strafe;
+    const len = Math.hypot(mx, mz) || 1;
+    if ((mx / len) * (dx / distance) + (mz / len) * (dz / distance) < 0.6) return false;
+    gatePushLock = 1.5;
+    // Which way the gate leads is the gate's own answer: `gateCellAt` reads it off the side of
+    // the wall the player is standing on, so this is one rule for both directions.
+    crossGate(gate, gate.to === 'wilderness');
+    return true;
   }
 
   /**
@@ -8366,6 +8437,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     pushPlayerFromPeople();
     // The country has to keep up with the player (see `maybeSlideWilderness`).
     maybeSlideWilderness();
+    // …and the gate is a door the player walks through, not a wall with a key on it (D-27).
+    // It is checked here rather than in `interact` because the motor has just moved the
+    // player: this frame's stride is what the rule reads.
+    maybeWalkThroughGate(input, dt);
     // …and the save keeps up with them too: in the wild, where they stand is the world's
     // own memory of them, refreshed a beat at a time so a closed tab lands them where
     // they walked, not where they arrived (`maybeSaveWildFoot`).

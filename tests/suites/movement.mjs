@@ -137,7 +137,55 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
       sheathed === false && again.metres > drawnLeg.metres * 1.25,
       `sheathed: ${sheathed}, run again ${again.speed} m/s (${again.metres} m) vs drawn ${drawnLeg.speed}`);
 
-    await page.evalJs(`window.__debug.teleport(${home[0]}, ${home[1]}, ${home[2]}); window.__debug.look(0, 0)`);
+    // ── 4. the gate is a door the player walks through ─────────────────────────
+    //
+    // The owner, later the same day: *"still you cant go out of cities and into the wilderness
+    // gates dont work there is no door to bring you to the wilderness"*. The gate existed and
+    // `E` crossed it, but the wall's own opening holds the game's gateway art as a **solid**
+    // voxel, so a player who walked at it stopped against it — from their side, no door at all.
+    // The push now crosses it, and this is the measurement: aim at the opening and the city is
+    // behind you; walk along the wall beside it and it is not.
+    //
+    // `x` carries the row and `z` carries the column, and the motor moves by
+    // `mx = sin(yaw)`, `mz = cos(yaw)` — so +z is yaw 0, −z is π, +x is π/2, −x is −π/2.
+    const pushAt = async (yaw, ms = 1600) => {
+      await page.evalJs(`window.__debug.look(${yaw}, 0)`);
+      await sleep(150);
+      await page.pressKey('KeyW', true);
+      await sleep(ms);
+      await page.pressKey('KeyW', false);
+      await sleep(1500);
+      return page.evalJs('({ wild: Boolean(window.__debug.state().wild), map: window.__debug.state().map, feet: window.__debug.state().feet })');
+    };
+    await page.goto(url);
+    await ready();
+    await page.evalJs('window.__debug.pause(false)');
+    const size = await page.evalJs('window.__debug.state().size');
+    const gate = await page.evalJs('window.__debug.gateCells(1)[0]');
+    check('the city has a gate in its wall, and the game knows which cell it is',
+      Boolean(gate) && Number.isInteger(gate?.row) && Number.isInteger(gate?.col),
+      gate ? `the opening is at ${gate.row},${gate.col} of ${size[0]}×${size[1]}` : 'no gate cell at all');
+    const inwardRow = gate.row === size[1] - 1 ? -1 : gate.row === 0 ? 1 : 0;
+    const inwardCol = gate.col === size[0] - 1 ? -1 : gate.col === 0 ? 1 : 0;
+    const outYaw = inwardCol === 1 ? Math.PI : inwardCol === -1 ? 0 : inwardRow === 1 ? -Math.PI / 2 : Math.PI / 2;
+    const stand = [gate.row + inwardRow, gate.col + inwardCol];
+
+    await page.evalJs(`window.__debug.teleportCell(${stand[0]}, ${stand[1]})`);
+    await sleep(300);
+    const walkedOut = await pushAt(outYaw);
+    check('walking at the gate leaves the city on foot, with no keypress at all',
+      walkedOut?.wild === true && Math.hypot(walkedOut.feet[0] - stand[0] * 2.5, walkedOut.feet[2] - stand[1] * 2.5) > 0,
+      `${walkedOut?.map} → ${walkedOut?.wild ? 'the country' : 'still the city'} at ${JSON.stringify(walkedOut?.feet)}`);
+
+    // The country page stands; the same push aimed *along* the wall must not throw the player
+    // out again — the rule reads which way the stride is aimed, not where it is standing.
+    const alongYaw = outYaw > 0 ? outYaw - Math.PI / 2 : outYaw + Math.PI / 2;
+    const beforeAlong = await page.evalJs('window.__debug.state().feet');
+    const along = await pushAt(alongYaw);
+    check('and a stride along the wall is not a crossing',
+      along?.wild === true && along.map === walkedOut.map,
+      `still ${along?.wild ? 'the country' : 'the city'} at ${JSON.stringify(along?.feet)} (from ${JSON.stringify(beforeAlong)})`);
+
     await page.screenshot(path.join(shots, 'movement-stride.png'));
     check('the movement suite leaves no console error behind', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400) || 'none');
