@@ -307,8 +307,9 @@ function decodeFlor(cell, inf) {
  * guard this function needs because it is *also* handed building files: a city block's own `.MIF`
  * carries `0x9` arches along its line too (they are its shopfronts, and street lies behind them),
  * and opening *those* would punch holes in a facade. Swept over all 526 `.MIF` records in the
- * archive: the sixteen settlement skeletons each cut **exactly one** run of exactly two cells
- * (`CITYW1…3`, `TOWN1…5`, `TOWNW1…2`, `VILLAGE1…5`), while the blocks that carry any opening at all
+ * archive: the twenty settlement skeletons each cut **exactly one** run of exactly two cells
+ * (`CITY1…5`, `CITYW1…3`, `TOWN1…5`, `TOWNW1…2`, `VILLAGE1…5`), while the blocks that carry any
+ * opening at all
  * show one **wide** run (`NBBD6A`: fourteen cells) or **two** runs on different lines (`TSBD7A`: three
  * on row 0 and three on col 0) — so the single-run reading separates them without a filename test.
  *

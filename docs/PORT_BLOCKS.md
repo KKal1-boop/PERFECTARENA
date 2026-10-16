@@ -971,3 +971,61 @@ volcano), **0l** (the two map levels, made coherent), **0m** (Winterhold's snow 
 background), **0e** (the persistent world — *"barely moving … reloads the game and its
 unplayable"*), and **0b**'s numeric tables (the executable's own recolour rule), which D-45 now
 gives a second reason to read.
+## 4m. What this pass closed (2026-10-16, part fourteen — **the gate is a way through, and the world reloads every 160 m**)
+
+**One item closed, one item measured, one claim verified.**
+
+**0a (D-48) · the settlement gate has no collision — DONE (`a16d551`).** The owner's own
+priority, sent while the previous pass was running. Every shipped skeleton cuts exactly one
+two-cell opening in its outermost line and hangs the game's gateway art in it — a `0x9`
+transparent voxel — and the decoder read `solid` off that voxel's byte, so walking at the gate
+stopped against the art and the country opened only through a push rule (D-27). `mifLevel.js`'s
+new `openSettlementGate` marks the opening `gateway: true`; the mesher keeps it out of the
+collision soup and keeps drawing it exactly as the file says; the scene's walkability test reads
+the same flag. **Measured**: all **twenty** settlement skeletons (the file count is 20, not the
+16 an earlier note guessed — `CITY1…5`, `CITYW1…3`, `TOWN1…5`, `TOWNW1…2`, `VILLAGE1…5`) open
+one two-cell run; a `0x9` run on a **building's** own line is refused whole, which is what the
+sweep over all 526 `.MIF` records showed was needed (a block's line carries runs of fourteen, or
+a run on each of two lines); `colliderTris` falls by exactly the gate's quads while the drawn mesh
+is byte-identical. **Seen on a page** (`movement` 12/12): the assembled city reports its two
+gateway cells and walking at the gate leaves the city on foot with no keypress.
+
+The same block carries **D-49**, and it is worth the ink: the gate code the previous pass left had
+**never been booted** — it wrote the flag onto `current` four hundred lines before `current` is
+built, so every city and country page died with *"Cannot set properties of null (setting
+'gateway')"*. The suite that would have caught it (`movement`) was on that pass's *not re-run*
+list. The lesson is the file's own (D-34): a new name beside the loader is where a scope mistake
+hides.
+
+**0e (B19/D-36) · the country reloads itself — MEASURED, not fixed.** `.scratch/slideidle.mjs`
+on one country page: standing still for eight seconds re-boots nothing (`painted` 20 → 105); then
+holding `W` climbs the frame counter to 380 over 19 s and **drops it to 6** — a page re-boot, the
+window origin moving 64 cells, the player's cell and bearing kept (D-36's fix holding). So the
+country re-boots **once per 64 cells of travel ≈ 160 m ≈ 20 s of walking**. That is the owner's
+*"barely moving … reloads the game and its unplayable"*, and the cost is not the slide's position
+— the window is the original's own mechanism — but that the slide is a **new page**: level,
+crowd, creatures, light and sky all rebuilt from the save, and the country's folk re-rolled.
+
+The block that fixes it is **B25 (new): one resident country.** Its first step is not code, it is
+the probe the queue already names — *time one `goInPlace` on a page and list what the boot
+recomputes that the world already knows* (level geometry and collider, textures uploaded from the
+BSA, the crowd's placement, the sky's blend, the save read) — so the shift can be measured against
+the boot it replaces. Only then: shift the window in place, keeping the blocks that did not change
+and building only the new strip.
+
+**0m (B18) · Winterhold never stops snowing — VERIFIED, with nothing forced.** The `city` suite's
+two checks boot the real place by name (`?location=Winterhold`, no `?weather=`) and sample six
+seconds of its air: its own `MCS.INF`, its own snow sky, and `mode: snow` with particles at every
+sample. `city` **40/40** (38 before + these two).
+
+**Also**: the `persist` suite's corner check is **restated** (logged in `DEFECTS.md`): it waited 21
+wall seconds for a tick that counts *simulated* seconds, which on a software renderer lands at wall
+second 25 — so the wait is now for the save to name the cell, bounded and reported (24 s), and
+`persist` is **14/14**. A bare page really does return the player to the corner the world
+remembers.
+
+**Next, in the queue's own order** (unchanged otherwise): **0i** (D-44, the roles that never
+move — probe as written), **0b/B24** (the executable's tables, now with the race recolour as a
+second reason), **0l** (the two map levels, one picture — the owner's *"the big map and the
+region maps coherence needs to be redone"*), **0g** (the volcano, D-46), **0e/B25** (the resident
+country, above), then **0c/0d** and P2/P3's big ones.

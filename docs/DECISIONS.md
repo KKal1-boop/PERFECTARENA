@@ -874,3 +874,36 @@ are already the province's own.
 the figure is drawn from Arena's own files and the label (`a lizard-folk of the marsh`) is this
 project's, so the substitution is visible on the panel rather than hidden behind a name Arena
 never used.
+
+## D-48 · A settlement's gate is a way through, and the archive says so by geometry
+
+**Decision.** The outermost line of a settlement skeleton, where it carries exactly one
+contiguous run of exactly two `0x9` gateway voxels over walkable ground, is marked
+`gateway: true`; that flag means *drawn exactly as the file says, in nobody's collision soup*. The
+mesher reads it where it decides what enters the collider, and the scene's `walkableWorld` reads it
+too, so a monster and the player agree about the opening.
+
+**Why the flag and not a lighter change.** Clearing `solid` on the voxel would take the gate's own
+art away with the wall it stands in (a solid transparent voxel is drawn as a full box), and moving
+the gallery would be drawing on Arena's own bytes. The flag is the smallest reading that satisfies
+both: the art is untouched, the wall stands, and the opening is walkable.
+
+**Why the single-run guard.** A city **block's** own `.MIF` carries `0x9` arches along its line as
+well — they are its shopfronts, and street lies behind them — so a rule that opened any `0x9` on a
+line would punch holes in a facade. Swept over all 526 `.MIF` records: every settlement skeleton
+shows exactly one run of exactly two cells, while the blocks that carry any opening at all show one
+**wide** run (`NBBD6A`: fourteen cells) or **two** runs on different lines (`TSBD7A`: three on row
+0 and three on col 0). The single-run reading separates them without a filename test — which
+matters, because `openSettlementGate` is handed a *level*, not a name. Three settlement-shaped
+files outside the twenty still pass it (`IMPERIAL.MIF`, `VILLAGW1.MIF`, `VILLAGW2.MIF`), and each of
+those is settlement-shaped art with a two-cell opening; the scene never passes them anyway (it calls
+the rule for a city or wilderness request only).
+
+**Rejected: a filename test** (`/^CITY|TOWN|VILLAGE/`). It would make the rule depend on the
+*place's* name instead of the level's own geometry, and the assembled city page is the one caller —
+it has a skeleton and 36 stamped blocks, and the question it asks is "where is the way out", which
+the geometry answers and a filename does not.
+
+**Rejected: keeping D-27's push rule as the door.** It exists and still works, and it is what made
+the gate reachable before; but a gate you have to fight is not a gate, and the owner's own words say
+so. The push stays (nothing removed), and it is no longer the only way out.
