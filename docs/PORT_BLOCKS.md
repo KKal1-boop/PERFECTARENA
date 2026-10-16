@@ -62,20 +62,20 @@ stops a session from guessing.
 | B06 | First person: the weapon in hand, the swing, empty hands | `HAND.CIF`, `SWORD.CIF`, `AXE.CIF`, `MACE.CIF`, `HAMMER.CIF`, `STAFF.CIF` + OpenTESArena `ArenaWeaponUtils` | `weaponView.js`, `items.js` | `[x]` (D-14b) | `unit/weapon`, `unit/items`, `chargen`, `gear` |
 | B07 | Billboards: five views, walk/attack/death cycles, facing | OpenTESArena `ArenaAnimUtils` | `actorAnimation.js` | `[x]` (D-25) | `unit/actoranimation`, `townsfolk`, `actioncombat` |
 | B08 | Combat rules: to-hit, damage, poise, stagger, parry/riposte | Arena's own stat table (`SPELLS.LST`, `.INF` `*ITEM` stats) | `combat.js`, `combatStyle.js` | `[x]` | `unit/combat`, `actioncombat`, `combat` |
-| B09 | Combat **presentation**: blood, tells, no invented particles | the original's own look (no wind-up bursts) | `combatFx.js`, `engine/combat/bloodDecals.js` | `[~]` **the owner's "ugly battle particles"** — amber bursts are gone (D-20); the Arena scene still does not lay the engine's blood | `combat` |
+| B09 | Combat **presentation**: blood, tells, no invented particles | the original's own look (no wind-up bursts) | `combatFx.js`, `bloodEffect.js`, `engine/combat/bloodDecals.js` | `[~]` **the owner's "ugly battle particles"** — the invented amber bursts are gone (D-20), a landed blow is now `combatFx.blood()` (one blood red, `5cccb80`), and `bloodEffect.js` turns a blow into the engine's own decal records; **the remaining half is the decal pass** (`renderer.createDecalBatch` / `place` / `writeDecalSlot` / `drawDecals`, `renderer.js:3128-3166`) — nobody has read `engine/combat/bloodArt.js`, which is where that pass's texture comes from | `combat`, `actioncombat`, `unit/bloodeffect.test.mjs` |
 | B10 | Rest: a tavern room, a camp in the wild, **a dungeon that hears you** | the original's own behaviour (roll is `A.EXE`, not shipped) | `services.js` (`rest`), `interior.js:rest`, `encounters.js` (`stirTheLevel`) | `[x]` (D-19, this session) | `unit/hunt` |
-| B11 | Townsfolk, day plans, trades, regard | `NAMEGEN.DAT`, `.INF` `*ITEM` people, `GLOBAL.BSA` crowd sheets | `townsfolk.js`, `livingWorld.js`, `peopleKinds.js` | `[~]` **D-01b open** (nobody outside cities; wilderness bestiary missing) | `living`, `townsfolk`, `regard` |
+| B11 | Townsfolk, day plans, trades, regard | `NAMEGEN.DAT`, `.INF` `*ITEM` people, `GLOBAL.BSA` crowd sheets | `townsfolk.js`, `livingWorld.js`, `peopleKinds.js`, `wildernessBestiary.js` | `[x]` **(D-01b closed, `5cccb80`)**: a city's crowd is its own blocks' trades, its night is the trades whose day keeps them out, and the country has travellers of its own on every road | `living`, `townsfolk`, `regard`, `audit` (S-A ×4) |
 | B12 | Shops, guilds, temples, services | `TEMPLATE.DAT`, `.INF` menus | `shops.js`, `services.js`, `guilds.js` | `[x]` | `commerce`, `guilds`, `unit/shops` |
 | B13 | Radiant quests **given by NPCs** | `TEMPLATE.DAT` + `.INF` people | `radiantQuests.js` | `[x]` | `unit/radiant`, `radiant`, `bounties` |
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
 | B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
-| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js` | `[~]` **D-22**: a 128×128 window per climate, no relief/coast/roads, no encounters of its own | `world`, `wildfoot`, `unit/wilderness` |
+| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
 | B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
 | B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
-| B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs` | `[ ]` **D-03/D-24** | `tools/assetcoverage.mjs` (report only) |
+| B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24) | `unit/assetcoverage.test.mjs` + the tool's own run |
 
 ---
 
@@ -103,7 +103,34 @@ Every row of the 2026-10-16 report, with the block that owns it. Full rows live 
 
 ---
 
-## 4. What this session closed (2026-10-16, part two)
+## 4. What this session closed (2026-10-16, part three)
+
+**B17a — the country is inhabited** (`5cccb80`; D-01b, D-02a and the climate row). A wilderness
+window's `.INF` names no creature, so the roster was empty, `monsterCountFor` answered 0 and
+`populate` emptied the folk list: a player who walked out of a city gate found a land with nobody
+and nothing in it. `game/wildernessBestiary.js` is the country's population — per climate and per
+hour, weakest-first, every id a creature this install can draw — the scene wires it into
+`populate()` (creatures through `spawnEncounter`, travellers through a `dressCrowd` a town's crowd
+now shares). The audit, which has been red on the wilderness since it was written, is **green**:
+people 0 → 1/1/6 by climate, creatures 0 → 4 on every road, the hour changes what is abroad, and
+the three day bestiaries differ (temperate `{rat,goblin}`, desert `{lizardman}`, mountain
+`{wolf,snowwolf}`) where all three read `{rat:4}`. Three faults fell out on the way, each named in
+the code: a **double window** (this module narrowed what `spawnEncounter` narrows again, so a
+six-kind list came out as its own first entry), a **climate read off the `.INF` letter instead of
+the place** (`?climate=` does not change a wild window's `.INF`, so every road was temperate), and
+**a check that could never pass** (`tests/suites/audit.mjs`'s `beasts.push({ climate, hour: 'day',
+...beast })` — the page's own `hour` overwrote the label the check filtered on).
+
+**B22 — the census is a list of names** (`5cccb80`; D-03, D-24). `tools/assetcoverage.mjs` groups
+the unread records by consumer, with `--groups`, `--top N`, `--json`, and a pure/live split so a
+Node test holds the rules without the install; `docs/ASSETS.md` writes up all **1 691** with the
+module each group belongs to and the five wiring jobs worth doing first.
+
+**B09 — half: blood, not sparks** (`5cccb80`). `combatFx.blood()` carries the one blood red and is
+what a landed blow leaves now; `game/bloodEffect.js` turns a blow into the engine's own decal
+records. The **decal pass itself is still unwired** — see the queue.
+
+## 4a. What the previous pass closed (2026-10-16, part two)
 
 **B15 — the start of a game.** `game/startFlow.js` (new) holds the law: which URL is a game
 start (`isGameStart`), where creation hands the player on (`destinationParams`: a character made
@@ -145,8 +172,12 @@ Each entry names **the first probe**, because a block starts with a measurement.
    *needs* the water to get anywhere, that is the original's swimming and this port's blocked
    wall; the block then ports `ArenaChasmUtils.allowsSwimming` properly (enter the water, swim,
    climb out) instead of the current wade.
-3. **B06 · a drawn weapon is a walk** (owner, 2026-10-16). Probe: with the rig drawn, does the
-   run speed still apply? Then: `motor`'s run gate reads the rig's state. Small, one test.
+3. **B06 · a drawn weapon is a walk — measure it.** The gate is landed (`5cccb80`: the input
+   builder's `run` reads `weaponRig.drawn`, so a drawn blade means the walk and the sprint returns
+   when it is put away), and **no check yet proves the speed difference**. Next: Shift+W with the
+   weapon sheathed and drawn, two displacements over the same frames, in `movement` or
+   `dungeonplay`; then `combatFx.blood`'s decal half (B09) — `engine/combat/bloodArt.js` holds the
+   texture `renderer.drawDecals` wants, and nobody has read it.
 4. **B09 · blood, not sparks.** The engine already has `engine/combat/bloodDecals.js` (lands in
    the Daggerfall side). Probe: what a landed blow leaves on the floor and on the walls in the
    Arena scene; then wire the decals into `combatFx`, and delete any remaining invented burst.

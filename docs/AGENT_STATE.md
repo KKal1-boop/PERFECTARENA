@@ -1,24 +1,48 @@
-# AGENT_STATE (updated 2026-10-16, fifth pass)
+# AGENT_STATE (updated 2026-10-16, sixth pass)
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported a long list; it is written up as **D-12 … D-25 in
-`docs/DEFECTS.md` with their own section** and is now the work list. **D-01a, D-12, D-14b, D-15,
-D-16, D-17, D-19, D-20, D-21 and D-25 are closed.** The owner's second report of the same day asks
-for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` (new)
-is that work order — 22 system-level blocks with their source of truth, their module, the check
-that holds them, the report mapped onto them, and the ordered queue with each block's first probe.
-**Take blocks from its §5; a block is closed by the six rules in its §1.**
+`docs/DEFECTS.md` with their own section** and is now the work list. **D-01a, D-01b, D-02a, D-12,
+D-14b, D-15, D-16, D-17, D-19, D-20, D-21 and D-25 are closed.** The owner's second report of the
+same day asks for the port to advance in **blocks** rather than symptom by symptom:
+`docs/PORT_BLOCKS.md` is that work order — 22 system-level blocks with their source of truth,
+their module, the check that holds them, the report mapped onto them, and the ordered queue with
+each block's first probe. **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN: unit **`437/437`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — ten
-new checks (`unit/startflow.test.mjs`, `unit/hunt.test.mjs`). Browser, run **after** the last edit
-of this pass: `chargen` **41/41** (three checks restated to the law they were proxying for: the
-world creation enters is the Imperial Dungeons, the dungeon knows who walked in, and the sheet is
-read from where the player stands) · `menu` (New Game → creation → `START.MIF`, the opening
-reported as played or honestly skipped, the quest at step 0 in an empty world).
+LAST GREEN: unit **`462/462`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — 25
+new checks in `unit/wildernessbestiary.test.mjs`, `unit/bloodeffect.test.mjs` and
+`unit/assetcoverage.test.mjs`. Browser, all run **after** the last edit of each file:
+**`audit` 51/51 — the audit is green for the first time** (it has been red on the wilderness since
+it was written) · `world` **28/28** · `combat` + `actioncombat` **82/82** · `chargen` **41/41** ·
+`menu` · `dungeonplay` **10/10** (the camp the level hears).
 
-IN PROGRESS: nothing half-edited. Working tree clean except `docs/` edits of this pass.
+IN PROGRESS: nothing half-edited. Working tree clean; `docs/` of this pass committed after the code
+(`5cccb80`).
 
-WHAT THIS PASS PROVED (full detail: `docs/AUDIT-2026-10-15.md`, `docs/DEFECTS.md`):
+WHAT THIS PASS PROVED, SIXTH PASS (block by block; full detail: `docs/DEFECTS.md`, `docs/ASSETS.md`):
+* **B17a closed (`5cccb80`) — the country is inhabited (D-01b, D-02a).** A wilderness window's
+  `.INF` names no creature, so the roster was empty, `monsterCountFor` answered 0 and `populate`
+  emptied the folk list: out of a gate was a land with nobody and nothing in it. New
+  `game/wildernessBestiary.js` (per climate, per hour, weakest-first, every id a creature this
+  install can draw) + `monsterCountFor`'s wilderness clause + `populateWilderness`/`dressCrowd` in
+  the scene. Audit, before → after: wilderness people **0 → 1/1/6** by climate, creatures
+  **0 → 4** on every road, day bestiaries **all `{rat:4}` → temperate `{rat,goblin}`, desert
+  `{lizardman}`, mountain `{wolf,snowwolf}`**. Three faults found on the way: a double window that
+  collapsed every climate to its weakest creature; the climate read off the `.INF` letter instead
+  of the place (every road came out temperate); and the audit's own `beasts.push({ climate,
+  hour: 'day', ...beast })`, whose label the page's clock overwrote — a check that could never pass.
+* **B22 closed (`5cccb80`) — the asset census is a list of names (D-03, D-24).**
+  `tools/assetcoverage.mjs` groups the unread records by consumer (`--groups`, `--top N`, `--json`,
+  and a pure/live split so a Node test holds the rules without the install); `docs/ASSETS.md`
+  writes up all 1 691 with the module each group belongs to and the five wiring jobs worth doing
+  first.
+* **B09 half-closed — blood instead of a generic burst.** `combatFx.blood()` (one blood red, shared
+  with the arm that carried the literal), used where a landed blow was an amber burst;
+  `game/bloodEffect.js` turns a blow into the engine's own decal records. **The remaining half is
+  the decal pass**: the texture that `renderer.drawDecals` wants comes from `engine/combat/
+  bloodArt.js` and nobody has read it yet.
+
+WHAT THE PREVIOUS PASSES PROVED (kept, still green):
 * **D-01a closed (`62b75b8`) — the night street.** Two causes: the indoors flag flickered for one
   frame per rest block; and no city had a single trade, because `populateTown` ignored the level's
   own `*ITEM` people records. Both fixed. Measured (`.scratch/nightprobe.mjs`): 10:00 → 48 people,
@@ -88,8 +112,12 @@ NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
    two otherwise-disjoint walkable regions? If a level *needs* the water, that is the original's
    swimming and this port's blocked wall, and the block ports `ArenaChasmUtils.allowsSwimming`
    properly instead of the current wade.
-2. **B06 · a drawn weapon is a walk, not a run** (owner, 2026-10-16) — the rig's own state gates
-   the motor's run speed. Small, one test.
+2. **B06 · a drawn weapon is a walk — the gate is landed, the measurement is not.** The owner's
+   ask (2026-10-16) is in the input builder: `run` now reads `weaponRig.drawn`, so a blade that is
+   out means the walk and the sprint comes back when it is put away (`weaponView.js`'s own getter,
+   not a second flag). Every suite that walks exercises the path, and **no check asserts the speed
+   difference yet** — the next pass measures it (Shift+W with the weapon sheathed vs drawn, two
+   displacements over the same number of frames, in `movement` or `dungeonplay`).
 
 Then the two big ones the list names and the phases already own: **D-01b/D-02a** (people and
 creatures in the country — the audit's four remaining reds) and **D-22** (P3/P4: the wilderness is
@@ -97,10 +125,12 @@ a 128×128 window, not a country — the owner: "you teleport around and cant ev
 The blocks those belong to are B11 and B17 in `docs/PORT_BLOCKS.md`; B17 is the largest block in
 the ledger and is the owner's own "we will never go on" risk.
 
-OPEN DEFECTS (top): D-13 (the mirrored start) · D-14 (the equip-path probe) · D-18 · D-18a
-(water) · D-01b · D-02a (nobody and nothing in the country) · D-22 (P3/P4, the wilderness) ·
-D-23 (weather that moves, a ground that knows the season) · D-24 · D-03 (coverage) · D-05 (P3) ·
-D-06/D-07 (names outside this checkout) · the owner's "no running with a drawn weapon".
+OPEN DEFECTS (top): D-13 (the mirrored start — B02) · D-14 (the equip-path probe) · D-18 · D-18a
+(water — B05) · D-22 (P3/P4: the country is inhabited now but it is still a 128×128 window with
+no relief, coast or roads — B17) · D-23 (weather that moves, a ground that knows the season —
+B18) · D-03/D-24 (coverage: the list is named, the wiring is not done — B22) · D-05 (P3) ·
+D-06/D-07 (names outside this checkout) · B09's decal half (the blood records exist; the pass is
+not wired) · B06's measurement (the gate is landed, the check is not).
 Full list: `docs/DEFECTS.md`. O-01 stands (a live page whose clock is moved answers no probe).
 
 DO-NOT-REPEAT (paid for already):
