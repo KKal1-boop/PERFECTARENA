@@ -3,14 +3,30 @@
 // Two independent sources, joined here, which is why this table is worth trusting more
 // than most in the project:
 //
-//   **The sprites are from the player's own data.** Every monster below except the
-//     Minotaur has a six-file animation set in `GLOBAL.BSA` — `RAT1.CFA`…`RAT6.CFA`,
-//     `WOLF01.CFA`…`WOLF06.CFA`, and so on — and the `sprite` field is that file's own
-//     base name, checked against the archive's listing rather than guessed from the
-//     English name. Two of them are spelled as only Arena spells them: the Fire Daemon
-//     is `DEAMON.CFA`, and there is no `MINO*.CFA` at all — the Minotaur has a `.VOC` of
-//     its own and no animation set, so it is the one monster in UESP's bestiary this
-//     install cannot draw (see `spriteless` in `monsterReport`).
+//   **The sprites are from the player's own data.** Every monster below has a six-file
+//     animation set in `GLOBAL.BSA` — `RAT1.CFA`…`RAT6.CFA`, `WOLF01.CFA`…`WOLF06.CFA`,
+//     and so on — and the `sprite` field is that file's own base name, checked against
+//     the archive's listing rather than guessed from the English name. Two are spelled as
+//     only Arena spells them: the Fire Daemon is `DEAMON.CFA`, and **the Minotaur is
+//     `PAT1.CFA`…`PAT6.CFA`**.
+//
+//     The Minotaur's art was missed for as long as this table has existed, on the
+//     reasonable-looking reading that a search of `GLOBAL.BSA` for `MINO*.CFA` finds
+//     nothing (it does not — there is only a `MINOTAUR.VOC`), and the cost was two
+//     defects at once: a creature with statistics and no `sprite` is dropped from every
+//     roster that filters on art, and the archive's own `PAT` sheets were being handed to
+//     the town crowd as a person's walk (`game/peopleKinds.js`) — which is what
+//     "*some npcs have enemy sprites like theres a minotaur guy somewhere*" was.
+//
+//     **The executable's own tables say `pat` is the Minotaur**, and they say it three
+//     ways: its creature-name run (twenty-three names) and its creature-sheet run
+//     (twenty-four sheets) pair index by index, twenty-one by spelling, and the one pair
+//     with nothing behind it is **`Minotaur` / `pat@.cfa`**; the `.INF` roster's own
+//     twenty-three monster slots (`32`…`54`, `dungeonItems.js`) come out in exactly the
+//     executable's order, so the Minotaur is slot `39` in both readings; and `PAT`'s six
+//     sheets carry `12, 8, 8, 8, 8, 3` frames — the shape twenty-one of the twenty-three
+//     creature families carry, and one no person's sheets do. `game/monsterArt.js` is the
+//     reading; `tests/unit/monsterart.test.mjs` holds it against the install.
 //
 //   **The numbers are from UESP**, whose bestiary gives each monster a hit-point range,
 //     a damage range, and an experience rule: *"The Experience points (Exp) awarded for
@@ -33,7 +49,7 @@ export const MONSTERS = Object.freeze([
   { id: 'orc', name: 'Orc', sprite: 'ORC', hp: [15, 40], damage: [2, 12], xpRate: 15, xpBase: 200, level: 4 },
   { id: 'ghoul', name: 'Ghoul', sprite: 'GHOUL', hp: [45, 75], damage: [5, 20], xpRate: 20, xpBase: 1000, level: 7 },
   { id: 'spider', name: 'Spider', sprite: 'SPIDER', hp: [40, 70], damage: [4, 20], xpRate: 20, xpBase: 500, level: 6 },
-  { id: 'minotaur', name: 'Minotaur', sprite: null, hp: [30, 60], damage: [3, 18], xpRate: 20, xpBase: 300, level: 6 },
+  { id: 'minotaur', name: 'Minotaur', sprite: 'PAT', hp: [30, 60], damage: [3, 18], xpRate: 20, xpBase: 300, level: 6 },
   { id: 'ghost', name: 'Ghost', sprite: 'GHOST', hp: [60, 80], damage: [5, 25], xpRate: 25, xpBase: 1500, level: 9 },
   { id: 'hellhound', name: 'Hell Hound', sprite: 'HOUND', hp: [50, 75], damage: [5, 25], xpRate: 25, xpBase: 1250, level: 8 },
   { id: 'troll', name: 'Troll', sprite: 'TROLL', hp: [75, 100], damage: [10, 30], xpRate: 35, xpBase: 2500, level: 10 },
@@ -87,6 +103,10 @@ export function spriteFile(monster, view = 1) {
 
 /**
  * Which monsters this install can actually draw, and which it cannot.
+ *
+ * `spriteless` is empty as of block B24's second pass, and it is worth leaving in place: it was
+ * the Minotaur alone until the executable's own tables said which sheets are its art.
+ *
  * @returns {{drawn: string[], spriteless: string[]}}
  */
 export function monsterReport() {

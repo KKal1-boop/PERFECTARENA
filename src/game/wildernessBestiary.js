@@ -39,10 +39,11 @@ import { CLIMATE_LETTER } from './tables/cityBlocks.js';
 import { ArenaRandom } from './arenaRandom.js';
 // **The install is the arbiter of what may stand on a road.** `monsters.js` carries Arena's
 // own statistics for every creature, and a `sprite` field only where this install ships the
-// `.CFA` art for it — a minotaur has statistics and no art. A country that fields a creature
-// nobody can draw would spawn nothing where it promised something, so the lists below are
-// filtered through the same test the browser suites use (`MONSTERS.some(m => m.id === id &&
-// m.sprite)`) before anybody is handed one.
+// `.CFA` art for it — the Minotaur's art was found by block B24 (it is `PAT1.CFA`…`PAT6.CFA`,
+// see that module's header), so this test now passes for all twenty-four rows. A country that
+// fields a creature nobody can draw would spawn nothing where it promised something, so the
+// lists below are filtered through the same test the browser suites use (`MONSTERS.some(m =>
+// m.id === id && m.sprite)`) before anybody is handed one.
 import { MONSTERS } from './monsters.js';
 
 /**
@@ -101,9 +102,13 @@ export function isWildNight(hour) {
  * mountains begin with the wolves they are named for, and the desert begins with its lizards.
  * Levels still rise along each list, because that ordering is what the window law reads.
  *
- * The **Minotaur is in none of them**: `monsters.js` carries its UESP statistics and a null
- * `sprite`, because this install ships no `MINO*.CFA` — a creature nothing can draw is not a
- * creature the country may promise, and `wildernessRoster` filters by the same test.
+ * The **Minotaur is on the temperate and mountain roads and not on the desert track**, and that is
+ * two rules told apart. It is *field-able* at all because block B24 found its art: the
+ * executable's own creature-sheet table names `pat@.cfa` where its creature-name table names the
+ * Minotaur (`monsters.js`'s header, `game/monsterArt.js`), so the filters here no longer drop it.
+ * What is left is placed by its UESP level (6) among the temperate and mountain lists, in the same
+ * position its own ordering gives it; the desert track is left without it as this project's own
+ * rule about climate, and is stamped as such rather than presented as the game's.
  *
  * The **undead come out at night** in all three, which is the one rule the original's own
  * wilderness fiction makes plain and the one the owner asked for by name ("biomes … depending
@@ -113,13 +118,13 @@ export function isWildNight(hour) {
  */
 export const WILDERNESS_BESTIARY = Object.freeze({
   temperate: Object.freeze({
-    day: Object.freeze(['rat', 'goblin', 'wolf', 'lizardman', 'orc', 'skeleton', 'spider', 'ghoul']),
-    night: Object.freeze(['rat', 'goblin', 'wolf', 'lizardman', 'orc', 'skeleton', 'spider', 'ghoul',
+    day: Object.freeze(['rat', 'goblin', 'wolf', 'lizardman', 'orc', 'skeleton', 'minotaur', 'spider', 'ghoul']),
+    night: Object.freeze(['rat', 'goblin', 'wolf', 'lizardman', 'orc', 'skeleton', 'minotaur', 'spider', 'ghoul',
       'hellhound', 'ghost', 'troll', 'zombie', 'wraith', 'homonculus']),
   }),
   mountain: Object.freeze({
-    day: Object.freeze(['wolf', 'snowwolf', 'orc', 'skeleton', 'spider']),
-    night: Object.freeze(['wolf', 'snowwolf', 'orc', 'skeleton', 'spider',
+    day: Object.freeze(['wolf', 'snowwolf', 'orc', 'skeleton', 'minotaur', 'spider']),
+    night: Object.freeze(['wolf', 'snowwolf', 'orc', 'skeleton', 'minotaur', 'spider',
       'hellhound', 'ghost', 'troll', 'wraith', 'icegolem']),
   }),
   desert: Object.freeze({

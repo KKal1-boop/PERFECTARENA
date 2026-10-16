@@ -58,17 +58,24 @@ test('labels are read off the family the name spells', () => {
   assert.equal(labelForFile('FMGENW05.CFA'), 'a woman of the town');
   assert.equal(labelForFile('FMGEND02.CFA'), 'a woman of the town');
   assert.equal(labelForFile('GUARD04.CFA'), 'a guard of the watch');
-  assert.equal(labelForFile('PAT3.CFA'), 'a townsman of the PAT set');
   assert.equal(labelForFile('LGLIT06.CFA'), 'a small figure of the LGLIT set');
+  // **`PAT` is not a person** (D-30). It is the Minotaur's art — the executable's creature-sheet
+  // table names it where its creature-name table names the Minotaur (`game/monsterArt.js`) — so
+  // this module must answer `null` for it and must not put it in a crowd.
+  assert.equal(labelForFile('PAT3.CFA'), null, 'the Minotaur is not a townsman');
   assert.equal(labelForFile('01PLTWLK.CFA'), null, 'the armoured roster is not this module\\u2019s');
 });
 
 test('the install ships fourteen of these people families, and they are the measured ones', () => {
   if (!archive) return;   // no install beside this checkout, no pins
-  assert.equal(kinds.length, 14, kinds.map((k) => k.key).join(', '));
+  assert.equal(kinds.length, 13, kinds.map((k) => k.key).join(', '));
+  assert.ok(!kinds.some((k) => /^PAT/.test(k.key)), 'no `PAT` kind: it is a creature\'s sheets');
   // The archive's own frame counts, read from its own bytes: the generics walk in nine
   // frames, the watch in twelve, the small `LGLIT` figures in three.
   const frames = (file) => parseCfa(archive.get(file), file).frames.length;
+  // The Minotaur's sheets are in the archive and are nobody's kind: five angles and a death,
+  // in the creature shape (`game/monsterArt.js`), which is why the crowd cannot have them.
+  assert.ok(!kinds.some((k) => k.files.some((f) => /^PAT/.test(f))), 'nor any file of one');
   assert.equal(frames('MLGEN01W.CFA'), 9);
   assert.equal(frames('MLGEN01T.CFA'), 9);
   assert.equal(frames('FMGENW01.CFA'), 9);

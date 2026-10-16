@@ -6,6 +6,14 @@
 // bundled and nothing derived is committed (law 6 of `docs/PORT_BLOCKS.md`); if this suite passes on
 // someone else's machine, that machine's Arena produced these numbers itself.
 //
+// **Second pass (block B24 continued): the tables themselves.** Unpacking the executable was the
+// first half; reading it is the second. The page now reports every table the reader finds by its
+// own words (the creature roster and the sheets each creature is drawn from, the classes, races and
+// attributes, the provinces and all sixty-four settlements, the calendar, the level markers) plus
+// the two joins that a player can see: which sheet each monster is drawn from, and whether the
+// `.INF` roster's own monster slots come out in the executable's order. The checks below are those
+// reads **produced in a browser, from the player's own copy** — the Minotaur's art among them.
+//
 // The checks are the four that cannot be faked by a decoder that returns plausible nonsense:
 //
 //   * the image is a whole number of paragraphs, and the footer's stack (`SS × 16 + SP`) ends
@@ -55,6 +63,60 @@ export function makeExeSuite({ check, realErrors, shots, getPort }) {
     check('and the wilderness draws\' own thresholds are numbers in it, not a guess',
       thresholds.length === 4 && thresholds.every((t) => t.hits > 0),
       thresholds.map((t) => `0x${t.word.toString(16)}×${t.hits}`).join(' '));
+
+    // ── the tables, read in the page ────────────────────────────────────────────────────────
+    const tables = exe?.tables?.tables ?? null;
+    check('the page reads the game\'s own tables out of that image, by their own words',
+      tables?.bestiaryRun?.count === 42 && tables?.creatureSheets?.count === 24
+        && tables?.classes?.count === 19 && tables?.settlements?.count === 64
+        && tables?.provinces?.count === 8 && tables?.months?.count === 12
+        && tables?.weekdays?.count === 7 && tables?.holidays?.count === 15,
+      JSON.stringify({
+        bestiary: tables?.bestiaryRun?.count, sheets: tables?.creatureSheets?.count,
+        classes: tables?.classes?.count, settlements: tables?.settlements?.count,
+        provinces: tables?.provinces?.count, months: tables?.months?.count,
+        weekdays: tables?.weekdays?.count, holidays: tables?.holidays?.count,
+      }));
+    const readings = exe?.tables?.readings ?? [];
+    const red = readings.filter((r) => !r.ok);
+    check('and every reading the tables are held to passes in the page too',
+      readings.length >= 6 && red.length === 0,
+      red.length ? red.map((r) => `${r.id}: ${r.detail}`).join(' | ') : readings.map((r) => r.id).join(' · '));
+
+    // ── the join a player can see: which art a creature is drawn from ───────────────────────
+    const art = exe?.art ?? null;
+    const minotaur = (art?.monsters ?? []).find((m) => m.name === 'Minotaur');
+    check('the creature tables pair index by index, and the one pair with nothing behind it is the Minotaur\'s',
+      art?.agreed === 21 && art?.disagreed?.length === 2
+        && art.disagreed[0]?.name === 'Minotaur' && art.disagreed[0]?.sheet === 'pat@.cfa'
+        && art.disagreed[0]?.drawnBy === 'PAT' && art.disagreed[1]?.name === 'Fire Daemon',
+      JSON.stringify(art?.disagreed));
+    check('so the Minotaur is drawn from PAT, and no monster is left without art',
+      minotaur?.exeFamily === 'pat' && minotaur?.sprite === 'PAT'
+        && (art?.spriteDisagreements ?? ['x']).length === 0 && (art?.withoutExeArt ?? ['x']).length === 0,
+      JSON.stringify({ minotaur, without: art?.withoutExeArt, disagree: art?.spriteDisagreements }));
+    const slots = exe?.slots ?? null;
+    check('and the .INF roster\'s own monster slots are the executable\'s order, all twenty-three',
+      slots?.agreed === 23 && slots?.rows?.length === 23
+        && slots.rows.find((r) => r.item === 39)?.id === 'minotaur'
+        && slots.rows.find((r) => r.item === 39)?.exeName === 'Minotaur',
+      JSON.stringify(slots?.rows?.filter((r) => !r.agrees) ?? []));
+
+    // ── and the creature the tables gave back to the game, on the page ───────────────────────
+    // Before this pass `monsters.js` carried the Minotaur with no sprite, so this seam answered
+    // `null` before it loaded anything and no page could hold a Minotaur at all.
+    const swPainted = Number(await page.evalJs('window.__debug.state().painted'));
+    const spawned = JSON.parse(await page.evalJs(
+      '(async () => JSON.stringify(await window.__debug.spawnMonster("minotaur")))()'));
+    await page.waitFor(`window.__debug.state().painted > ${swPainted + 2}`,
+      { label: 'the page after the Minotaur', timeoutMs: 30000 });
+    const sheets = JSON.parse(await page.evalJs(
+      'JSON.stringify((window.__debug.state().spriteFiles ?? []).filter((f) => /^PAT/.test(f)))'));
+    check('the Minotaur is a creature the page can draw: its six sheets load and it stands in front of the player',
+      spawned?.file === 'PAT1.CFA' && spawned?.name === 'Minotaur'
+        && ['PAT1.CFA', 'PAT2.CFA', 'PAT3.CFA', 'PAT4.CFA', 'PAT5.CFA', 'PAT6.CFA']
+          .every((f) => sheets.includes(f)),
+      JSON.stringify({ spawned, sheets }));
 
     await page.screenshot(path.join(shots, 'exe-unpacked-in-page.png'));
     check('the executable suite leaves no console error behind',

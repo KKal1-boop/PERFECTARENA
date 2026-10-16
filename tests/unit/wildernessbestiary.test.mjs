@@ -89,9 +89,10 @@ test('each roster is the climate\'s own list, weakest-first', () => {
     // entry alone — measured by the audit's climate probe: **`{rat: 4}` on all three
     // climates' day roads, 0 distinct bestiaries**. The window is `rosterWindow`'s one job, at
     // the one place that knows the `depth` of the level (see the block below).
-    // The roster is the climate's own list **minus what this install cannot draw**: a creature
-    // with statistics and no `.CFA` art (`monsters.js`'s `sprite` is null for a minotaur) would
-    // be spawned and then silently dropped by the billboard pass.
+    // The roster is the climate's own list **minus what this install cannot draw** — a creature
+    // whose `sprite` is null would be spawned and then silently dropped by the billboard pass.
+    // That set is empty since block B24 found the Minotaur's art (`PAT1.CFA`…`PAT6.CFA`), so the
+    // filter is a rule with nothing to remove rather than a rule doing quiet work.
     const drawable = (ids) => ids.filter((id) => MONSTERS.some((m) => m.id === id && m.sprite));
     const window = wildernessRoster({ climate, hour: 12 });
     assert.deepEqual(window, drawable(day), `${climate}: the daylight roster is not the climate's own list`);

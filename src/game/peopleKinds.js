@@ -19,8 +19,17 @@
 //   `GUARD0<view>.CFA`          the **watch**: views 1–5 are 12-frame sheets — the
 //                               monster layout (walk 0–5, look 6/7, attack 8–11) — and
 //                               `GUARD06.CFA` is the death (3 frames)
-//   `BABE0#`, `PAT#`, `LGLIT0#`  the archive's remaining people sets: 12-frame view
-//                               sheets for `BABE`/`PAT`, 3-frame ones for `LGLIT`
+//   `BABE0#`, `LGLIT0#`         the archive's remaining people sets: 12-frame view
+//                               sheets for `BABE`, 3-frame ones for `LGLIT`
+//
+// **`PAT#` is not a person, and reading it as one was a defect** (D-30: *"some npcs have
+// enemy sprites like theres a minotaur guy somewhere"*). The executable's own creature-sheet
+// table lists `pat@.cfa` in its creature run, at the index its creature-name table gives to the
+// **Minotaur**, and the archive's `PAT` sheets carry the creature fingerprint (`12, 8, 8, 8,
+// 8, 3` frames) where every person's carry twelve across (`12, 12, 12, 12, 12, 3`) or ship one
+// angle. So `PAT` is `game/monsters.js`'s Minotaur — see `game/monsterArt.js` for the join and
+// `monsters.js`'s header for the three ways it is checkable — and this module must not hand it
+// to a town's crowd.
 //
 // **The action letters are read off the widths, not guessed.** A stride is wider than a
 // stance in every one of these sheets — walk `52`/`58` px against talk `43`/`44` and die
@@ -36,11 +45,16 @@
 const MALE_GENERIC = /^MLGEN0([1-5])([WTD])\.CFA$/;
 /** Female generics: `FMGEN<action>0<set>.CFA` — letter first, and the plain name talks. */
 const FEMALE_GENERIC = /^FMGEN([WD]?)0([1-5])\.CFA$/;
-/** The watch and the archive's other view sheets: `<FAMILY><view>.CFA`, 1–5 the angles and 6 the death. */
+/**
+ * The watch and the archive's other view sheets: `<FAMILY><view>.CFA`, 1–5 the angles and 6 the
+ * death.
+ *
+ * `PAT` is deliberately absent: it is the Minotaur's own art (`game/monsters.js`), and a creature
+ * in a town's crowd is D-30.
+ */
 const VIEW_SHEETS = Object.freeze({
   GUARD0: { view: /^GUARD0([1-6])\.CFA$/, label: 'a guard of the watch' },
   BABE0: { view: /^BABE0([1-6])\.CFA$/, label: 'a woman of the town' },
-  PAT: { view: /^PAT([1-6])\.CFA$/, label: 'a townsman of the PAT set' },
   LGLIT0: { view: /^LGLIT0([1-6])\.CFA$/, label: 'a small figure of the LGLIT set' },
 });
 
@@ -141,8 +155,10 @@ export function labelForFile(file) {
   if (/^MLGEN0([1-5])[WTD]\.CFA$/.test(upper)) return 'a man of the town';
   if (/^GUARD0([1-6])\.CFA$/.test(upper)) return 'a guard of the watch';
   if (/^BABE0([1-6])\.CFA$/.test(upper)) return 'a woman of the town';
-  if (/^PAT([1-6])\.CFA$/.test(upper)) return 'a townsman of the PAT set';
   if (/^LGLIT0([1-6])\.CFA$/.test(upper)) return 'a small figure of the LGLIT set';
+  // `PAT#` answers `null` on purpose — it is the Minotaur's art, and a label here would put it
+  // back in the crowd as a person (D-30).
+  if (/^PAT([1-6])\.CFA$/.test(upper)) return null;
   return null;
 }
 

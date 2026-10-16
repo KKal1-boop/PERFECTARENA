@@ -207,8 +207,11 @@ test('every monster with art has all six of its view files in the archive', asyn
   }
   assert.deepEqual(missing, [], `these sprite files are not in GLOBAL.BSA: ${missing.join(', ')}`);
   const report = monsterReport();
-  assert.deepEqual(report.spriteless, ['Minotaur'], 'the one monster with no animation set');
-  assert.equal(report.drawn.length, MONSTERS.length - 1);
+  // **Empty since block B24's second pass.** The Minotaur was this list's one entry on the
+  // strength of a `MINO*.CFA` search; the executable's own tables name its art `pat@.cfa`
+  // (`game/monsterArt.js`), so every one of the twenty-four is drawn now.
+  assert.deepEqual(report.spriteless, [], 'every monster has an animation set');
+  assert.equal(report.drawn.length, MONSTERS.length);
 });
 
 test('the two names Arena spells its own way are the ones used', async () => {
@@ -218,7 +221,11 @@ test('the two names Arena spells its own way are the ones used', async () => {
   assert.ok(!names.has('DAEMON1.CFA'), 'and not DAEMON');
   assert.equal(spriteFile(monsterById('Fire Daemon'), 1), 'DEAMON1.CFA');
   assert.equal(spriteFile(monsterById('firedaemon'), 3), 'DEAMON3.CFA');
-  assert.equal(spriteFile(monsterById('Minotaur')), null, 'no art, no file name');
+  // The third name the game spells its own way, and the one this project missed for as long as
+  // the table has existed: the Minotaur is drawn from `PAT1.CFA`…`PAT6.CFA`.
+  assert.equal(spriteFile(monsterById('Minotaur')), 'PAT1.CFA');
+  assert.deepEqual(spriteFiles(monsterById('minotaur')),
+    ['PAT1.CFA', 'PAT2.CFA', 'PAT3.CFA', 'PAT4.CFA', 'PAT5.CFA', 'PAT6.CFA']);
   assert.deepEqual(spriteFiles(monsterById('jagartharn')), ['THARN01.CFA', 'THARN02.CFA', 'THARN03.CFA', 'THARN04.CFA', 'THARN05.CFA', 'THARN06.CFA']);
 });
 

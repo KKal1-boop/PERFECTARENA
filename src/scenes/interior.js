@@ -72,6 +72,8 @@ import { ArenaData } from '../arena/arenaData.js';
 // executing file is PKLITE-packed (`arena/pklite.js` unpacks it) and what it holds is read here, at
 // runtime, from the player's own copy — never committed, never bundled.
 import { exeReport, loadExeImage } from '../arena/exeData.js';
+import { exeTables, exeTableReport, splitBestiary } from '../arena/exeTables.js';
+import { monsterArtAudit, monsterSlotAudit } from '../game/monsterArt.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
 import { decodeLevel } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
@@ -8599,7 +8601,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      */
     exe: async () => {
       try {
-        return exeReport(await loadExeImage(data));
+        const exe = await loadExeImage(data);
+        // **The tables, and what the port's own lists look like against them** (block B24's second
+        // pass). `tables` is every string table the reader could find by its own words — the
+        // creature roster and the sheets each creature is drawn from, the classes, races and
+        // attributes, the provinces and all sixty-four settlements, the calendar, the level
+        // markers — and `art`/`slots` are the two joins that matter to a player: which sheet each
+        // monster is drawn from, and whether the `.INF` roster's own monster slots come out in the
+        // executable's order.
+        const tables = exeTables(exe.image);
+        const { creatures } = splitBestiary(tables);
+        return {
+          ...exeReport(exe),
+          tables: exeTableReport(exe.image, tables),
+          art: monsterArtAudit(MONSTERS, { creatureNames: creatures, creatureSheets: tables.creatureSheets }),
+          slots: monsterSlotAudit(DUNGEON_MONSTERS, creatures),
+        };
       } catch (err) {
         return { present: false, error: err.message };
       }
