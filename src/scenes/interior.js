@@ -7890,6 +7890,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       frames: dbg.frame,
       painted: dbg.painted,
       seconds: dbg.seconds,
+      // **The last rest**, as the scene recorded it: a tavern room, a camp in the wild, or a
+      // camp a dungeon heard (`roused` creatures, `disturbed` sleep). Exposed because the
+      // player-visible half of that law is a browser check — health that is *not* handed back
+      // and a line that names what woke them — and a `dbg` field nothing can read is not a
+      // seam (see `docs/PORT_BLOCKS.md` rule 5).
+      lastRest: dbg.lastRest ?? null,
       feet: Array.from(current.motor.pos),
       eye: current.motor.eyeAt(),
       yaw: cam.yaw,

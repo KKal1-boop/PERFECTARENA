@@ -121,7 +121,11 @@ every living creature with a deadline, `spawn.huntingUntil`, and a corpse hears 
 `interior.js`'s camp rest uses them, and a disturbed sleep passes the day without handing back the
 wounds — the player did not get the sleep they paid a day for. The original's own roll (chance,
 hours, wake-up call) is `A.EXE`'s and is stamped as this project's rule in the module header.
-`tests/unit/hunt.test.mjs` holds it.
+`tests/unit/hunt.test.mjs` holds it, and the player's half is held on a real page by
+`dungeonplay` (10/10): walking to a cell no creature can see, pressing the real `R`, and reading
+back `state().lastRest` — *"Something in the dark heard you sleep. 6 of them are coming."* with
+health **not** restored — while the same suite still proves the calm half (a cleared level heals
+and passes the day: "You make camp and rest.").
 
 ---
 

@@ -9,6 +9,48 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
     const key = async code => { await page.pressKey(code); await page.pressKey(code, false); };
     await page.goto(url); await ready();
     await page.evalJs('window.__debug.pause(true)');
+
+    // ── a camp the level hears (B10, D-19) ─────────────────────────────────────
+    //
+    // The owner, playing both games side by side (2026-10-16): *"resting spawns enemies or
+    // moves enemies to you in normal arena and perfectarena doesnt"*. This is the
+    // player-visible half of that law, and it is checked on the **level's own creatures**
+    // rather than on a fixture: the suite walks to a cell no creature can see (a camp is
+    // refused where one can, which the check further down proves), presses the real `R`, and
+    // reads back what the player got — a day that passed, wounds that were **not** handed
+    // back, and a line that names what woke them. A hunt that had not been roused would heal
+    // to full and say "You make camp and rest."
+    const restCells = await page.evalJs(`(() => {
+      const d = window.__debug, s = d.state(), out = [];
+      for (let r = 2; r < s.size[1] - 2 && out.length < 60; r++) {
+        for (let c = 2; c < s.size[0] - 3 && out.length < 60; c++) {
+          if (![0,1,2].every(k => { const q = d.cellAt(r, c + k); return q && !q.solid && !q.chasm; })) continue;
+          if (d.sightBetween({row:r,col:c},{row:r,col:c+2}).sees) out.push([r, c]);
+        }
+      }
+      return out;
+    })()`);
+    if (!restCells.length) throw new Error('No corridor to try a camp in');
+    let heard = null;
+    for (const [r, c] of restCells) {
+      await page.evalJs(`window.__debug.teleportCell(${r},${c}); window.__debug.look(0,0)`);
+      const healthBefore = await page.evalJs('window.__debug.player().health');
+      await key('KeyR');
+      const after = await page.evalJs('({rest: window.__debug.state().lastRest, health: window.__debug.player().health, notice: window.__debug.state().notice, alive: window.__debug.combat().monsters.filter(q=>q.health>0).length})');
+      if (after.rest?.camp === true) { heard = { ...after, healthBefore, cell: [r, c] }; break; }
+    }
+    check('a camp with creatures left in the level is heard: the day passes and the wounds are not handed back',
+      Boolean(heard) && heard.rest.disturbed === true && heard.rest.roused > 0
+      && heard.health === heard.healthBefore && /heard you sleep/.test(heard.notice ?? ''),
+      JSON.stringify(heard));
+    check('and the creature that heard it is hunting the sleeper, not standing where it was',
+      // The scene gates a creature's own band at `AGGRO`; a roused one comes from further. The
+      // seam reports how many are alive, which is what `roused` counted, so the two agree.
+      Boolean(heard) && heard.alive === heard.rest.roused,
+      heard ? `${heard.rest.roused} roused of ${heard.alive} alive` : 'no camp answered');
+    await page.screenshot(path.join(shots, 'dungeon-rest-heard.png'));
+    await page.goto(url); await ready();
+    await page.evalJs('window.__debug.pause(true)');
     const target = await page.evalJs(`(() => {
       const s = window.__debug.state();
       return s.loot.find(q => q.kind !== 'key' && q.kind !== 'equipment' && !q.taken
