@@ -66,6 +66,9 @@ neither. `scenes/` is the only place that talks to the renderer *and* the data l
 | `cityDataFile.js`, `cityDataSeeds.js` | `CITYDATA.64`: nine province rectangles, 432 locations, the per-location seeds and the `.MIF` name a dungeon seed produces. |
 | `arenaText.js` | Arena's prose: `citytxt`, `dungeon.txt`, `artfact*.dat`, `template.dat`, the shopkeeper banks, and the `%`-word filler. |
 | `spellsFile.js` | `SPELLSG.65` spell records. |
+| `pklite.js` | **The game's own executable**, unpacked: PKLITE 1.12 ("extra" + "large") → a 305 520-byte code image, 4 044 relocations, the footer's stack ending exactly at the image's end. Pure and dependency-free. |
+| `exeTables.js` | **The tables inside that image**, found by their own words rather than by offsets (creature roster and sheets, classes/races/attributes, provinces and the sixty-four settlements, the calendar, the level markers, the loot tables), each with a reading that a drifted decode would break. |
+| `exeData.js` | The runtime read of the executable through the player's own `ArenaData` source (`ACD.EXE`, then the floppy release's `A.EXE`), kept for the page's life; nothing derived is committed (law 6). |
 
 ### 3b. `src/engine/` — the copied engine (pixels, vectors, input)
 
@@ -95,7 +98,7 @@ was copied, what was adapted and what was dropped. The bands that matter to this
 | `arenaRandom.js` | Arena's own RNG, so a seed reproduces a city, a dungeon and a town. |
 | `character.js`, `chargen.js` | Races, classes, attributes, the ten creation scenarios, health/spell-point derivation. |
 | `progression.js` | Levels, experience, the monster XP rule. |
-| `monsters.js`, `combat.js` | The creature table, the to-hit/damage model, monster attacks. |
+| `monsters.js`, `monsterArt.js`, `combat.js` | The creature table, **which sheet each creature is drawn from** (the join against the executable's own two tables), the to-hit/damage model, monster attacks. |
 | `weaponView.js`, `playerSprite.js` | The first-person weapon states (draw, six swings, hold, sheath) and the player's own billboard. |
 | `items.js`, `inventory.js`, `spells.js` | Items, the pack, the 64 decoded spells and casting costs. |
 | `doors.js` | Locks, forcing, keys, door animation and the HUD line for a door. |
@@ -195,7 +198,7 @@ missing draws **untextured, not black**; winding is derived per triangle from th
 | Entering a building | `game/shops.js` → `scenes/interior.js` (`enterDoor`/`leaveDoor`) |
 | The people | `game/townsfolk.js`, `game/townPaths.js`, `game/livingWorld.js`, `game/services.js` |
 | Talking, jobs, regard | `scenes/interior.js`, `game/radiantQuests.js`, `game/regard.js`, `arena/arenaText.js` |
-| Combat | `game/monsters.js`, `game/combat.js`, `game/weaponView.js`, `scenes/interior.js` |
+| Combat | `game/monsters.js`, `game/monsterArt.js`, `game/combat.js`, `game/weaponView.js`, `scenes/interior.js` |
 | Character and items | `game/character.js`, `game/chargen.js`, `game/items.js`, `game/inventory.js`, `game/spells.js` |
 | The main quest | `game/questData.js`, `game/questState.js`, `scenes/worldmap.js` |
 | The world of Tamriel | `game/worldMap.js`, `arena/cityDataFile.js`, `arena/cityDataSeeds.js`, `scenes/worldmap.js` |

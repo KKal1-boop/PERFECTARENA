@@ -1,19 +1,30 @@
-# AGENT_STATE (updated 2026-10-16, ninth pass)
+# AGENT_STATE (updated 2026-10-16, tenth pass)
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
 Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
 `docs/DEFECTS.md` with their own sections** and are the work list. **D-01a, D-01b, D-02a, D-12,
-D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25, D-26 and D-34 are closed, and D-27 is closed for
-the both directions** (walking out, and back in — `dbf4058`). Both reports
+D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25, D-26, D-30 and D-34 are closed, D-27 is closed for
+the both directions** (walking out, and back in — `dbf4058`), and **D-29 is half closed** (the
+*exist* half: the Minotaur is drawable — `a9aa3a6`; the *spawn* half is queue item 8). Both reports
 ask for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` is
 that work order — **23** system-level blocks with their source of truth, their module, the check
 that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
 **Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN (this pass): unit **`482/482`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
-test`) — six new checks, `unit/pklite.test.mjs`. Browser: the **new `exe` suite 8/8** — the game's
+LAST GREEN (this pass): unit **`499/499`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm
+test`) — sixteen new checks, `unit/exetables.test.mjs` **8/8** and `unit/monsterart.test.mjs` **9/9**,
+plus the three restatements the fix owed (`unit/combat`, `unit/peoplekinds`, `unit/wildernessbestiary`).
+Browser: the **`exe` suite 14/14** — every table the executable holds read **in a page** from the
+player's own copy, the creature-art join, and a real Minotaur spawned there; **`audit` 23/23** (the
+wilderness still fields `{rat,goblin}` / `{lizardman}` / `{wolf,snowwolf}` by climate and the
+Minotaur is back in the `.INF` roster line); **`world` + `townsfolk` + `living` 123/123**;
+**`actioncombat` 23/23**; **`dungeonplay` 20/20**; **`combat` 37/37**. The twenty-one other browser
+suites were **not** re-run (nothing they cover was touched — `chargen`, `menu`, `mainquest`, `doors`,
+`gear`, `generated`, `hunt`, `commerce`, `guilds`, `regard`, `radiant`, `story`, `cutscene`,
+`scenevisuals`, `sky`, `movement`, `wildfoot`'s unit face, `interior`, `city`, `worldmap`, `testmap`).
+Previous pass: unit **`482/482`**, browser the **new `exe` suite 8/8** — the game's
 own `ACD.EXE` read from the install and unpacked **in the page**, with the four structural numbers
-and Arena's own words read back. Previous pass: unit **`476/476`**, browser **`dungeonplay` 20/20**
+and Arena's own words read back. The pass before: unit **`476/476`**, browser **`dungeonplay` 20/20**
 (17 of them one walk: a dev-door dungeon → its own stair → the country at the ruin its seed picks →
 `E` back down, plus the opening dungeon → the country outside Riverhold) · **`mainquest` 62/62** ·
 **`movement` 11/11** · **`world` 28/28**. Previous pass's record: unit **`469/469`, exit 0** — seven
@@ -27,12 +38,50 @@ touched creation). Earlier browser runs, for the record:
 it was written) · `world` **28/28** · `combat` + `actioncombat` **82/82** · `chargen` **41/41** ·
 `menu` · `dungeonplay` **10/10** (the camp the level hears).
 
-IN PROGRESS: nothing half-edited. **The executable is open** (block B24): `src/arena/pklite.js`
-(the unpacker) and `src/arena/exeData.js` (the runtime read) are new, `interior.js` carries the
-`exe()` seam, and `tests/suites/exe.mjs` is a new browser suite (registered in `run-browser.mjs`,
-which now offers **24**). The tenth pass's first item is §5 item 0 in
-`docs/PORT_BLOCKS.md` — **the tables out of the unpacked image**, one table per pass, unless the
-owner's report is louder.
+IN PROGRESS: nothing half-edited. **The executable is open *and read*** (block B24):
+`src/arena/pklite.js` (the unpacker), `src/arena/exeTables.js` (**the tables** — new this pass),
+`src/game/monsterArt.js` (the creature-art join, new) and `src/arena/exeData.js` (the runtime read)
+are the modules; `interior.js`'s `exe()` seam reports the structure, the tables, the art audit and
+the `.INF` slot audit; `tests/suites/exe.mjs` (**14/14**) holds it in a page. The eleventh pass's
+first item is §5 item **0a** in `docs/PORT_BLOCKS.md` — **wire the tables that are read and
+unused** (the calendar, the sixty-four settlements, the class and race prose), item **0b** being the
+image's numeric tables — unless the owner's report is louder.
+
+WHAT THIS PASS PROVED (tenth pass, 2026-10-16 part seven — **the executable's tables, read and used**;
+`docs/PORT_BLOCKS.md` §4f):
+* **Thirty of the game's own tables are read out of the code image** (`a9aa3a6`,
+  `src/arena/exeTables.js`): the creature roster and the sheets each creature is drawn from, the
+  commoners' families, the player's animation templates, the creature voices, the eighteen classes,
+  the eight attributes, the races twice, the eight provinces, **all sixty-four settlements**, the
+  eight capitals, the sixteen named dungeons, the settlement block kinds, the calendar (twelve
+  months, seven weekdays, fifteen holidays, seven times of day), the noble ranks, the gem table, the
+  artifacts, the spell effects, the status words, the travel menu, and the level markers `mifLevel.js`
+  itself resolves. **A table is found by its own words** — an anchor of consecutive entries plus the
+  spelling of its own entries — so **no offset is committed** and the floppy release's `A.EXE` reads
+  the same way (law 6 kept: nothing derived is stored).
+* **The Minotaur's art, and the two defects that were one mistake.** `monsters.js` carried the
+  Minotaur with `sprite: null` ("this install ships no `MINO*.CFA`"), so it was dropped from every
+  roster that filters on art — D-29's *exist* half — while `peopleKinds.js` handed the archive's
+  `PAT1.CFA`…`PAT6.CFA` to the **town crowd** as a person's walk, which is D-30's *"minotaur guy"*
+  standing in a street. **`pat` is the Minotaur**: the executable's creature-name run (23) and
+  creature-sheet run (24) pair index by index, 21 by spelling, and index seven is `Minotaur` /
+  `pat@.cfa` — the only pair with nothing behind it; the `.INF` monster slots (`32`…`54`) come out in
+  the executable's creature order **23 of 23** with the Minotaur at `39`; and `PAT`'s sheets carry
+  `12, 8, 8, 8, 8, 3` frames, the shape 21 of the 23 creatures carry and no person's do (the rat is
+  the honest exception — it wears the person shape, which is why the tables decide and the
+  fingerprint only corroborates).
+* **Measured, on real pages and against the install** (`exe` 14/14): the tables read in a page from
+  the player's own `ACD.EXE`; `__debug.spawnMonster('minotaur')` answered **`null`** before the fix
+  and answers `{name: 'Minotaur', file: 'PAT1.CFA'}` with all six sheets loaded now; the audit's
+  dungeon line prints `…, skeleton, minotaur, spider, …` where the id used to be filtered out.
+* **`D-30` closed, `D-29` half closed**, and both rows in `docs/DEFECTS.md` say which half. Three
+  test files were **restated** (not loosened) where they had pinned the old law:
+  `monsterReport().spriteless` is `[]` (was `['Minotaur']`), `spriteFile(Minotaur)` is `PAT1.CFA`
+  (was `null`), and `peopleKinds` reads **thirteen** families (was fourteen) with no `PAT` kind.
+* **Named gap:** only the **string** tables are read; the image's numeric blocks (the byte rows
+  behind the holidays, the word ladder after the noble ranks, the creature stat rows, the spawn
+  tables B10/B11 have been calling *this project's own rule*) are §5 item **0b**, and the tables
+  that are read but wired to nothing (calendar, settlements, class/race prose) are item **0a**.
 
 WHAT THIS PASS PROVED (ninth pass, 2026-10-16 part six — **`ACD.EXE` unpacked**; `docs/PORT_BLOCKS.md` §4e):
 * **The game's own executable is readable, in the page, from the player's own copy** (`fb8fa77`).

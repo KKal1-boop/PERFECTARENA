@@ -25,12 +25,16 @@ stops a session from guessing.
    * a **reference implementation**, quoted with its file and line, when the number lives in
      the executable: OpenTESArena (MIT) is the one this project uses
      (`ArenaWeaponUtils`, `ArenaAnimUtils`, `ArenaChasmUtils`, `VoxelDoorUtils`, `INFFile`).
-2. **`A.EXE` is not in this checkout.** `ls arena/ARENA` is 153 loose files plus
-   `GLOBAL.BSA` — `ACD.EXE`, `INSTALL.EXE`, `ULTRAMID.EXE`, `ARENA.BAT`, no `A.EXE`. So every
-   table that lived in the executable (spawn tables, weapon animation timing, rest rolls, the
-   fixed quest text) is **not** readable here. A block that needs one either quotes
-   OpenTESArena's extraction of it, or states plainly that the number is *this project's own
-   rule* and stamps it as such in the module header. Never a third option.
+2. **`A.EXE` is not in this checkout — but the game is, under the name `ARENA.BAT` runs.**
+   `ls arena/ARENA` is 153 loose files plus `GLOBAL.BSA` and **`ACD.EXE`**, which `ARENA.BAT`
+   launches (`@ACD -Ssbpdig.adv …`): the same program the floppy release ships as `A.EXE`, and
+   PKLITE-packed either way. Since block B24 the executable is **unpacked and read** (`src/arena/pklite.js`,
+   `src/arena/exeTables.js`), so the tables that live in it are readable here *if* a reader can
+   find them by their own content. Still true, and still the rule: a number that has **not** been
+   read out of that image is either quoted from OpenTESArena with its file and line, or stated
+   plainly as *this project's own rule* and stamped as such in the module header. Never a third
+   option. (Until 2026-10-16 the second option was the only one, because the file had never been
+   opened — the rows below say which is which, and `[~]` on B24 is what is left of the first.)
 3. **The law lives in a module, not in a scene.** `src/scenes/interior.js` is 9 000 lines of
    wiring; anything that can be *decided* (a size, a swing angle, a fog density, a start
    destination, a hunt) belongs in `src/game/*.js` where a Node test can hold it. This is what
@@ -76,7 +80,7 @@ stops a session from guessing.
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
 | B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
 | B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24, and the owner's "you should port much more from arena" = D-31) | `unit/assetcoverage.test.mjs` + the tool's own run |
-| B24 | **`ACD.EXE` — the game's own tables** (the owner's "you need to decompile all of Arena"; the brief's P2) | `arena/ARENA/ACD.EXE` (174 429 B) — **the game itself**: `ARENA.BAT` runs `@ACD -Ssbpdig.adv -IOS220 -IRQS7 …`. The format's description is the entropymine write-up *Notes on PKLITE format* (jsummers, Parts 1–3) and the instance is the file's own bytes. **Measured from the bytes this session** (`node` read of the file): `MZ`, **1** relocation, header **96 B** (6 paragraphs) so the image is 174 333 B, `minAlloc` 9 024 paragraphs, `maxAlloc` 65 535, entry `IP:CS = 100:fff0`, `SS:SP = 2a96:200`; the stub carries `"PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved"` at offset 30 (the **pre-1993** PKLITE string, so not the 1.5+ "1990-93" variant), **no** `LZ91` marker, and the tail's entropy is **7.872 bits/byte** over the last 64 KiB — packed, not encrypted | new (`src/arena/pklite.js`, runtime-only) + `src/arena/exeData.js` (anchor-located tables) | `[~]` **THE FILE IS UNPACKED (`fb8fa77`) — the game's tables are readable**. **What packed it, read from its own bytes:** offset 28 = `0x0C` (minor 12) and offset 29 = `0x31` → major **1**, bit `0x10` = **"extra"** compression, bit `0x20` = **"large"** codebook, i.e. **PKLITE 1.12 registered**; the copyright string is at **30** (`PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved`, NUL at 83). *(Correction to the previous pass's reading: the `1` that looked like the string's version digit at 29 is the **flags byte**, and the string starts at 30 — the format's own version table keys on the pair `31 0c`.)* The write-up's table gives that pair **656** bytes into the code-image segment, and the image starts at 96 → compressed stream at **752**, which is exactly where this file's byte entropy climbs (7.0 bits/byte at 704, 7.2 from 752 on). **What came out:** a **305 520-byte code image** (19 095 whole paragraphs), **4 044 relocations**, footer `SS=19087 SP=128 CS=0 IP=0`, code image ending at 166 321, relocation table ending at **174 421 = the file's end − 8** (exactly the footer), no warnings, **33 ms** in Node. Four structural checks a desynchronised stream cannot pass, all green: the image is whole paragraphs; `SS×16+SP = 305 520 = ` the image's length (the stack ends at the top of the load image); the entry the footer names is the image's **first byte**, which is why it opens `BA A0 3B B4 30 CD 21` = `mov dx,3BA0h / mov ah,30h / int 21h` — a DOS version call, then PSP reads; and every relocation segment is a multiple of `0x0fff` (the extra-compression normalisation). **And it is this game:** measured offsets into the image — `to select your class?` @220304, `the world of Tamriel, home of the Arena…` @221192, `Imperial Province` @235528, `Khajiit` @251849, `Redguard` @255313, `Nord` @255323, `wild.mif` @249113, `menuscrn.img` @249067 — plus the **wilderness draws' own thresholds as words**: `0x6666` ×71, `0x4000` ×235, `0x2666` ×73, `0x1999` ×3, the cross-check `game/wilderness.js` has never had. Next probe: read the tables themselves out of the image, one per pass (`exeData.js`), each verified against something this repo already trusts — the class and race tables against `chargen`, the creation prose against the port's own text, the thresholds against `wilderness.js`. Still unexplained and not needed by the static route: the stub's own setup words `mov ax,4DC1h` / `mov dx,2A90h` at offset 96. Doctrine unchanged: derived at runtime on the player's machine, cached for the page's life, **never committed** (law 6) | `unit/pklite.test.mjs` 6/6 (format, structure, and Arena's own words) + **`exe` browser suite 8/8** (the same numbers produced in a real page from the player's own copy) |
+| B24 | **`ACD.EXE` — the game's own tables** (read: the string tables are out — **§4f**; what is left is the numeric blocks) (the owner's "you need to decompile all of Arena"; the brief's P2) | `arena/ARENA/ACD.EXE` (174 429 B) — **the game itself**: `ARENA.BAT` runs `@ACD -Ssbpdig.adv -IOS220 -IRQS7 …`. The format's description is the entropymine write-up *Notes on PKLITE format* (jsummers, Parts 1–3) and the instance is the file's own bytes. **Measured from the bytes this session** (`node` read of the file): `MZ`, **1** relocation, header **96 B** (6 paragraphs) so the image is 174 333 B, `minAlloc` 9 024 paragraphs, `maxAlloc` 65 535, entry `IP:CS = 100:fff0`, `SS:SP = 2a96:200`; the stub carries `"PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved"` at offset 30 (the **pre-1993** PKLITE string, so not the 1.5+ "1990-93" variant), **no** `LZ91` marker, and the tail's entropy is **7.872 bits/byte** over the last 64 KiB — packed, not encrypted | new (`src/arena/pklite.js`, runtime-only) + `src/arena/exeData.js` (anchor-located tables) | `[~]` **THE FILE IS UNPACKED (`fb8fa77`) — the game's tables are readable**. **What packed it, read from its own bytes:** offset 28 = `0x0C` (minor 12) and offset 29 = `0x31` → major **1**, bit `0x10` = **"extra"** compression, bit `0x20` = **"large"** codebook, i.e. **PKLITE 1.12 registered**; the copyright string is at **30** (`PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved`, NUL at 83). *(Correction to the previous pass's reading: the `1` that looked like the string's version digit at 29 is the **flags byte**, and the string starts at 30 — the format's own version table keys on the pair `31 0c`.)* The write-up's table gives that pair **656** bytes into the code-image segment, and the image starts at 96 → compressed stream at **752**, which is exactly where this file's byte entropy climbs (7.0 bits/byte at 704, 7.2 from 752 on). **What came out:** a **305 520-byte code image** (19 095 whole paragraphs), **4 044 relocations**, footer `SS=19087 SP=128 CS=0 IP=0`, code image ending at 166 321, relocation table ending at **174 421 = the file's end − 8** (exactly the footer), no warnings, **33 ms** in Node. Four structural checks a desynchronised stream cannot pass, all green: the image is whole paragraphs; `SS×16+SP = 305 520 = ` the image's length (the stack ends at the top of the load image); the entry the footer names is the image's **first byte**, which is why it opens `BA A0 3B B4 30 CD 21` = `mov dx,3BA0h / mov ah,30h / int 21h` — a DOS version call, then PSP reads; and every relocation segment is a multiple of `0x0fff` (the extra-compression normalisation). **And it is this game:** measured offsets into the image — `to select your class?` @220304, `the world of Tamriel, home of the Arena…` @221192, `Imperial Province` @235528, `Khajiit` @251849, `Redguard` @255313, `Nord` @255323, `wild.mif` @249113, `menuscrn.img` @249067 — plus the **wilderness draws' own thresholds as words**: `0x6666` ×71, `0x4000` ×235, `0x2666` ×73, `0x1999` ×3, the cross-check `game/wilderness.js` has never had. **And the tables came out in the same session — see §4f**, which is what `a9aa3a6` is: `src/arena/exeTables.js` reads **thirty string tables** out of the image by their own words, the Minotaur's art among them (**D-30 closed, D-29's exist half with it**). Still unexplained and not needed by the static route: the stub's own setup words `mov ax,4DC1h` / `mov dx,2A90h` at offset 96. Doctrine unchanged: derived at runtime on the player's machine, cached for the page's life, **never committed** (law 6). **What is left of this block:** the image's **non-string** tables — the byte blocks behind the holidays and the race tables, the word offsets after the noble ranks, the creature stat rows — which need a reader that can say what a number *means* before it is worth reading (queue §5 item 0) | `unit/pklite.test.mjs` 6/6 (format, structure, and Arena's own words) + **`unit/exetables.test.mjs` 8/8** and **`unit/monsterart.test.mjs` 9/9** (install-optional, as the format suites are: the tables, the readings, the pairing, the fingerprint) + **`exe` browser suite 14/14** (every number and every table produced in a real page from the player's own copy, with a real Minotaur standing on it) |
 | B23 | **Dungeon depth**: the level below (a wet basement — the original's sewers) and the storeys a tall level implies | the install's `*.MIF` + each level's `*.INF` `*LEVELUP`/`*LEVELDOWN` markers; OpenTESArena's `INFFile` for the marker names | `dungeonPlan.js` (assembly), `mifLevel.js` (markers), `interior.js` (`stairNear`/`useStair`) | `[ ]` **the owner's "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling"** — a multi-level file is walkable already (`state().level`/`levelCount`); what does not exist is a level *below* an assembled dungeon, and the storey a decoration pokes through | first probe: per dungeon, `levelCount`, each stair's cell, and which levels are wet — then assemble the second level (D-28) |
 
 ---
@@ -270,19 +274,103 @@ decoded into nonsense) and the new `exe` suite **8/8** in `tests/run-browser.mjs
 
 ---
 
+## 4f. What this pass closed (2026-10-16, part seven — **the tables are out of the image**)
+
+**B24 continued · the executable's own tables, read and used** (`a9aa3a6`). The previous pass opened
+the file; this one reads it, and the reading is what the owner's *"you need to decompile all of
+Arena"* asked for.
+
+**The reader** (`src/arena/exeTables.js`, ~330 lines, no dependencies): a table is found by **its own
+words** — an anchor of two to five consecutive entries (`Rat`, `Goblin`, `Lizard Man`, `Wolf`, `Snow
+Wolf`, `Orc` finds the creature roster) and then NUL-terminated strings until the run stops spelling
+like that table (a `match`, a `stopAt` where the next table begins, an empty entry where the game has
+one). **No offset is committed**, so the floppy release's `A.EXE` — the same program under another
+name — reads exactly the same way, and an anchor that is missing answers `null` instead of guessing.
+**Thirty tables** come out: the creature roster and the sheet table each creature is drawn from, the
+commoners' families, the player's own animation templates, the creature voices, the eighteen classes,
+the eight attributes, the races twice (a people and a person), the eight provinces, all **sixty-four
+settlements**, the eight capitals, the sixteen named dungeons, the settlement block kinds, the
+calendar (twelve months, seven weekdays, fifteen holidays, seven times of day), the noble ranks and
+the gem table, the artifacts, the spell effects, the status words, the travel menu, and the level
+markers this port's own `.INF` reader resolves. Seven readings hold them: the class block repeats
+inside the bestiary run, the settlements divide by the provinces (eight each), the calendar is twelve
+and seven, and the markers are the eight `mifLevel.js` looks for.
+
+**And the find, which was two open defect rows seen from both ends.** The creature tables pair index
+by index — **twenty-three names, twenty-four sheets** — and twenty-one of the pairs spell out
+(`Skeleton`/`skele`, `Snow Wolf`/`swolf0`, `Hell Hound`/`hound`). The two that do not are the Fire
+Daemon's — the *file name's* own misspelling (`deamon` for `daemon`), which `monsters.js` had always
+spelled its own way — and **index seven: `Minotaur` against `pat@.cfa`**, the one pair with nothing
+behind it. Three more measurements agree:
+
+* the executable's **`.INF` monster slots** (`32`…`54`, read off the install's own art names by
+  `dungeonItems.js` long before this block) come out in the executable's creature order **23 of 23**,
+  the Minotaur at `39` — the same slot the port's own art reading had to explain (`OGRE.DFA`);
+* the archive's **`PAT1.CFA`…`PAT6.CFA`** carry `12, 8, 8, 8, 8, 3` frames — the shape **twenty-one
+  of the twenty-three** creature families carry, and one no person's sheets do (a person's are twelve
+  across, nine for the one-angle commoners, three for the small set). The rat is the exception that
+  keeps this honest: it carries the *person* shape, so the fingerprint corroborates and the tables
+  decide;
+* the executable's own **people table** holds `mlgen0@…` and `fmgen0@…` and **no creature at all** —
+  `PAT` is not among the commoners, and `MINOTAUR.VOC` is the only thing in the archive spelled for
+  the Minotaur besides its art.
+
+So **D-30** (*"some npcs have enemy sprites like theres a minotaur guy somewhere"*) was the port
+handing a creature's sheets to the town crowd (`peopleKinds.js` listed `PAT#` as "a townsman of the
+PAT set"), and **D-29**'s *exist* half (*"most enemies dont exist"*) was the same sheets missing from
+`monsters.js`. Both closed by one field and one removal: the Minotaur's `sprite` is `PAT`, and `PAT`
+is nobody's townsman. Measured on a real page: `__debug.spawnMonster('minotaur')` answered **`null`**
+before it and answers `{name: 'Minotaur', file: 'PAT1.CFA'}` with all six sheets loaded now, and the
+`.INF` roster line in the audit prints `…, skeleton, minotaur, spider, …` where the id used to be
+filtered out. **D-29's spawn half stays open** (the three per-dungeon numbers), and the wilderness
+table now carries the Minotaur on the temperate and mountain roads (this project's own rule, stamped
+in the module).
+
+**Held by:** `tests/unit/exetables.test.mjs` **8/8** (the reader's refusals, the report's totality, and
+every table against something this project already trusted), `tests/unit/monsterart.test.mjs` **9/9**
+(the pairing, the slot order, the fingerprints, the archive's own files, and — the widest check of
+all — **the port's own race, class and creature lists against the executable's**, name for name:
+eight races, eighteen classes, every creature matched, the only name the port has that the creature
+table does not being the boss, whose sheet the sheet table carries), and the **`exe` browser
+suite 14/14** — every table read in a real page from the player's own copy, and a real Minotaur
+spawned there. `npm test` **499/499, exit 0**; `audit` 23/23, `world`+`townsfolk`+`living` 123/123,
+`actioncombat` 23/23, `dungeonplay` 20/20, `combat` 37/37.
+
+**The named gap on the block:** only the **string** tables are read. The image's numeric blocks — the
+byte rows behind the holidays and the race tables, the word offsets after the noble ranks, the
+creature stat rows, the spawn tables — need a reader that can say what a number *means* before it is
+worth claiming, which is the queue's next item. And the tables that *are* read are, so far, used by
+one thing each: the creature art (this pass), the level markers (already the port's own), and the
+readings. The calendar, the settlements and the class/race prose are read and **not yet wired** —
+those are the cheapest visible follow-ons.
+
+---
+
 ## 5. The queue — what the next sessions take, in order
 
 Each entry names **the first probe**, because a block starts with a measurement.
 
-0. **B24 continued · the tables out of the unpacked image** (the owner's own ask: *"you need to
-decompile all of Arena"*). The executable is open (`§4e`); what is not done is *reading* it. One
-table per pass, each verified against something this repo already trusts rather than against
-itself: the class and race tables (against `chargen`'s own list), the character-creation prose
-(against the port's own text), the wilderness draws (already confirmed: the four thresholds are in
-the image as words), the item and spell text, the spawn tables. First probe: dump the ASCII runs
-around the creation offsets (`to select your class?` @220304) and the two `img` name tables, and
-say for each run which module would consume it — the same discipline `docs/ASSETS.md` used for the
-archive's unread records.
+0. ~~**B24 continued · the tables out of the unpacked image**~~ **THE STRING TABLES ARE READ
+   (`a9aa3a6`, §4f)**: thirty of them, the creature art joined and D-29/D-30's Minotaur settled.
+   **What is left of this block, and it is two different jobs:**
+   0a. **Wire the tables that are read and unused.** The calendar (twelve months, seven weekdays,
+   fifteen holidays), the sixty-four settlements with their eight capitals in province order, the
+   class and race prose: each is read by `exeTables.js` today and consumed by nothing. First probe:
+   for each of the three, name the module that should read it instead of its own hand-made table
+   (`engine/systems/gameDate.js`'s month and day names against the executable's own, `worldMap.js`'s
+   settlement list against the sixty-four, `chargen.js`'s class blurbs against the game's) and
+   report every disagreement before changing one — the same shape as the Minotaur: the exe's answer
+   is not automatically better, it is *the game's*, and the disagreements are the finding.
+   0b. **The image's numeric tables.** The byte rows behind the holidays (`04 01 00 04 01 01 …` —
+   fifteen of them, a month/day pair and something else), the word ladder after the noble ranks
+   (`0e 00 2d 00 42 00 …`), the creature stat rows around `224690`, the spawn and rest tables that
+   blocks B10/B11 have been calling *this project's own rule* for want of them. These are **not**
+   string tables, so the reader's method does not transfer as-is: the first probe is to find, for
+   each, a **constraint the numbers must satisfy** (a month 1…12 followed by a day 1…31, a ladder that
+   sums to the table's own length, a hit-point pair whose range brackets the port's own UESP numbers)
+   — a number read out of a code image with nothing to check it against is not a reading, it is a
+   coincidence with an offset. This is the half of B24 where the owner's *"decompile all of Arena"*
+   still has real work left.
 0b. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report).
    First probe: per shipped dungeon, `levelCount`, each stair's cell and which levels are wet; then
    assemble the second level the way the original's own second level reads. The owner's own words

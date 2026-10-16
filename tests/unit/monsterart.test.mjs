@@ -192,6 +192,41 @@ test('PAT carries the creature fingerprint and no person\'s sheet does', { skip 
   assert.equal(labelForFile('PAT1.CFA'), null, 'a PAT sheet is nobody\'s person');
 });
 
+test('the port\'s own character tables are the executable\'s lists, name for name', { skip }, async () => {
+  const { tables: all, creatures } = install();
+  const key = artNameKey;
+  // **This is the whole port's reading, checked against the game's own words** — the tables were
+  // built here from `.INF` art names, UESP and the install's files long before the executable could
+  // be read, and they agree with it: eight races, eighteen classes, and the creatures the port
+  // names are the executable's own.
+  const { RACES, CLASSES } = await import('../../src/game/character.js');
+  assert.equal(RACES.length, all.racesSingular.length);
+  for (const race of RACES) {
+    assert.ok(all.racesSingular.some((r) => key(r) === key(race.name)), `${race.name} is a race of the game`);
+    // The people's name shares the race's own letters up to its last one — the game's plurals are
+    // not regular (`Dark Elf` → `Dark Elves`), so an exact-prefix rule is the wrong rule.
+    assert.ok(all.racesPlural.some((r) => key(r).startsWith(key(race.name).slice(0, -1))),
+      `${race.name}: and its people are named too (${all.racesPlural.join(', ')})`);
+  }
+  assert.equal(CLASSES.length, 18);
+  for (const cls of CLASSES) {
+    assert.ok(all.classes.some((c) => key(c) === key(cls.name)), `${cls.name} is a class of the game`);
+  }
+  // The executable's class table is one name longer than character creation's: `BattleMage`, the
+  // game's own second spelling of the class it also writes `Battlemage`.
+  assert.equal(all.classes.length, CLASSES.length + 1);
+  assert.equal(all.classes.filter((c) => key(c) === 'battlemage').length, 2, 'both spellings are the game\'s');
+  // Every creature the port names is one of the executable's, and the only one it does not is the
+  // boss — whose sheet is in the executable's sheet run all the same (`tharn0@.cfa`).
+  const known = MONSTERS.filter((m) => m.name !== 'Jagar Tharn');
+  assert.equal(known.length, creatures.length);
+  for (const monster of known) {
+    assert.ok(creatures.some((c) => key(c) === key(monster.name)), `${monster.name} is a creature of the game`);
+  }
+  assert.deepEqual(MONSTERS.filter((m) => !creatures.some((c) => key(c) === key(m.name))).map((m) => m.name),
+    ['Jagar Tharn']);
+});
+
 test('the rat is why the fingerprint is corroboration and not proof', { skip }, () => {
   const { archive } = install();
   if (!archive) return;
