@@ -1,17 +1,21 @@
-# AGENT_STATE (updated 2026-10-16, sixth pass)
+# AGENT_STATE (updated 2026-10-16, seventh pass)
 
 PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the port beside the real
-Arena on 2026-10-16 and reported a long list; it is written up as **D-12 … D-25 in
-`docs/DEFECTS.md` with their own section** and is now the work list. **D-01a, D-01b, D-02a, D-12,
-D-14b, D-15, D-16, D-17, D-19, D-20, D-21 and D-25 are closed.** The owner's second report of the
-same day asks for the port to advance in **blocks** rather than symptom by symptom:
-`docs/PORT_BLOCKS.md` is that work order — 22 system-level blocks with their source of truth,
-their module, the check that holds them, the report mapped onto them, and the ordered queue with
-each block's first probe. **Take blocks from its §5; a block is closed by the six rules in its §1.**
+Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
+`docs/DEFECTS.md` with their own sections** and are the work list. **D-01a, D-01b, D-02a, D-12,
+D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25 and D-26 are closed, and D-27 is closed for the
+direction the owner reported** (walking out; the walk back in is not demonstrated). Both reports
+ask for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` is
+that work order — **23** system-level blocks with their source of truth, their module, the check
+that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
+**Take blocks from its §5; a block is closed by the six rules in its §1.**
 
-LAST GREEN: unit **`462/462`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — 25
-new checks in `unit/wildernessbestiary.test.mjs`, `unit/bloodeffect.test.mjs` and
-`unit/assetcoverage.test.mjs`. Browser, all run **after** the last edit of each file:
+LAST GREEN: unit **`469/469`, exit 0** (`ARENA_PATH=C:/ArenaProject/arena/ARENA npm test`) — seven
+new checks, `unit/stride.test.mjs`. Browser: **`movement` 9/9** (new this pass: every movement key
+held leaves the frame counter climbing, the stride measured, the city gate walked through) ·
+`world` + `living` + `audit` **88/88** · `world` + `dungeonplay` + `combat` **75/75**. The full
+nineteen-suite sweep has **not** been run this pass, and `chargen`/`menu` were not re-run (nothing
+touched creation). Earlier browser runs, for the record:
 **`audit` 51/51 — the audit is green for the first time** (it has been red on the wilderness since
 it was written) · `world` **28/28** · `combat` + `actioncombat` **82/82** · `chargen` **41/41** ·
 `menu` · `dungeonplay` **10/10** (the camp the level hears).
@@ -101,23 +105,51 @@ WHAT THIS PASS PROVED (the two blocks it closed, `docs/PORT_BLOCKS.md` §4):
   wounds. `tests/unit/hunt.test.mjs` holds it; the roll itself is `A.EXE`'s and is stamped as this
   project's rule.
 
+WHAT THIS PASS PROVED (2026-10-16, part four — `docs/PORT_BLOCKS.md` §4b):
+* **B06 closed (`2c2b63f`) — the stride, and the page it killed (D-26).** The run gate landed last
+  session read `weaponRig.drawn` from `interior.js`'s **module-level** `inputOf` while the rig is
+  declared inside `bootInterior`: with a sprint key held the builder threw `ReferenceError`, the
+  throw left `step()` and then `frame()` before its own `requestAnimationFrame`, and **the page
+  stopped for good** — probed before the fix: walk 4.59 m in 1.2 s, then 0.00 m forever. Nineteen
+  suites were green because **not one of them had ever held a movement key**. The law is now
+  `game/weaponView.js`'s `canRunUnlessDrawn(drawn)`, taken by the builder as a parameter; the new
+  **`movement`** suite holds every key the loop can hear (the frame counter is read *while the key
+  is down*) and measures the stride: **walk 1.86 m/s → sprint 3.08 → sprint with the blade out
+  1.86**, the sprint returning once the rig sheathes. `tests/unit/stride.test.mjs` holds the law.
+* **The city gate is a door the player walks through (`baf80ef`) — D-27, the owner's evening
+  report.** A city has a gate and `E` crossed it all along, but the wall's one opening holds the
+  game's gateway as a **solid** voxel, so a player who walked at it stopped against the art — from
+  their side, no door at all. `maybeWalkThroughGate` crosses on the **push**: within a cell of the
+  gateway, with the frame's stride aimed at it, both directions, once per crossing. Measured in
+  `movement`: walking at 8,127 of `CITYW2` leaves the city on foot with no keypress (Daggerfall and
+  Rihad both probed), and a stride **along** the wall does not. **The walk back in from the country
+  is not demonstrated** — that is the row's next task, and the honest gap in this pass.
+* **The owner's evening report is mapped and probed, not guessed** (`docs/DEFECTS.md`, D-28…D-31):
+  dungeon depth/sewers is **B23** (new block, first probe: per dungeon `levelCount`, each stair's
+  cell, which levels are wet); "most enemies dont exist or dont spawn" is D-29 (three numbers per
+  dungeon: roster size, how many ids this install can draw, the field's real count); the "minotaur"
+  NPC is D-30 and is **not reproduced** — Daggerfall 48 people / Corinth at 23:00 48 people / one
+  wilderness page, every sheet a folk sheet and **zero creatures**, with `01MNKWLK.CFA` shown to be
+  the *monk* sheet, not a minotaur; "port much more from arena" is the wiring half of B22.
+
 NEXT 3 STEPS (from `docs/PORT_BLOCKS.md` §5, each with its first probe):
-0. **B02 · is the start dungeon mirrored?** (D-13) — the owner's "looks like a mirrored version".
+0. **B23 · dungeon depth — the level below with water in it** (D-28, the owner's evening report),
+   and the same pass settles **D-27's open half**: the walk *back* into a city from the country.
+   Probe the gate first (`.scratch/gateback.mjs` is one run from an answer: the country's own
+   `gateCells`, the arrival cell's bearing from it, then the same push inward), because a door that
+   works one way is the same complaint half-fixed. Then the dungeon probe: per shipped dungeon,
+   `levelCount`, each stair's cell and which levels are wet.
+1. **B02 · is the start dungeon mirrored?** (D-13) — the owner's "looks like a mirrored version".
    Probe `START.MIF`'s cell grid (`tools/mif-dump.mjs`, `tools/lib/mapascii.mjs`) against what the
    original shows: the cell door, the `GATE.IMG` stair, the arrival room, the arrival yaw. A
    mirror can only be `mifMesh`'s x/z mapping, the camera's handedness or the spawn facing — one
    line and one test. Then run the same probe over the eight quest dungeons and the palace, which
    the owner reports as "all glitched".
-1. **B05 · water you can pass through** (D-18/D-18a) — probe per level: do flooded cells separate
+2. **B05 · water you can pass through** (D-18/D-18a) — probe per level: do flooded cells separate
    two otherwise-disjoint walkable regions? If a level *needs* the water, that is the original's
    swimming and this port's blocked wall, and the block ports `ArenaChasmUtils.allowsSwimming`
-   properly instead of the current wade.
-2. **B06 · a drawn weapon is a walk — the gate is landed, the measurement is not.** The owner's
-   ask (2026-10-16) is in the input builder: `run` now reads `weaponRig.drawn`, so a blade that is
-   out means the walk and the sprint comes back when it is put away (`weaponView.js`'s own getter,
-   not a second flag). Every suite that walks exercises the path, and **no check asserts the speed
-   difference yet** — the next pass measures it (Shift+W with the weapon sheathed vs drawn, two
-   displacements over the same number of frames, in `movement` or `dungeonplay`).
+   properly instead of the current wade. B23's wet basement is the same water seen from the other
+   side, so the two blocks should be probed together.
 
 Then the two big ones the list names and the phases already own: **D-01b/D-02a** (people and
 creatures in the country — the audit's four remaining reds) and **D-22** (P3/P4: the wilderness is

@@ -59,7 +59,7 @@ stops a session from guessing.
 | B03 | Generated levels (the dungeons the install does not ship) | 29 raw blocks in `GLOBAL.BSA` | `dungeonPlan.js` | `[x]` | `unit/dungeonplan`, `generated` |
 | B04 | Doors: hinges, swing, locks, keys | `IMPPAL1.INF` doors, OpenTESArena `VoxelDoorUtils` | `doors.js` | `[x]` (D-17) | `unit/doors`, `doors` |
 | B05 | Chasms: water, lava, falling, **swimming/passing through water** | `WATERANI.RCI`/`LAVAANI.RCI`, OpenTESArena `ArenaChasmUtils` | `chasmSurface.js`, `interior.js:updateWater` | `[~]` **D-18/D-18a open** | `unit/mif` (chasm cells), `interior` |
-| B06 | First person: the weapon in hand, the swing, empty hands | `HAND.CIF`, `SWORD.CIF`, `AXE.CIF`, `MACE.CIF`, `HAMMER.CIF`, `STAFF.CIF` + OpenTESArena `ArenaWeaponUtils` | `weaponView.js`, `items.js` | `[x]` (D-14b) | `unit/weapon`, `unit/items`, `chargen`, `gear` |
+| B06 | First person: the weapon in hand, the swing, empty hands, **and the stride** | `HAND.CIF`, `SWORD.CIF`, `AXE.CIF`, `MACE.CIF`, `HAMMER.CIF`, `STAFF.CIF` + OpenTESArena `ArenaWeaponUtils` | `weaponView.js`, `items.js` | `[x]` **(D-14b, and D-26 for the run gate)**: a drawn weapon is a walk — `canRunUnlessDrawn` is the law and the builder takes the rig's own answer as a parameter; the page measures **walk 1.86 m/s → sprint 3.08 → sprint with the blade out 1.86**, and every movement key held leaves the frame counter climbing | `unit/weapon`, `unit/items`, `unit/stride`, `chargen`, `gear`, **`movement`** |
 | B07 | Billboards: five views, walk/attack/death cycles, facing | OpenTESArena `ArenaAnimUtils` | `actorAnimation.js` | `[x]` (D-25) | `unit/actoranimation`, `townsfolk`, `actioncombat` |
 | B08 | Combat rules: to-hit, damage, poise, stagger, parry/riposte | Arena's own stat table (`SPELLS.LST`, `.INF` `*ITEM` stats) | `combat.js`, `combatStyle.js` | `[x]` | `unit/combat`, `actioncombat`, `combat` |
 | B09 | Combat **presentation**: blood, tells, no invented particles | the original's own look (no wind-up bursts) | `combatFx.js`, `bloodEffect.js`, `engine/combat/bloodDecals.js` | `[~]` **the owner's "ugly battle particles"** — the invented amber bursts are gone (D-20), a landed blow is now `combatFx.blood()` (one blood red, `5cccb80`), and `bloodEffect.js` turns a blow into the engine's own decal records; **the remaining half is the decal pass** (`renderer.createDecalBatch` / `place` / `writeDecalSlot` / `drawDecals`, `renderer.js:3128-3166`) — nobody has read `engine/combat/bloodArt.js`, which is where that pass's texture comes from | `combat`, `actioncombat`, `unit/bloodeffect.test.mjs` |
@@ -70,12 +70,13 @@ stops a session from guessing.
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
 | B16 | World map, all of Tamriel, fast travel | `TAMRIEL.MNU`, `CITYDATA.64/65` | `worldMap.js`, `worldmap.js` | `[x]` | `worldmap`, `unit/worldmap` |
-| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel | `world`, `audit` (S-A/S-B/S-D), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
+| B17 | Wilderness, leaving a city on foot | `TWN/DWN/MWN.INF`, `GLOBAL.BSA` wild blocks | `wilderness.js`, `wildernessBestiary.js` | `[~]` **(D-01b and D-02a closed, `5cccb80`: the country is inhabited and its three climates field different creatures; D-27, `baf80ef`: the gate is a door the player *walks* through — the wall's opening holds the gateway as a solid voxel, so the crossing used to be behind `E` and read as no door at all)** · **D-22 still open**: a 128×128 window per climate, no relief, no coast, no roads, no continuous Tamriel; **and the walk back in is not demonstrated** | `world`, `audit` (S-A/S-B/S-D), `movement` (the gate), `wildfoot`, `unit/wilderness`, `unit/wildernessbestiary` |
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
 | B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **D-05**: doors/gates/stairs are in-page, but a place change re-boots the scene | `unit/worldstate`, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
 | B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
-| B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24) | `unit/assetcoverage.test.mjs` + the tool's own run |
+| B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24, and the owner's "you should port much more from arena" = D-31) | `unit/assetcoverage.test.mjs` + the tool's own run |
+| B23 | **Dungeon depth**: the level below (a wet basement — the original's sewers) and the storeys a tall level implies | the install's `*.MIF` + each level's `*.INF` `*LEVELUP`/`*LEVELDOWN` markers; OpenTESArena's `INFFile` for the marker names | `dungeonPlan.js` (assembly), `mifLevel.js` (markers), `interior.js` (`stairNear`/`useStair`) | `[ ]` **the owner's "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling"** — a multi-level file is walkable already (`state().level`/`levelCount`); what does not exist is a level *below* an assembled dungeon, and the storey a decoration pokes through | first probe: per dungeon, `levelCount`, each stair's cell, and which levels are wet — then assemble the second level (D-28) |
 
 ---
 
@@ -99,7 +100,17 @@ Every row of the 2026-10-16 report, with the block that owns it. Full rows live 
 | "normal arena has wilderness … you teleport around and cant even get out of a city" | B17 | **open** (D-22, the structural one) |
 | "biomes texture changing depending on night or snow" | B18 | **open** (D-23) |
 | "a lot of assets missing … and features" | B22 | **open** (D-03/D-24) |
-| "shouldn't be able to run with your weapons unsheathed" | B06 | **open** — small, and it is Arena's own law: a drawn weapon is a walk, not a run (queue 3) |
+| "shouldn't be able to run with your weapons unsheathed" | B06 | **closed this session** (D-26: the law, and the freeze the landing had made — `2c2b63f`, measured in `movement`) |
+
+### The same owner, later the same day (2026-10-16 evening)
+
+| report | block | status |
+|---|---|---|
+| "still you cant go out of cities and into the wilderness gates dont work there is no door to bring you to the wilderness" | B17 | **half closed this session** (D-27, `baf80ef`: the gate is walked through; the walk *back in* is not demonstrated) |
+| "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling" | **B23** (new) | **open** · D-28, first probe named in the ledger |
+| "most enemies dont exist or dont spawn" | B11 + B22 | **open** · D-29: three numbers per dungeon (roster size, how many ids this install can draw, the field's real count) |
+| "some npcs have enemy sprites like theres a minotaur guy somewhere" | B11 | **open** · D-30: **not reproduced** in Daggerfall, Corinth or a wilderness page (48/48/1 people, every sheet a folk sheet); needs the place, or a sweep of every city × clock × interior |
+| "still stuff from arena is missing you should port much more from arena" | B22 | **open** · D-31: the wiring half, group by group in `docs/ASSETS.md`'s order (screens first) |
 
 ---
 
@@ -172,12 +183,44 @@ Each entry names **the first probe**, because a block starts with a measurement.
    *needs* the water to get anywhere, that is the original's swimming and this port's blocked
    wall; the block then ports `ArenaChasmUtils.allowsSwimming` properly (enter the water, swim,
    climb out) instead of the current wade.
-3. **B06 · a drawn weapon is a walk — measure it.** The gate is landed (`5cccb80`: the input
-   builder's `run` reads `weaponRig.drawn`, so a drawn blade means the walk and the sprint returns
-   when it is put away), and **no check yet proves the speed difference**. Next: Shift+W with the
-   weapon sheathed and drawn, two displacements over the same frames, in `movement` or
-   `dungeonplay`; then `combatFx.blood`'s decal half (B09) — `engine/combat/bloodArt.js` holds the
-   texture `renderer.drawDecals` wants, and nobody has read it.
+3. ~~**B06 · a drawn weapon is a walk — measure it.**~~ **CLOSED this session (`2c2b63f`)**, and
+   it closed a defect the landing itself had made: `inputOf` is module-level and read the rig out
+   of `bootInterior`'s scope, so **holding Shift threw `ReferenceError` out of `step()`, left
+   `frame()` before its own `requestAnimationFrame`, and killed the page** — for a whole session,
+   under nineteen green suites, because **no suite had ever held a movement key**. The law is
+   `canRunUnlessDrawn(drawn)` and the builder takes it as a parameter; the new **`movement`** suite
+   holds every key the loop can hear (frame counter read *during* the hold) and measures the
+   stride: walk 1.86 m/s → sprint 3.08 → sprint with the blade out 1.86, the sprint returning when
+   the rig sheathes. The same suite walks through the city gate (D-27, `baf80ef`).
+3a. **B09 · the blood's decal half.** `combatFx.blood()` and `game/bloodEffect.js` are landed and
+   turn a blow into the engine's own decal records; **the pass that draws them is not wired** —
+   `renderer.js`'s `createDecalBatch`/`place`/`writeDecalSlot`/`drawDecals` are the seam and
+   `engine/combat/bloodArt.js` holds the texture. Probe first: what a landed blow leaves on the
+   floor and the walls in the Arena scene, and where `bloodEffect`'s records go today (they are
+   produced and never read — the same shape as D-26 and it would be the third time this session's
+   work was wired at one end only).
+3b. **B23 · dungeon depth** (D-28, new this session): a level below — the original's wet sewers —
+   and the storey a tall decoration pokes through. Probe: per dungeon, `levelCount`, each stair's
+   cell, and which levels are wet; then assemble the second level the way the original's own
+   second level reads. The owner's own words are the acceptance test.
+
+## 4b. What this session closed (2026-10-16, part four)
+
+**B06 · the stride, and the page it killed** (`2c2b63f`; D-26). The run gate landed last session
+read `weaponRig.drawn` from a module-level function while the rig lives inside `bootInterior`: with
+a sprint key held the builder threw, `step()` propagated it out of `frame()`, and the page stopped
+for good (`painted` frozen, every later measurement 0.00 m). Found by writing the check the queue
+itself asked for — a page that holds each movement key and reads the frame counter **while it is
+down** — which is also the suite that now proves the law: `movement`, walk 1.86 m/s → sprint 3.08 →
+sprint with the blade out 1.86. `tests/unit/stride.test.mjs` holds the law and the scope.
+
+**The gate is a door you walk through** (`baf80ef`; D-27, the owner's evening report). The gate
+existed, `E` crossed it, and the crossing was invisible to a player because the wall's one opening
+holds the gateway as a **solid** voxel: walking at it stopped you. `maybeWalkThroughGate` crosses on
+the push — aimed at the gateway, within a cell of it, either direction, once per crossing. Measured
+on `CITYW2` and `CITY2`: walking at the opening leaves the city on foot with no keypress, and a
+stride along the wall does not. **The walk back in from the country is not demonstrated yet**; that
+is the row's next task.
 4. **B09 · blood, not sparks.** The engine already has `engine/combat/bloodDecals.js` (lands in
    the Daggerfall side). Probe: what a landed blow leaves on the floor and on the walls in the
    Arena scene; then wire the decals into `combatFx`, and delete any remaining invented burst.
@@ -186,8 +229,19 @@ Each entry names **the first probe**, because a block starts with a measurement.
    creatures (D-02a) there, and enter wild buildings.
 6. **B18 · weather that moves and a ground that knows the season** (D-23): the front, the
    per-climate ground mix, snow on the ground, and the night/snow variants of city art.
-7. **B22 · asset coverage** (D-03/D-24): the 1 691 BSA records named by nothing are where the
-   missing screens, tilesets, crowd sheets and speech live — a census block, then a wiring block.
+7. **B22 · asset coverage** (D-03/D-24, and the owner's "you should port much more from arena" =
+   D-31): the 1 691 BSA records named by nothing are where the missing screens, tilesets, crowd
+   sheets and speech live. The census is done; this is the wiring, one group per session in
+   `docs/ASSETS.md`'s own order, screens first (they are what a player meets before anything else).
+8. **B11 · "most enemies dont exist or dont spawn"** (D-29, the owner's evening report). First
+   probe: per shipped dungeon, the `.INF` roster size, how many of those ids this install can draw
+   (a missing `.CFA` drops the creature silently — `loadSpriteSet` → null), and the count the page
+   really fields. Three numbers, and they tell the three causes apart.
+9. **B11 · "some npcs have enemy sprites (a minotaur guy)"** (D-30). First probe: sweep every
+   city (each `CITY*`/`TOWN*`/`VILLAGE*` skeleton × a clock) and every interior for a person whose
+   sheet is outside the folk namespaces, and for a **creature** standing on a settlement's own
+   cells. Daggerfall, Corinth and one wilderness page came back clean, so the next probe has to be
+   the sweep — or the owner's own place name, which would settle it in one run.
 
 ---
 
