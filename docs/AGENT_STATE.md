@@ -35,7 +35,8 @@ which now offers **24**). The tenth pass's first item is §5 item 0 in
 owner's report is louder.
 
 WHAT THIS PASS PROVED (ninth pass, 2026-10-16 part six — **`ACD.EXE` unpacked**; `docs/PORT_BLOCKS.md` §4e):
-* **The game's own executable is readable, in the page, from the player's own copy.** `ARENA.BAT`
+* **The game's own executable is readable, in the page, from the player's own copy** (`fb8fa77`).
+  `ARENA.BAT`
   runs `ACD` (not `A.EXE`), so the 174 429-byte `ACD.EXE` **is** the game, packed with **PKLITE 1.12
   registered, "extra" + "large"** (offset 28 `0x0C` = minor 12; offset 29 `0x31` = major 1 with the
   `0x10`/`0x20` flags; string at 30 — which corrects the previous pass's off-by-one reading of that
