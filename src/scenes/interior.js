@@ -75,7 +75,7 @@ import { exeReport, loadExeImage } from '../arena/exeData.js';
 import { exeTables, exeTableReport, splitBestiary } from '../arena/exeTables.js';
 import { monsterArtAudit, monsterSlotAudit } from '../game/monsterArt.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
-import { decodeLevel } from '../game/mifLevel.js';
+import { decodeLevel, openSettlementGate } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
 import { CITY_BLOCKS_PER_SIDE, cityInfName, cityInfNames, cityTemplateName } from '../game/tables/cityBlocks.js';
 import { withGroundFloors } from '../arena/infFile.js';
@@ -1661,6 +1661,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // its own to read.
       startPoints: cityRequest || wildRequest ? undefined : mif.startPoints,
     });
+    // ── the gate is a way through, not a wall (the owner's own words) ──────────
+    //
+    // *"CITY GATES SHOULD HAVE NO COLLISION SO I CAN ACTUALLY GO INTO THE WILDERNESS"*. Every
+    // shipped skeleton cuts one opening in the settlement's outermost line and hangs the gateway art
+    // in it; `decodeMap1` gave that voxel `solid` from its own byte, so walking at the gate stopped
+    // against the art and only the push rule crossed (`maybeWalkThroughGate`, D-27).
+    // `openSettlementGate` marks the opening `gateway: true` — drawn as it always was, in nobody's
+    // collision soup — and only a settlement has one, so a dungeon's arches are untouched.
+    const gates = cityRequest || wildRequest ? openSettlementGate(level) : [];
+    if (gates.length) {
+      data.warn(`gate open: ${gates.map((g) => `${g.axis} at ${g.row},${g.col}`).join(' ')}`);
+    }
+    // Carried into the `current` literal below (which is built four hundred lines further down, so
+    // this cannot be written onto `current` here — it is `null` until then, and the first version
+    // of this block did exactly that and killed the page at boot: *"Cannot set properties of null
+    // (setting 'gateway')'"*). The marking itself is already on the level's own cells, which is
+    // what `walkableWorld` and the mesher read.
+    const gatewayCells = gates;
     // A generated dungeon chooses its own arrival on the *decoded* level — the pieces'
     // header point when it opens onto the level, the largest walkable region's middle when
     // it does not (see `dungeonPlan.spawnCellFor`, and why a fixed centre cell is no good).
@@ -1943,7 +1961,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // once, and the whole page died on the first `state()` call with a town that never drew.
     current = {
       index, level, rawLevel: mifLevel, built, mesh, collider, motor, inf, infName, uploaded, missing, openSky, outdoor,
-      triggers: triggerCells,
+      triggers: triggerCells, gateway: gatewayCells,
       spawn, cam, city, doors, shopKinds: city ? shopSignKinds(inf) : null,
       wild, scenery, sceneryBatches, standCell, wildRuin, sampler, surfaces,
       leaves: leafSpots, loot: lootSpots, lootBatches,
@@ -2330,7 +2348,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /** Can something stand here? The same test the player's spawn uses. */
   function walkableWorld(x, z) {
     const cell = cellAtWorld(x, z);
-    return Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+    // **A gateway is walkable whatever its byte says** (the owner: *"city gates should have no
+    // collision"*). It is the same flag the mesher keeps out of the collision soup, so a body and
+    // the player agree about the opening.
+    return Boolean(cell) && (!cell.solid || Boolean(cell.gateway)) && !cell.floor?.chasm;
   }
 
   /**
@@ -8612,6 +8633,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // Whether anything is falling out of it, and which pass draws it.
       weather: airWeather,
       precipitation: precip ? { mode: airWeather, particles: PRECIP_MAX_PARTICLES } : null,
+      // **The settlement's gate, open for walking**: the wall's opening cells, whose art is drawn and
+      // whose box is in nobody's collision soup (the owner's own request).
+      gateway: (current?.gateway ?? []).map((g) => ({ row: g.row, col: g.col, axis: g.axis })),
       // ── the story this scene is taking part in ──
       questStage: chain.stages[quest.step]?.title ?? null,
       // The people, and the art that is loaded for this level: a town's population is

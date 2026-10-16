@@ -281,6 +281,101 @@ function decodeFlor(cell, inf) {
  * @param {number} id  a raw `MAP1` value
  * @returns {boolean}
  */
+/**
+ * OPEN A SETTLEMENT'S GATE: the wall's own opening is a **way through**, not a wall.
+ *
+ * The owner, playing beside the original: *"CITY GATES SHOULD HAVE NO COLLISION SO I CAN ACTUALLY
+ * GO INTO THE WILDERNESS"*. He is right about the original and the port was wrong: every shipped
+ * city skeleton cuts **exactly one** opening in its outermost line and hangs the game's gateway art
+ * in it — a `0x9` **transparent** voxel, drawn as `PGATE.IMG` — and `decodeMap1` gave that voxel
+ * `solid` from its own byte, so a player who walked at the gate stopped against the art and the
+ * country was reachable only through `scenes/interior.js`'s push rule (D-27). A gate you have to
+ * fight is not a gate.
+ *
+ * So the opening cells are marked **`gateway: true`**, which says *drawn as always, collides with
+ * nobody*: `mifMesh.js` reads the flag when it decides what goes into the collision soup, and the
+ * scene's own walkability test reads it too. Nothing is moved, hidden or re-textured — the wall, the
+ * gate's leaves and the street behind it are all exactly what the file says.
+ *
+ * The rule is the outermost line and nothing else, which is what makes it narrow: a `0x9` **arch
+ * inside** a city (a garden gate, a hedge) is not on the line and is left alone, and the opening must
+ * stand over walkable ground on the settlement's own inside, so a hole into nothing is not a gate.
+ * Measured on the shipped skeletons: `CITY1` row 0 cols 18–19, `TOWN1` col 0 rows 26–27, `VILLAGE1`
+ * row 86 cols 79–80, `CITYW2` col 127 rows 8–9.
+ *
+ * **A line with more than one opening is not a settlement** and is refused whole, which is the
+ * guard this function needs because it is *also* handed building files: a city block's own `.MIF`
+ * carries `0x9` arches along its line too (they are its shopfronts, and street lies behind them),
+ * and opening *those* would punch holes in a facade. Swept over all 526 `.MIF` records in the
+ * archive: the sixteen settlement skeletons each cut **exactly one** run of exactly two cells
+ * (`CITYW1…3`, `TOWN1…5`, `TOWNW1…2`, `VILLAGE1…5`), while the blocks that carry any opening at all
+ * show one **wide** run (`NBBD6A`: fourteen cells) or **two** runs on different lines (`TSBD7A`: three
+ * on row 0 and three on col 0) — so the single-run reading separates them without a filename test.
+ *
+ * @param {import('./mifLevel.js').ArenaLevel} level  a **decoded** level (`decodeLevel`)
+ * @returns {{row: number, col: number, axis: 'north'|'south'|'east'|'west'}[]} the cells opened
+ */
+export function openSettlementGate(level) {
+  const cells = level?.cells;
+  if (!cells?.length) return [];
+  const { width, depth } = level;
+  const at = (row, col) => (row < 0 || col < 0 || row >= depth || col >= width ? null : cells[row * width + col]);
+  /**
+   * The settlement's own street: the ground the opening has to stand over — the **same** test the
+   * scene's `walkableWorld` makes (`!cell.solid && !cell.floor?.chasm`), so a body that can stand
+   * behind the gate is exactly what makes it a gate. `CITY4`'s opening stands over an `0x8` floor
+   * *entity* (art on the ground, not a wall — `rawPassable` says the same), which an earlier version
+   * of this test excluded; the city was then left with no gate at all.
+   */
+  const street = (cell) => Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+
+  const line = [];
+  for (let col = 0; col < width; col++) {
+    line.push({ row: 0, col, axis: 'north', dr: 1, dc: 0 });
+    line.push({ row: depth - 1, col, axis: 'south', dr: -1, dc: 0 });
+  }
+  for (let row = 1; row < depth - 1; row++) {
+    line.push({ row, col: 0, axis: 'west', dr: 0, dc: 1 });
+    line.push({ row, col: width - 1, axis: 'east', dr: 0, dc: -1 });
+  }
+
+  // Collect first and mark nothing yet: the whole line has to be read before it can be judged.
+  const candidates = [];
+  for (const spot of line) {
+    const cell = at(spot.row, spot.col);
+    if (!cell || cell.gateway) continue;
+    // The gateway voxel is the transparent one — `0x9`, the same reading `decodeMap1` takes and the
+    // same one `scenes/interior.js` reads a settlement's gate with.
+    if (((cell.rawMap1 & 0xf000) >> 12) !== 0x9) continue;
+    if (!street(at(spot.row + spot.dr, spot.col + spot.dc))) continue;
+    candidates.push(spot);
+  }
+
+  // **One opening, or none at all.** A settlement cuts a single run; a building's line carries a
+  // long run of arches or a run on each of two lines, and neither is a gate.
+  const runs = [];
+  for (const spot of candidates) {
+    const run = runs[runs.length - 1];
+    const along = spot.axis === 'north' || spot.axis === 'south' ? spot.col : spot.row;
+    const same = run && run[0].axis === spot.axis && along === run[run.length - 1].along + 1;
+    if (same) { run.push({ ...spot, along }); continue; }
+    runs.push([{ ...spot, along }]);
+  }
+  if (runs.length !== 1 || runs[0].length !== 2) return [];
+
+  for (const spot of runs[0]) {
+    const cell = at(spot.row, spot.col);
+    cell.gateway = true;
+  }
+  return runs[0].map(({ row, col, axis }) => ({ row, col, axis }));
+}
+
+/**
+ * Could a player stand in this cell, read off the **raw** voxels alone?
+ *
+ * @param {number} id  a raw `MAP1` value
+ * @returns {boolean}
+ */
 export function isWallVoxel(id) {
   if (!id) return false;                                   // air
   const nibble = (id & 0xf000) >> 12;

@@ -193,7 +193,32 @@ export function makePersistSuite({ check, realErrors, shots, getPort }) {
     const spawn = await page.evalJs("window.__debug.state().feet");
     const TARGET = [30, 40];
     await page.evalJs("window.__debug.teleportCell(" + TARGET[0] + ", " + TARGET[1] + ")");
-    await sleep(21000);
+    // **Wait for the world's own slow tick, not for a wall clock.** `rememberClock` runs every
+    // `CLOCK_SAVE_EVERY` (20) *simulated* seconds and the frame step caps `dt` at 0.1 s
+    // (`interior.js`: `Math.min(0.1, …)`), so on a software renderer — where a city page uploads its
+    // textures at a handful of frames a second — twenty simulated seconds arrive later than twenty
+    // wall seconds. The first version of this check slept 21 s and then read the **level's own
+    // spawn** instead of the corner, which the run of 2026-10-16 measured: the save's `player` field
+    // (`perfectarena.world`) appears at simulated second 20, which on this machine was wall second 25.
+    // So the wait is for the *fact* — the save naming the cell the player is standing on — with a
+    // bound, rather than for a duration that happens to be long enough on a fast machine.
+    const savedCell = () => page.evalJs(`(() => {
+      try {
+        const w = JSON.parse(localStorage.getItem('perfectarena.world')) || {};
+        return w.player ? [w.player.row, w.player.col] : null;
+      } catch (e) { return null; }
+    })()`);
+    let wroteAfter = null;
+    for (let waited = 0; waited <= 90000; waited += 1000) {
+      const cell = await savedCell();
+      if (cell && cell[0] === TARGET[0] && cell[1] === TARGET[1]) { wroteAfter = waited / 1000; break; }
+      await sleep(1000);
+    }
+    check('the world writes the corner the player stands on, on its own slow tick',
+      wroteAfter !== null,
+      wroteAfter === null
+        ? 'the save never named ' + JSON.stringify(TARGET) + ' within 90 s'
+        : 'the save named ' + JSON.stringify(TARGET) + ' after ' + wroteAfter.toFixed(1) + ' s');
     // **Where they were standing when the page was left**, read after the tick rather than assumed
     // from the teleport: what the world writes is the ground the player stood on, and a player who
     // was carried off it by a walker (D-47, fixed in the same pass) made this check read a correct

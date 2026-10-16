@@ -906,6 +906,30 @@ async function suiteArenaCity(page) {
   check('the snow pass raised nothing', (await page.evalJs('window.__debug.errors.length')) === 0,
     `${await page.evalJs('window.__debug.errors.length')} errors`);
 
+  // ── and a place whose sky never stops doing it (the owner's Winterhold) ───
+  //
+  // *"skyrim needs to be a mix of normal mountain and temperate but in some cities like
+  // winterhold it never needs to stop snowing"*. `game/provinceStyle.js` gives Winterhold
+  // `weather: 'snow'` and its city `.INF` is `MCS.INF` (D-41), and the snow above was forced
+  // (`?weather=snow`). **This is the claim with nothing forced**: boot the real place by its own
+  // name and watch the air for six seconds — a snow that stops, or a place that boots clear and
+  // then turns, shows up here as a sample with no particles or no snow mode.
+  await page.goto(`http://localhost:${PORT}/?location=Winterhold&${q}`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
+    { label: 'Winterhold', timeoutMs: 120000 });
+  const winter = [];
+  for (let i = 0; i < 6; i++) {
+    winter.push(await page.evalJs(
+      '(() => { const s = window.__debug.state(); return { inf: s.inf, mode: s.weather, particles: s.precipitation?.particles ?? 0, sky: s.sky?.weather ?? null }; })()'));
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  check('Winterhold\'s own page is a snow place, with nothing forced',
+    winter.every((s) => /MCS\.INF$/.test(String(s.inf))) && winter.every((s) => s.sky === 'S'),
+    `inf=${winter[0].inf} sky=${winter[0].sky}`);
+  check('and it never stops snowing: six seconds, snow in the air at every sample',
+    winter.every((s) => s.mode === 'snow' && s.particles > 0),
+    winter.map((s) => `${s.mode}:${s.particles}`).join(' '));
+
   // ── the same seed is the same city, and a different seed is not ──────────
   await page.goto(`http://localhost:${PORT}/?city&seed=99&${q}`);
   await page.waitFor('window.__ready === true', { label: 'boot 2', timeoutMs: 60000 });

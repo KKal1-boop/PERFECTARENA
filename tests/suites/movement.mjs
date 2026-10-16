@@ -165,6 +165,16 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
     check('the city has a gate in its wall, and the game knows which cell it is',
       Boolean(gate) && Number.isInteger(gate?.row) && Number.isInteger(gate?.col),
       gate ? `the opening is at ${gate.row},${gate.col} of ${size[0]}×${size[1]}` : 'no gate cell at all');
+
+    // …and the **collision** is out of it. This is the owner's own words — *"city gates should have
+    // no collision so I can actually go into the wilderness"* — and the assembled page is the only
+    // place the law can be read: `openSettlementGate` runs on the skeleton **plus its city blocks**,
+    // and the wall, the gate's leaves and the street all look exactly as they did before.
+    const gateways = await page.evalJs('window.__debug.state().gateway');
+    check('and its boxes are out of the collision soup, without the art moving',
+      Array.isArray(gateways) && gateways.length === 2
+      && gateways.every((g) => g.row === 0 || g.col === 0 || g.row === size[1] - 1 || g.col === size[0] - 1),
+      JSON.stringify(gateways));
     const inwardRow = gate.row === size[1] - 1 ? -1 : gate.row === 0 ? 1 : 0;
     const inwardCol = gate.col === size[0] - 1 ? -1 : gate.col === 0 ? 1 : 0;
     const outYaw = inwardCol === 1 ? Math.PI : inwardCol === -1 ? 0 : inwardRow === 1 ? -Math.PI / 2 : Math.PI / 2;

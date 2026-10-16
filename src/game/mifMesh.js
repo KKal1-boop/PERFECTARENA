@@ -260,6 +260,16 @@ export function buildLevelMesh(level, opts = {}) {
     && (cell.kind === 'wall' || cell.kind === 'door' || cell.kind === 'transparent' || cell.kind === 'diagonal')
     && cell.yOffset <= EPS;
 
+  /**
+   * **Is this cell's box in the collision soup?** A **gateway** is drawn exactly as it always was
+   * and collides with nobody — the owner's own request, *"city gates should have no collision so I
+   * can actually go into the wilderness"* — and it is a flag rather than `solid: false` because the
+   * same reading decides the *drawing*: a solid transparent voxel is drawn as a full box, so clearing
+   * `solid` would take the gate's own art away with the wall it stands in. The opening is marked by
+   * `mifLevel.js`'s `openSettlementGate`, which reads it off the settlement's outermost line.
+   */
+  const collides = (cell) => Boolean(cell?.solid) && !cell.gateway;
+
   /** Vertical span of a structure in cells: `[bottom, top]`, or null when there is none. */
   const spanOf = (cell) => {
     if (!cell || cell.kind === 'air' || cell.kind === 'entity') return null;
@@ -336,7 +346,7 @@ export function buildLevelMesh(level, opts = {}) {
         // squashed vertically by however high it hung.
         const tiles = 1;
         quad(group(cellTexture(cell, 'side', inf), true), corners, n,
-          [[0, 0], [1, 0], [1, tiles], [0, tiles]], cell.solid);
+          [[0, 0], [1, 0], [1, tiles], [0, tiles]], collides(cell));
         continue;
       }
 
@@ -435,7 +445,7 @@ export function buildLevelMesh(level, opts = {}) {
       ];
       for (const s of sides) {
         if (hideAgainst(s.nb)) { stats.skippedSides++; continue; }
-        quad(group(sideRef, cutout), s.corners, s.n, [[0, 0], [1, 0], [1, tiles], [0, tiles]], cell.solid);
+        quad(group(sideRef, cutout), s.corners, s.n, [[0, 0], [1, 0], [1, tiles], [0, tiles]], collides(cell));
         stats.wallQuads++;
       }
 

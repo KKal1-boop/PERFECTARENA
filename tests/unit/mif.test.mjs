@@ -15,7 +15,7 @@ import { ArenaData } from '../../src/arena/arenaData.js';
 import { decodeType08 } from '../../src/arena/decompress.js';
 import { decryptInf, parseInfText } from '../../src/arena/infFile.js';
 import { parseImg } from '../../src/arena/image.js';
-import { decodeLevel } from '../../src/game/mifLevel.js';
+import { decodeLevel, openSettlementGate } from '../../src/game/mifLevel.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, CHASM_DEPTH, buildLevelMesh } from '../../src/game/mifMesh.js';
 import { STEP_OFFSET } from '../../src/engine/player/motor.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
@@ -480,3 +480,50 @@ function indexOfTag(bytes, tag) {
   }
   throw new Error(`${tag} not found`);
 }
+
+test("a settlement's gate is one opening in its wall, and nothing in it collides", async () => {
+  // The owner, playing beside the original: *"CITY GATES SHOULD HAVE NO COLLISION SO I CAN ACTUALLY
+  // GO INTO THE WILDERNESS"*. The opening is the outermost line's own `0x9` gateway voxel, and
+  // `openSettlementGate` marks it `gateway: true` — drawn as always, in nobody's collision soup.
+  const archive = await data.bsa();
+  const skeletons = archive.names().filter((n) => /^(CITYW?[0-9]|TOWN[0-9]|TOWNW[0-9]|VILLAGE[0-9])\.MIF$/i.test(n));
+  assert.equal(skeletons.length, 20, `the shipped settlement skeletons, saw ${skeletons.sort().join(' ')}`);
+  const inf = await data.inf('TCN.INF');
+
+  for (const name of skeletons) {
+    const mif = await data.mif(name);
+    const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'city' });
+    const before = buildLevelMesh(level, { upperStoreys: true });
+
+    const opened = openSettlementGate(level);
+    assert.equal(opened.length, 2, `${name}: one opening of two cells, saw ${JSON.stringify(opened)}`);
+    assert.equal(opened[0].axis, opened[1].axis, `${name}: both cells of the opening stand on one line`);
+    const along = opened[0].axis === 'north' || opened[0].axis === 'south' ? 'col' : 'row';
+    assert.equal(Math.abs(opened[1][along] - opened[0][along]), 1,
+      `${name}: the two cells are side by side, saw ${JSON.stringify(opened)}`);
+    assert.ok(opened.every((g) => g.row === 0 || g.col === 0 || g.row === mif.height - 1 || g.col === mif.width - 1),
+      `${name}: the opening is in the settlement's outermost line`);
+    assert.ok(opened.every((g) => ((level.cells[g.row * mif.width + g.col].rawMap1 & 0xf000) >> 12) === 0x9),
+      `${name}: both cells are the file's own gateway voxel`);
+
+    const after = buildLevelMesh(level, { upperStoreys: true });
+    assert.equal(after.model.indices.length, before.model.indices.length,
+      `${name}: the gate is still drawn exactly as the file says — nothing was moved, hidden or re-textured`);
+    const gone = before.stats.colliderTris - after.stats.colliderTris;
+    assert.ok(gone > 0, `${name}: the opening's boxes left the collision soup`);
+    assert.equal(after.stats.drawnNotSolid - before.stats.drawnNotSolid, gone / 2,
+      `${name}: every quad that left the collider is still drawn (${gone} triangles)`);
+
+    assert.deepEqual(openSettlementGate(level), [], `${name}: opening a gate twice opens nothing`);
+  }
+
+  // **A line with more than one opening is a building, and is refused whole.** A city block's own
+  // `.MIF` carries `0x9` arches along its line too — they are its shopfronts, with street behind
+  // them — so without the single-run reading this rule would punch holes in a facade.
+  for (const [name, why] of [['NBBD6A.MIF', 'one wide run of fourteen arches'], ['TSBD7A.MIF', 'two runs, on two different lines']]) {
+    const mif = await data.mif(name);
+    const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'city' });
+    assert.deepEqual(openSettlementGate(level), [], `${name} (${why}) is not a settlement and gets no gate`);
+    assert.equal(level.cells.filter((c) => c.gateway).length, 0, `${name}: and not one cell is marked`);
+  }
+});
