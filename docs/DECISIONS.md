@@ -824,3 +824,53 @@ the first of them, who stands); `state().shops` now reports the building's own *
 whether its doors are **open** at this hour, and the keeper is *asked* for by the flag on the
 person rather than read off `townsfolk[0]` — which was only ever the keeper by luck once a room's
 company stopped being exactly one person.
+
+## D-47 · The archive's digit is a direction, and a province's street is its own art
+
+**Decided 2026-10-16 (the fifteenth/sixteenth pass), from the archive's own bytes and
+OpenTESArena's own template.**
+
+**The direction.** The second digit of a humanoid sprite's name (`01CHNWLK.CFA`,
+`MLGEN03W.CFA`, `FMGENW05.CFA`, `GUARD04.CFA`, `LIZARD2.CFA`) is a **direction**, 1…5, with 1
+facing the camera and 5 showing the back; the first digit of the armoured roster is the
+**gender** (`0` a man, `1` a woman). The port reads every one of these families that way now, so
+a figure turns as the eye walks round it — including the town's commoners, which could not turn
+at all before (D-47).
+
+*Cited:* OpenTESArena `Assets/ExeData.h` (`0@XXX`: *"Replace '0@' with either 0 or 1 for the
+gender, and 1 to 5 depending on the kind of animation"*; creatures: *"Replace '@' with a number
+from 1 to 5 indicating which .CFA file to fetch for angle-relative animations"*),
+`ArenaAnimUtils::trySetHumanFilenameGender()` (`filename[0] = isMale ? '0' : '1'`),
+`ArenaAnimUtils::Directions = 8` with `FirstMirroredAnimID = 6`.
+
+*Cross-checked against the archive itself:* the five views of one armour word are 40/55/69/56/38
+px wide — symmetric about a profile, and the same numbers under every armour word, every citizen
+action and the watch (`.scratch/peopleProbe.mjs`, `.scratch/viewsym.mjs`). A set of five different
+people has no reason to be symmetric.
+
+**Rejected: keeping "five men of the town, one angle each".** It is what the previous pass's
+header asserted, and it is what the owner can see is wrong — a commoner who cannot be walked
+around. The reading was restated in `peopleKinds.js`, in `tests/unit/peoplekinds.test.mjs` (with
+this evidence in its header), and in the two suites that read it, rather than kept green with a
+worse law.
+**Rejected: sampling the mirrored directions.** The archive ships five files and OpenTESArena
+mirrors three of them for eight directions. This port draws five and lets `viewFacing` answer
+1…5; mirroring is a *rendering* refinement and is named here rather than guessed at.
+
+**The province's own art.** A province's crowd is now drawn from **its own pool of roster keys**
+(`provinceStyle.js`'s `PEOPLE_ART`, `placeTownsfolk`'s `art` option). The honest limits are stated
+in the module: this install draws **one human body** and ships **no palette** to recolour it by
+race (its extensions hold no `.COL` and no `.PAL`; Arena's own transformation is a rule inside
+`ACD.EXE`), so what a pool can say for six of the nine provinces is what a *street* is made of —
+its trades, its armour, its watch. The one race-specific art the archive carries is the **Lizard
+Man** (`LIZARD1…6.CFA`), which stands in for Black Marsh's Argonians as the owner asked.
+
+**Rejected: recolouring humans by province from a table this project invents.** Missing art is
+named, never silently substituted (S37). A per-province skin is either read out of `ACD.EXE`
+(block B24's numeric tables — the next probe) or stamped plainly as this project's own; until
+then a province's humans keep the archive's art and its **names** (`nameBanksFor`, D-41) — which
+are already the province's own.
+**Rejected: naming the stand-in an "Argonian" outright.** The sheets are Arena's *Lizard Man*;
+the figure is drawn from Arena's own files and the label (`a lizard-folk of the marsh`) is this
+project's, so the substitution is visible on the panel rather than hidden behind a name Arena
+never used.

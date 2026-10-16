@@ -937,3 +937,37 @@ is the row's next task.
   terrain.
 * When a block's number comes from `A.EXE`, the module header says so. `docs/DECISIONS.md` D11
   is the standing rule.
+
+## 4l. What this pass closed (2026-10-16, part thirteen — **the people turn, and a province's street is its own**)
+
+**B11 · D-47 — the archive's sprite digit is a direction, and five figures were read out of five
+directions.** Queue item **0h**'s probe ran and answered *no* (`.scratch/talkidentity.mjs`, 20
+people; `.scratch/talkrepeat.mjs`, eight presses) — the talk panel's heading never disagrees with
+the person in front of the player — and D-43's own row was found to cite a symbol that is not in
+the tree (`livingWorld.js`'s `allowChange`; grep: nothing). What *was* wrong is the reading
+`peopleKinds.js` had carried since the previous pass: `MLGEN01…05` are **one man at five
+directions**, not five men at one angle each. The evidence is OpenTESArena's own template
+(`ExeData.h`'s `0@XXX`: the first digit is the gender, `@` the direction 1…5;
+`ArenaAnimUtils::trySetHumanFilenameGender` implements `filename[0] = isMale ? '0' : '1'`;
+`Directions = 8` with `FirstMirroredAnimID = 6`) *and* the archive's own widths (40/55/69/56/38,
+symmetric about a profile, identical under every armour word). One kind per family with
+per-direction `actions`; the scene asks by `viewFacing`; a talk and a death follow the direction
+too. **Measured**: a man of the town reads `MLGEN01W.CFA` (view 1) → `MLGEN05W.CFA` (view 5) as
+the eye orbits.
+
+**B11/B18 · D-45 (the art half) — whose faces a province's street is made of.** Queue item **0f**.
+The archive draws **one human body** and ships **no palette** for a per-race recolour (extensions
+`IMG MIF CFA SET INF DFA VOC RMD CIF XFM XMI` — no `.COL`, no `.PAL`), so the half that is real
+art is the one the owner named: `LIZARD1…6.CFA`, the Lizard Man's five directions and its death,
+read as a kind (`standInKindsFromListing`) and put on Black Marsh's streets by a new per-province
+pool (`provinceStyle.PEOPLE_ART`/`peopleArtFor`, `placeTownsfolk`'s `art`). **Measured on real
+pages**: Lilmoth and Stormhold **27 of 48** figures are `LIZARD` sheets; Daggerfall and Necrom
+**0**. The open half is named on the row: the recolour rule is in `ACD.EXE` (B24's numeric tables,
+queue item 0b) or is stamped as this project's own — never invented quietly.
+
+**What this pass hands on, in the queue's own order:** **0i** (D-44, *"the npcs that dont move"* —
+probe first: a city's own people spots and how many ever leave their spawn cell), **0g** (the
+volcano), **0l** (the two map levels, made coherent), **0m** (Winterhold's snow and every biome's
+background), **0e** (the persistent world — *"barely moving … reloads the game and its
+unplayable"*), and **0b**'s numeric tables (the executable's own recolour rule), which D-45 now
+gives a second reason to read.
