@@ -4,7 +4,7 @@ PHASE: **P0 done, P1 in progress** (session brief §8). The owner played the por
 Arena on 2026-10-16 and reported two lists; they are written up as **D-12 … D-31 in
 `docs/DEFECTS.md` with their own sections** and are the work list. **D-01a, D-01b, D-02a, D-12,
 D-14b, D-15, D-16, D-17, D-19, D-20, D-21, D-25 and D-26 are closed, and D-27 is closed for the
-direction the owner reported** (walking out; the walk back in is not demonstrated). Both reports
+both directions** (walking out, and back in — `dbf4058`). Both reports
 ask for the port to advance in **blocks** rather than symptom by symptom: `docs/PORT_BLOCKS.md` is
 that work order — **23** system-level blocks with their source of truth, their module, the check
 that holds them, the reports mapped onto them, and the ordered queue with each block's first probe.
@@ -124,7 +124,9 @@ WHAT THIS PASS PROVED (2026-10-16, part four — `docs/PORT_BLOCKS.md` §4b):
   gateway, with the frame's stride aimed at it, both directions, once per crossing. Measured in
   `movement`: walking at 8,127 of `CITYW2` leaves the city on foot with no keypress (Daggerfall and
   Rihad both probed), and a stride **along** the wall does not. **The walk back in from the country
-  is not demonstrated** — that is the row's next task, and the honest gap in this pass.
+  was fixed the same session (`dbf4058`): the boot let the save's remembered wilderness cell override
+the explicit `?at=` arrival, so the crossing rebuilt the country at the cell the player had left
+from. `movement` **11/11** holds both halves.
 * **The owner's evening report is mapped and probed, not guessed** (`docs/DEFECTS.md`, D-28…D-31):
   dungeon depth/sewers is **B23** (new block, first probe: per dungeon `levelCount`, each stair's
   cell, which levels are wet); "most enemies dont exist or dont spawn" is D-29 (three numbers per
@@ -133,8 +135,8 @@ WHAT THIS PASS PROVED (2026-10-16, part four — `docs/PORT_BLOCKS.md` §4b):
   wilderness page, every sheet a folk sheet and **zero creatures**, with `01MNKWLK.CFA` shown to be
   the *monk* sheet, not a minotaur; "port much more from arena" is the wiring half of B22.
 
-**The country's own gate is recognized, and the walk back is undone (D-32, found this pass and
-left OPEN with its cause).** `.scratch/gatein.mjs` after crossing out at Daggerfall's east gate:
+**The country's own gate is recognized, and the walk back was undone — D-32, written here as OPEN
+and fixed in the same session (the correction at the end of this paragraph is the fix).** `.scratch/gatein.mjs` after crossing out at Daggerfall's east gate:
 the player stands at the world cell **three cells out (7.5 m)** where the push rule's reach is
 **3.2 m**; pushing in, the very next sample reports the gate correctly —
 `wildGate {row: 8, col: 127, to: 'city', axis: 'east'}` — and the sample after that is **the exact

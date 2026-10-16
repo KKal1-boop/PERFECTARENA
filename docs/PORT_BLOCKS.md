@@ -232,7 +232,7 @@ existed, `E` crossed it, and the crossing was invisible to a player because the 
 holds the gateway as a **solid** voxel: walking at it stopped you. `maybeWalkThroughGate` crosses on
 the push — aimed at the gateway, within a cell of it, either direction, once per crossing. Measured
 on `CITYW2` and `CITY2`: walking at the opening leaves the city on foot with no keypress, and a
-stride along the wall does not. **The walk back in from the country is not demonstrated yet**; that
+stride along the wall does not. **The walk back in from the country works (`dbf4058`)**; that
 is the row's next task.
 4. **B09 · blood, not sparks.** The engine already has `engine/combat/bloodDecals.js` (lands in
    the Daggerfall side). Probe: what a landed blow leaves on the floor and on the walls in the
