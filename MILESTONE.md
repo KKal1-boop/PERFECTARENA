@@ -317,3 +317,51 @@ roll)").
 
 **Commands:** `npm test` → **423/423, exit 0**; `node tests/run-browser.mjs combat actioncombat`
 → **60/60**.
+
+## 2026-10-16 (fourth) — the first ten minutes: the weapon, the loot, the doors, the air
+
+Four of the owner's rows closed in one pass, each on its own measurement rather than on a look.
+All four are things a player meets in the first ten minutes of the game.
+
+* **The port had no empty hands at all** (D-14b). `scenes/interior.js` read
+  `if (!player.weapon) player.weapon = 'longsword'`: every weaponless character was issued a
+  **phantom longsword**. A longsword is a *blade* sheet — `SWORD.CIF`, the same picture a dagger
+  draws — so the first-person state machine's `fists` family (the install's own `HAND.CIF`) was
+  **unreachable in this port**, and a just-created character was drawn holding a blade. Arena's
+  opening is the opposite: empty hands, the class's weapon in the pack, and the walkthrough tells
+  the player to equip it. The line is gone, `items.js`'s `weaponHeld` and `inventory.js`'s
+  `weaponCarried` default to `fists` (which is what the fight always did), and
+  `STARTING_WEAPON_OF_CLASS` (UESP's table) + `startingKit(classId)` put the class's own weapon —
+  broadsword for the warriors' six, shortsword for the rogues', dagger for the mages' — in the
+  pack. **Seen on a real page** (`chargen`, 40/40): an Archer stands in `START.MIF` with
+  `HAND.CIF` (`family: fists`), a broadsword and a draught in the pack, and no weapon in hand.
+* **The loot pile with the helm was a wall tall** (D-16). The size law split on the art's own
+  height, and the one loot record above the threshold is `EQUIPMEN.IMG` at 84×72 — **3.28 m wide
+  and 2.81 m tall**. Measured across all 93 shipped INFs (`.scratch/lootsizes.mjs`): every other
+  piece of loot (key 21×7, corpse 90×34, treasures 35×24 … 99×36, chests 63×27 / 71×29) was under
+  it and drawn correctly. The law now asks **what the flat is**, not how tall its art is: a thing
+  the map placed is an object and is drawn at the figure's density (**1.48 × 1.27 m**), landscape
+  keeps the height split, trees keep the tree law. `flatSize` moved into `game/flats.js` so it can
+  be tested in Node, and `tests/unit/flats.test.mjs` walks the loot flats of two real levels.
+* **Doors clipped into the wall** (D-17). The leaf turned **96°**; a panel spans a whole cell and
+  is hinged at one end of it, so at 90° it lies *in the plane of the wall beside it* and past that
+  goes through — 26 cm of it, into a cell that is solid by construction. Arena's own margin is
+  OpenTESArena's (`VoxelDoorUtils.cpp`: `HalfPi - 0.005`, commented "Prevents Z-fighting with
+  32-bit depth"). `.scratch/doorprobe.mjs`, 273 doors in eight levels: **244 of 244 swinging
+  leaves inside a wall → 0 of 244.** The law is now code (`doorLeaf`, `leafIntoSolid`) and the
+  unit test walks `START.MIF`, `39300577.MIF` and `IMPPAL.MIF` at eleven open fractions.
+* **No fog in dungeons** (D-21). One density, 0.012, for every enclosed level kept **94 % of the
+  light at 20 m**: a corridor read as evenly lit to the horizon. The air is now a property of the
+  kind of place (`LEVEL_FOG`/`fogForLevel`/`fogTransmission`), and an enclosed level gets 0.040 —
+  85 % at 10 m, 24 % at 30 m. Measured on a real page (`.scratch/fogprobe.mjs`, `?fog=` against
+  `?fog=0`, same spawn and view, `39300577.MIF`): the air's reach over the frame went **0.6 % →
+  3.6 %** and its cost on the pixels it touches 8.1 → 11.2 of luminance.
+
+**Commands:** `npm test` → **427/427, exit 0** (four new checks) ·
+`node tests/run-browser.mjs menu gear world` → **95/95** · `… mainquest combat actioncombat
+doors` → **164/164** · `… chargen` → **40/40** (four new) · `… dungeonplay living townsfolk` →
+**103/103**.
+
+**Not established:** the equip path itself (that an equip *moves* the rig, per weapon family) is
+still unprobed (D-14's other half); the water/sewer route (D-18) and resting that brings
+creatures (D-19) are untouched; the wilderness is still a 128×128 window (D-22).

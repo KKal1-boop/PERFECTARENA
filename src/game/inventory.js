@@ -28,7 +28,9 @@ import { MATERIALS, WEAPONS, armourClass, attributeOf, materialById, weaponById 
  * @returns {{id: string, name: string, material: string, materialName: string, min: number, max: number}}
  */
 export function weaponCarried(character) {
-  const weapon = weaponById(character?.weapon ?? 'longsword') ?? WEAPONS.find((w) => w.id === 'longsword');
+  // **An absent weapon is a fist**, exactly as the fight reads it (`combat.js`) and as
+  // `items.js`'s `weaponHeld` does — not a longsword the character has never held.
+  const weapon = weaponById(character?.weapon ?? 'fists') ?? WEAPONS.find((w) => w.id === 'fists');
   const material = materialById(character?.material ?? 'steel') ?? MATERIALS.find((m) => m.id === 'steel');
   // The material's bonus is a flat modifier on the range, exactly as the fight applies it.
   const bonus = material?.damage ?? 0;

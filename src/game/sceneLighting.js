@@ -4,6 +4,56 @@ import { CombatFx } from './combatFx.js';
 
 export const SCENE_LIGHT_LIMIT = 16;
 export const AMBIENT_PARTICLE_LIMIT = 64;
+
+/**
+ * The air of a level, by the **kind of place** it is.
+ *
+ * Arena's dungeons and building interiors are drawn dark: the original lights a room with its
+ * own ambient plus whatever torch is near, and the far end of a corridor simply goes black. This
+ * port's `exp2` fog is what stands in for that falloff (`renderer.setFog`, one call per level),
+ * and it had a single number for every enclosed level — `0.012` — which is *no visible fog at
+ * all*: `exp(−(0.012·d)²)` keeps 94 % of the light at 20 m and 70 % at 50 m, so a dungeon's
+ * corridors read as evenly lit to the horizon, which is the owner's report "there is no fog in
+ * dungeons".
+ *
+ * `enclosed` at **0.040** puts the falloff where a torch's does — 85 % at 10 m, 53 % at 20 m,
+ * **24 % at 30 m**, 2 % at 50 m — while a city keeps sight of the far street (0.0045 keeps 96 % at
+ * 20 m) and a wilderness a little further still (0.0030). The densities are this project's own
+ * (Arena's are inside `A.EXE`, D11); what is measured is the falloff they produce.
+ */
+export const LEVEL_FOG = Object.freeze({
+  enclosed: Object.freeze({ density: 0.040, colour: Object.freeze([0.07, 0.07, 0.09]) }),
+  city: Object.freeze({ density: 0.0045, colour: Object.freeze([0.60, 0.66, 0.76]) }),
+  wild: Object.freeze({ density: 0.0030, colour: Object.freeze([0.60, 0.66, 0.76]) }),
+});
+
+/**
+ * A level's fog: its own kind's density and colour, or the caller's override (`?fog=`).
+ *
+ * @param {{outside?: boolean, wild?: boolean, override?: number}} [opts]
+ * @returns {{kind: 'enclosed'|'city'|'wild', density: number, colour: Float32Array}}
+ */
+export function fogForLevel({ outside = false, wild = false, override = Number.NaN } = {}) {
+  const kind = wild ? 'wild' : outside ? 'city' : 'enclosed';
+  const base = LEVEL_FOG[kind];
+  return {
+    kind,
+    density: Number.isFinite(override) ? Number(override) : base.density,
+    colour: Float32Array.from(base.colour),
+  };
+}
+
+/**
+ * How much light an `exp2` fog of this density leaves at a distance — the law above, as a
+ * number a test (or a person) can check before believing a screenshot.
+ *
+ * @param {number} density @param {number} metres
+ * @returns {number} 0…1
+ */
+export function fogTransmission(density, metres) {
+  const f = density * metres;
+  return Math.exp(-f * f);
+}
 const FIRE_ART = /(TORCH|BRAZ|FIRE|CANDLE|LANTERN|CHAOS)/;
 
 export function sceneLightSources(flats = [], doors = [], cellSize = 2.5) {

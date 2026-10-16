@@ -75,7 +75,7 @@ import { CITY_BLOCKS_PER_SIDE, cityInfName, cityTemplateName } from '../game/tab
 import { cityTypeOf } from '../arena/cityDataFile.js';
 import { cityTemplateVariant, wildernessSeed } from '../arena/cityDataSeeds.js';
 import { blockIdsFromListing, rmdName } from '../arena/rmdFile.js';
-import { collectFlats, flatBaseY, flatRecordNames, isTreeArt } from '../game/flats.js';
+import { collectFlats, flatBaseY, flatRecordNames, flatSize, isTreeArt, SPRITE_SCALE } from '../game/flats.js';
 import {
   CITY_ORIGIN, CITY_RING, WILD_WINDOW, buildWildernessWindow, generateWildernessIndices,
   isCityCell, wildernessBlockLists, wildernessInfName, wildernessWindowOrigin,
@@ -105,7 +105,7 @@ import {
 import { MONSTERS, monsterById } from '../game/monsters.js';
 import { actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
 import { CombatFx, fitAttackToGround, insideAttack } from '../game/combatFx.js';
-import { nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
+import { fogForLevel, nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
 import { CombatFxPass } from '../engine/render/combatFxPass.js';
 import {
   DUNGEON_MONSTERS, goldFor, monsterRosterFromInf, pickupNote, pickupKinds, roleOfArt,
@@ -192,9 +192,10 @@ import {
  */
 const INTERIOR_AMBIENT = new Float32Array([0.86, 0.83, 0.79]);
 const NO_SUN = new Float32Array([0, 0, 0]);
-const FOG_COLOR = new Float32Array([0.07, 0.07, 0.09]);
-/** Distance fog that reads as torchlight falloff without crushing the far end. */
-const FOG_DENSITY = 0.012;
+// The enclosed fog — its density and colour — lives with the rest of a level's air in
+// `game/sceneLighting.js` (`LEVEL_FOG`/`fogForLevel`), because "how dark is the far end of this
+// corridor" is the same question for a dungeon and for a shop, and it is answered per *kind of
+// place* rather than per scene. It used to be one number here, 0.012, which was no visible fog.
 
 /**
  * City lighting: daylight.
@@ -211,15 +212,8 @@ const FOG_DENSITY = 0.012;
 const CITY_AMBIENT = new Float32Array([0.60, 0.61, 0.64]);
 const CITY_SUN = new Float32Array([1.0, 0.96, 0.88]);
 const CITY_SUN_SCALE = 0.95;
-const CITY_FOG_COLOR = new Float32Array([0.60, 0.66, 0.76]);
-const CITY_FOG_DENSITY = 0.0045;
-
-/**
- * The wilderness: the same sun as a city, but the fog is a third as thick again,
- * because a wood is not a street — the point of walking out of the gate is being
- * able to see the country you are walking into. `?fog=` still overrides both.
- */
-const WILD_FOG_DENSITY = 0.0030;
+// The city's and the wilderness's air are in the same table (`game/sceneLighting.js`): a city
+// keeps sight of the far street and a wood a little further still, and `?fog=` overrides both.
 
 /**
  * How far through a gate the player arrives, in cells.
@@ -269,50 +263,11 @@ const CREATURE_ARCHIVE = 3;
  * and gets a mip chain" — a surface seen from a hundred metres needs one.
  */
 const CHASM_ARCHIVE = 4;
-/** How tall a 102-pixel figure stands, in world units: a person, from `01PLTWLK.CFA`. */
-const SPRITE_SCALE = 1.8 / 102;
-/**
- * The **wall's own** density: a wall texture is 64×64 pixels and fills exactly one cell, so
- * 64 pixels *are* one cell. Tall flats — the trees at 132–148 px, the statues at 138, the
- * columns at 64–65 — are drawn at it, which is what makes a pine 5.2 units tall instead of
- * the 2.3 the figure's law gave it: the reported "trees are small and should be really
- * huge", and `flatSize` below is the rule that decides which law a flat gets.
- */
-const SCENERY_SCALE = CELL_SIZE / 64;
-/**
- * How tall a tree stands, in world units — **three storeys**, by the player's eye.
- *
- * The original's trees dwarf the visitor: an oak dwarfs the house next to it. The old
- * law (wall density) made the tallest tree 5.8 units while a wall stood 2.5 — visibly
- * "small, and should be really huge". This is the tallest art (`NOAK2.IMG`, 148 px) read
- * at **9.0 units**, three of the engine's 2.5-unit storeys, with the other trees scaled
- * by the same factor so the forest keeps the art's own proportions: a fir at 8.0, a palm
- * at 7.7, a sapling (`NPINE2`, 69 px) at 4.2. GUESS in the constant, measured in the art.
- */
-const TREE_SCALE = 9.0 / 148;
-
-/**
- * How big a flat is drawn: the tree law for the woods, the wall's law for the rest of the
- * tall art, the figure's for the small.
- *
- * The split is the art's own size distribution. Everything a **landscape** is made of —
- * every tree (132–148 px), every statue (138, 81), every column (64–65), every hedge — is
- * art at or above a wall tile's 64 pixels, and it is drawn at the wall's own density. What
- * is **smaller** than that is not landscape: a chest (27–29 px), a key (7), a treasure
- * pile (24–31), a body (34), a weed (24), a rock (6–15) — an object a person could carry,
- * drawn at the figure's density, where a chest is half a metre and a key is a hand's
- * width. Both laws are the install's art read at two documented densities; the split keeps
- * a forest tall without making a key a metre long — and the trees, named climate by
- * climate (`game/flats.js`'s `isTreeArt`), get the third law that makes them the skyline.
- *
- * @param {number} width @param {number} height  the art's own pixels
- * @param {string} [name]  the record's own name, which is what says tree or not
- * @returns {{w: number, h: number}} world units
- */
-function flatSize(width, height, name = null) {
-  const scale = isTreeArt(name) ? TREE_SCALE : height >= 64 ? SCENERY_SCALE : SPRITE_SCALE;
-  return { w: width * scale, h: height * scale, scale };
-}
+// The densities a flat can be drawn at live with the law that chooses between them
+// (`game/flats.js`'s `flatSize`: the figure's for a thing the map placed, the wall's for tall
+// landscape, the tree's for the woods) — that law is the one thing about a flat's size the whole
+// game shares, so it is not the scene's to keep. `SPRITE_SCALE` stays imported for the creature
+// sheets, the other 102-pixel art in the game.
 /** How close a blow lands, in world units. */
 const REACH = 3.0;
 /** How far away a monster notices the player, in world units. */
@@ -1229,8 +1184,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * Upload a level's **loot** pictures and build one batch per picture.
    *
    * A key, a chest, a treasure pile and a corpse are billboards of their own art, drawn at
-   * the scenery's own scale (`SCENERY_SCALE`), and they stand where the map's item flats
-   * put them (`game/dungeonItems.js`). A taken one is *moved off the floor* rather than
+   * **the figure's own density whatever the art's height** (`flats.js`'s `flatSize` with
+   * `item: true` — a thing in a room is not landscape), and they stand where the map's item
+   * flats put them (`game/dungeonItems.js`). A taken one is *moved off the floor* rather than
    * rebuilt: the batch is born `dynamic` and `moveBillboardBatch` rewrites every centre it
    * has, which for a loot batch is a handful of quads — one chest fewer, in place.
    *
@@ -1265,7 +1221,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         renderer.uploadTexture(ARENA_TEXTURE_ARCHIVE, image.frames ? `loot#${name}#${frame.index}` : `loot#${name}`,
           imageToUpload(frame.indices, image.width, image.height, image.palette ?? palette));
       }
-      const size = flatSize(image.width, image.height);
+      // **A thing, not landscape** (`flats.js`'s `flatSize`): loot is an object in a room, so it
+      // is drawn at the figure's density whatever its art's height. The pile with the helm on it
+      // (`EQUIPMEN.IMG`, 84×72) used to cross the tall-art threshold and stand 2.81 m high.
+      const size = flatSize(image.width, image.height, name, { item: true });
       const centers = (pick) => pick.map((spot) => [
         (spot.row + 0.5) * CELL_SIZE,
         flatBaseY(spot.yOffset ?? 0, { height: size.h, floorY, ceilingY }),
@@ -1708,8 +1667,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const outdoor = outside || level.outdoors;
     const base = outside ? CITY_AMBIENT : INTERIOR_AMBIENT;
     const ambient = params.has('ambient') ? Number(params.get('ambient')) : base[0];
-    const fogDensity = params.has('fog') ? Number(params.get('fog'))
-      : wildRequest ? WILD_FOG_DENSITY : outside ? CITY_FOG_DENSITY : FOG_DENSITY;
+    // This level's own air, by what kind of place it is (`game/sceneLighting.js`): a dungeon is
+    // enclosed and goes dark with distance, a city or a wilderness is outdoors.
+    const fog = fogForLevel({
+      outside, wild: Boolean(wildRequest),
+      override: params.has('fog') ? Number(params.get('fog')) : Number.NaN,
+    });
+    const fogDensity = fog.density;
     const sunScale = params.has('sun') ? Number(params.get('sun')) : (outside ? CITY_SUN_SCALE : 0);
     // **`?ambient=` and `?sun=` are a tuning door, and a fixed light.** When either is given the
     // frame keeps the number it was handed for the whole visit — the daylight pass below stands
@@ -1724,7 +1688,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     dayLit = lit;
     daySunMax = sunScale;
     dayFogDensity = fogDensity;
-    dayScratch.dayFogColor = outside ? CITY_FOG_COLOR : FOG_COLOR;
+    dayScratch.dayFogColor = fog.colour;
     renderer.setClearColor(openSky ? SKY_CLEAR : [0.02, 0.02, 0.03, 1]);
     renderer.setLighting(dayAmbient, sunScale, sunScale > 0 ? CITY_SUN : NO_SUN);
     renderer.setFog('exp2', fogDensity, 0, 0, dayScratch.dayFogColor);
@@ -2015,7 +1979,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // Acrobat or a level-20 warrior had come in. Health, Strength, Luck, Agility and the
   // class's critical chance all read off the saved character (see `game/combat.js`).
   player = loadCharacter() ?? placeholderPlayer();
-  if (!player.weapon) player.weapon = 'longsword';
+  // **A character with no weapon is unarmed, not issued a longsword.** This line used to hand
+  // every weaponless character a phantom longsword, which made Arena's own opening impossible in
+  // this port: a new prisoner's hands are empty (their class weapon is in the pack, `startingKit`)
+  // and the first-person state machine's `fists` family — the install's own `HAND.CIF` — was
+  // therefore never drawn. It is a blade sheet (`weaponView.js`'s `FAMILY_OF_WEAPON` sends both a
+  // dagger and a longsword to `SWORD.CIF`), which is exactly the owner's report: "your attack
+  // animation is fists and then when you equip different weapons it moves … instead in
+  // perfectarena is always the dagger animation". The fight already reads an absent weapon as
+  // fists (`combat.js`'s `resolveAttack`), and so do the HUD's two readers.
   if (!player.material) player.material = 'steel';
   /** @type {import('../game/encounters.js').SpawnedMonster[]} */
   let monsters = [];
@@ -4796,7 +4768,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {object[]}
    */
   function bagOf() {
-    if (!Array.isArray(player.bag)) player = { ...player, bag: startingKit().bag };
+    // The weapon in the pack is the **class's own** (`items.js`'s `STARTING_WEAPON_OF_CLASS`,
+    // UESP's table) — a Warrior's broadsword, a Thief's shortsword, a Mage's dagger — and it is
+    // in the pack rather than in hand, because that is what Arena does: the player is told to go
+    // into the inventory and equip it.
+    if (!Array.isArray(player.bag)) player = { ...player, bag: startingKit(player.classId).bag };
     return player.bag;
   }
 

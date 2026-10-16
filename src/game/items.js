@@ -595,30 +595,70 @@ export function armourRating(character) {
  * @returns {{item: object, material: object, min: number, max: number}}
  */
 export function weaponHeld(character) {
-  const weapon = weaponById(character?.weapon ?? 'longsword');
+  // **No weapon is the bare hand** — the fight's own default (`combat.js`'s `resolveAttack`), and
+  // the state a new character is in until they equip the weapon in their pack. The old default
+  // was a longsword, so an unarmed character was told they were swinging a sword they did not
+  // have (and drew its sheet in first person, `interior.js`).
+  const weapon = weaponById(character?.weapon ?? 'fists');
   const material = materialById(character?.material ?? 'steel');
-  const item = itemById(weapon.id) ?? ITEMS[0];
+  // `ITEMS` is built from `WEAPONS`, so every weapon the fight can swing is also catalogued and
+  // the bare hand resolves to its own row. The old fallback was `ITEMS[0]` — whatever the catalog
+  // happens to list first — which a player unarmed (as every new character begins, `startingKit`)
+  // would read off the panel as somebody else's weapon.
+  const item = itemById(weapon.id)
+    ?? { id: weapon.id, name: weapon.name, kind: 'weapon', damage: { min: weapon.min, max: weapon.max }, price: 0, weight: 0 };
   return {
     item,
     material,
+    // **The same arithmetic the fight does** (`combat.js`'s `resolveAttack`: the weapon's own
+    // range plus the material's modifier, floored at 1), so the panel cannot promise a number the
+    // swing will not roll — a fist with an iron "edge" is 1–1 on both sides.
     min: Math.max(1, item.damage.min + material.damage),
     max: Math.max(1, item.damage.max + material.damage),
   };
 }
 
 /**
+ * The weapon each class begins with, from UESP's own class table.
+ *
+ * "Warriors and their subclasses begin with a broadsword", the rogues' with a shortsword and the
+ * mages' with a dagger (<https://en.uesp.net/wiki/Arena:Classes>, read 2026-10-16) — six classes
+ * each, and the grouping is UESP's, not this project's.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const STARTING_WEAPON_OF_CLASS = Object.freeze({
+  archer: 'broadsword', barbarian: 'broadsword', knight: 'broadsword',
+  monk: 'broadsword', ranger: 'broadsword', warrior: 'broadsword',
+  acrobat: 'shortsword', assassin: 'shortsword', bard: 'shortsword',
+  burglar: 'shortsword', rogue: 'shortsword', thief: 'shortsword',
+  battlemage: 'dagger', healer: 'dagger', mage: 'dagger',
+  nightblade: 'dagger', sorceror: 'dagger', spellsword: 'dagger',
+});
+
+/**
  * A starting kit: what a character walks out of the Imperial Dungeons carrying.
  *
- * **AUTHORED**, and deliberately thin — a dagger, a leather cuirass and one healing draught,
- * which is roughly what the opening of Arena hands a new prisoner. It exists so a character
- * made by creation has a real bag rather than an empty one, and so the first shop the player
- * meets has something to sell them.
+ * **The weapon is the class's, the armour and the draught are AUTHORED** — Arena gives a new
+ * prisoner their class's weapon (UESP's table above: a Warrior a broadsword, a Thief a
+ * shortsword, a Mage a dagger), a shirt or a robe, and 50–199 gold; the leather cuirass and the
+ * healing draught stand in for the rest, and exist so the first shop has something to sell.
  *
+ * **It is *carried*, not wielded.** In Arena the class weapon is in the pack and the player is
+ * told to go into the inventory and **equip** it (UESP's Imperial Dungeons walkthrough), which is
+ * why the equipment below says `weapon: 'fists'`: a new character's hands are empty until they
+ * choose, and the first-person view shows the install's own `HAND.CIF` until they do. This
+ * project handed every class a wielded dagger, which is half of the owner's report "in normal
+ * arena your attack animation is fists and then when you equip different weapons it moves …
+ * instead in perfectarena is always the dagger animation".
+ *
+ * @param {string|null} [classId]  the character's class, which decides the weapon
  * @returns {{bag: object[], equipment: {weapon: string, material: string, armour: object}}}
  */
-export function startingKit() {
+export function startingKit(classId = null) {
+  const weapon = STARTING_WEAPON_OF_CLASS[String(classId ?? '').toLowerCase()] ?? 'dagger';
   return {
-    bag: addToBag(addToBag(createBag(), 'dagger', 1), 'potion-heal', 1),
-    equipment: { weapon: 'dagger', material: 'iron', armour: { cuirass: 'leather-cuirass' } },
+    bag: addToBag(addToBag(createBag(), weapon, 1), 'potion-heal', 1),
+    equipment: { weapon: 'fists', material: 'iron', armour: { cuirass: 'leather-cuirass' } },
   };
 }

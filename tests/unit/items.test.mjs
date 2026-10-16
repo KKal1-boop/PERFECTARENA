@@ -17,10 +17,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import { MATERIALS, WEAPONS, materialById, weaponById } from '../../src/game/combat.js';
+import { weaponCarried } from '../../src/game/inventory.js';
 import {
   ITEMS, ITEM_KINDS, SCROLL_SPELLS, addToBag, armourRating, bagRows, bagValue, countInBag,
   createBag, dropFromBag, equipFromBag, itemById, itemNote, itemsOfKind, priceOf, removeFromBag,
-  startingKit, useFromBag, weaponHeld,
+  STARTING_WEAPON_OF_CLASS, startingKit, useFromBag, weaponHeld,
 } from '../../src/game/items.js';
 import { parseSpellsFile, spellByName } from '../../src/arena/spellsFile.js';
 import {
@@ -221,20 +222,53 @@ test('worn armour and a held shield add up, and the weapon in hand carries its m
   assert.deepEqual([steel.min, steel.max], [2, 16]);
   const iron = weaponHeld({ weapon: 'longsword', material: 'iron' });
   assert.deepEqual([iron.min, iron.max], [1, 15], 'iron is −1');
-  assert.equal(weaponHeld({}).item.id, 'longsword', 'the default arm');
+  // **No weapon is a fist**, which is the fight's own default (`combat.js`'s `resolveAttack`) and
+  // the state a new character is in until they equip the weapon in their pack. This check used to
+  // read `longsword` ("the default arm"): the HUD promised a sword to a character who had never
+  // held one, which is one half of the owner's "always the dagger animation".
+  assert.equal(weaponHeld({}).item.id, 'fists', 'the default arm is an empty hand');
+  assert.equal(weaponCarried({}).id, 'fists', 'and the panel agrees with the HUD');
 });
 
-test('a new character walks out with a dagger, a leather cuirass and a draught', () => {
-  const kit = startingKit();
-  assert.equal(countInBag(kit.bag, 'dagger'), 1);
-  assert.equal(countInBag(kit.bag, 'potion-heal'), 1);
-  assert.equal(kit.equipment.weapon, 'dagger');
-  assert.equal(kit.equipment.material, 'iron');
-  assert.equal(kit.equipment.armour.cuirass, 'leather-cuirass');
-  // …and every piece of it is real, which is the point of a starting kit.
-  for (const stack of kit.bag) assert.ok(itemById(stack.id), stack.id);
-  for (const id of Object.values(kit.equipment.armour)) assert.ok(itemById(id), id);
-  assert.ok(itemById(kit.equipment.weapon));
+test('a new character walks out with the class weapon in the pack and empty hands', () => {
+  // **The class's own weapon**, from UESP's table (Arena: "Warriors and their subclasses begin
+  // with a broadsword", rogues with a shortsword, mages with a dagger) — and **carried, not
+  // wielded**: in Arena the weapon is in the pack and the player equips it, which is why the
+  // first-person view of a fresh character is the install's `HAND.CIF` and not a blade. This
+  // port gave every class a wielded dagger, which is the "always the dagger animation" report.
+  const classes = { broadsword: ['archer', 'barbarian', 'knight', 'monk', 'ranger', 'warrior'],
+    shortsword: ['acrobat', 'assassin', 'bard', 'burglar', 'rogue', 'thief'],
+    dagger: ['battlemage', 'healer', 'mage', 'nightblade', 'sorceror', 'spellsword'] };
+  for (const [weapon, ids] of Object.entries(classes)) {
+    for (const id of ids) {
+      assert.equal(STARTING_WEAPON_OF_CLASS[id], weapon, `${id} begins with a ${weapon}`);
+      const kit = startingKit(id);
+      assert.equal(countInBag(kit.bag, weapon), 1, `${id}'s pack holds the ${weapon}`);
+      assert.equal(kit.equipment.weapon, 'fists', `${id} begins unarmed`);
+      assert.equal(countInBag(kit.bag, 'potion-heal'), 1);
+      assert.equal(kit.equipment.material, 'iron');
+      assert.equal(kit.equipment.armour.cuirass, 'leather-cuirass');
+      // …and every piece of it is real, which is the point of a starting kit.
+      for (const stack of kit.bag) assert.ok(itemById(stack.id), stack.id);
+      for (const id2 of Object.values(kit.equipment.armour)) assert.ok(itemById(id2), id2);
+    }
+  }
+  assert.equal(Object.keys(STARTING_WEAPON_OF_CLASS).length, 18, 'all eighteen classes are placed');
+  // An unknown or absent class still gets something usable rather than an empty pack.
+  assert.equal(countInBag(startingKit().bag, 'dagger'), 1);
+  assert.equal(countInBag(startingKit('not-a-class').bag, 'dagger'), 1);
+
+  // **The bare hand reads its own numbers.** An unarmed character — which is how every new
+  // character begins now (`startingKit`) — must see fists on the panel, not whatever `ITEMS[0]`
+  // happens to be, and the range must be the one the fight will roll (`resolveAttack` adds the
+  // material's own modifier and floors at 1, so a fist "edged" with iron is 1–1).
+  const bare = weaponHeld({ weapon: 'fists', material: 'iron' });
+  assert.equal(bare.item.id, 'fists');
+  assert.equal(bare.item.name, 'Fists');
+  assert.deepEqual([bare.min, bare.max], [1, 1], 'iron is −1 and the floor is 1, exactly as the swing rolls');
+  assert.deepEqual([weaponHeld({ weapon: 'fists', material: 'steel' }).min,
+    weaponHeld({ weapon: 'fists', material: 'steel' }).max], [1, 2], 'with steel, fists are 1–2');
+  assert.equal(weaponHeld({ weapon: 'not-a-weapon' }).item.id, 'fists', 'an unknown arm is a fist here too');
 });
 
 // ── the services ──────────────────────────────────────────────────────────────

@@ -182,6 +182,39 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
     const carried = await page.evalJs('window.__debug.character ? window.__debug.character() : null');
     check('the world map knows who the player is', Boolean(carried?.name), carried ? `${carried.name}, ${carried.className}` : 'the map does not expose the character');
 
+    // ── what the new character carries into the dungeon, and what is in hand ─────────────────
+    //
+    // The owner, playing this port beside the original: "in normal arena your attack animation is
+    // fists and then when you equip different weapons it moves and from fists becomes dagger then
+    // sword … instead in perfectarena is always the dagger animation". Arena gives a new prisoner
+    // their **class's** weapon — UESP's table: a Warrior a broadsword, a Thief a shortsword, a Mage
+    // a dagger — **in the pack**, and the walkthrough tells the player to go and equip it. This
+    // port handed every class a wielded dagger, so the first thing a new character ever saw was a
+    // blade. Checked where the player sees it: the first person, after a real creation, in a real
+    // dungeon.
+    await page.goto(`http://localhost:${port}/?interior=START.MIF&${q}`);
+    await page.waitFor('window.__debug?.combat && window.__debug.state().painted > 3', { label: 'the dungeon after creation', timeoutMs: 90000 });
+    const hands = await page.evalJs('window.__debug.weaponView()');
+    check('a newly created character stands in the dungeon with empty hands',
+      /^HAND\.CIF$/.test(String(hands?.file ?? '')), JSON.stringify({ file: hands?.file, family: hands?.family }));
+    const UESP_WEAPON = {
+      broadsword: ['archer', 'barbarian', 'knight', 'monk', 'ranger', 'warrior'],
+      shortsword: ['acrobat', 'assassin', 'bard', 'burglar', 'rogue', 'thief'],
+      dagger: ['battlemage', 'healer', 'mage', 'nightblade', 'sorceror', 'spellsword'],
+    };
+    const want = Object.entries(UESP_WEAPON).find(([, ids]) => ids.includes(carried?.classId))?.[0];
+    // The pack is materialised by asking for it (`interior.js`'s `bagOf` mints a starting kit for
+    // a character that has never opened one): `__debug.bag()` is the seam that does it.
+    const pack = await page.evalJs('window.__debug.bag().map((row) => row.id ?? row.item?.id ?? null)');
+    check('and the pack holds the weapon their class begins with',
+      Boolean(want) && pack.includes(want), `${carried?.className} (${carried?.classId}) expects a ${want}: [${pack.join(', ')}]`);
+    check('and no weapon is in hand until they equip one',
+      !(await page.evalJs('window.__debug.player().weapon ?? null')), await page.evalJs('String(window.__debug.player().weapon ?? "(none)")'));
+    const fists = await page.evalJs('window.__debug.combat().player');
+    check('and the fight reads those empty hands as fists, not a sword',
+      String(fists?.weapon ?? '') === '' || fists?.weapon == null, JSON.stringify({ weapon: fists?.weapon ?? null }));
+    await page.screenshot(path.join(shots, 'm4-chargen-first-person.png'));
+
     check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
     const pageErrs = await page.evalJs('window.__debug.pageErrors || []');
     check('no uncaught page errors', pageErrs.length === 0, pageErrs.join(' | ').slice(0, 400));

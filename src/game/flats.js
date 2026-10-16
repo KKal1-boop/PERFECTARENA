@@ -45,6 +45,63 @@
 // `flatBaseY` below is the rule in code, and the scene passes its answer straight to the
 // billboard batch.
 
+import { CELL_SIZE } from './mifMesh.js';
+
+/**
+ * How tall a 102-pixel figure stands, in world units: a person, from `01PLTWLK.CFA`.
+ *
+ * The figure's density is the port's oldest law, and it is the one a **thing** is drawn at:
+ * a chest is half a metre, a key is a hand's width, and the pile of equipment on the floor
+ * (`EQUIPMEN.IMG`) is a waist-high heap.
+ */
+export const SPRITE_SCALE = 1.8 / 102;
+/**
+ * The **wall's own** density: a wall texture is 64×64 pixels and fills exactly one cell, so 64
+ * pixels *are* one cell. Tall landscape art — statues, columns, hedges, the 127-pixel shop
+ * fronts — is drawn at it.
+ */
+export const SCENERY_SCALE = CELL_SIZE / 64;
+/**
+ * How tall a tree stands, in world units — **three storeys**, by the player's eye: the tallest
+ * tree art (`NOAK2.IMG`, 148 px) reads as 9.0 units, three of the engine's 2.5-unit storeys,
+ * with the other trees scaled by the same factor (a fir at 8.0, a palm at 7.7, a sapling at
+ * 4.2). GUESS in the constant, measured in the art.
+ */
+export const TREE_SCALE = 9.0 / 148;
+
+/**
+ * How big a flat is drawn: the tree law for the woods, the object's law for the things a map
+ * *places*, and the wall's law for the rest of the tall art.
+ *
+ * **Three densities, and the third one is the bug this function was repaired for.** The first
+ * version split on the art's own height alone — at or above a wall tile's 64 pixels took the
+ * wall's density (2.5 m per 64 px), below it the figure's — which is right for landscape and
+ * **wrong for everything the level puts on the floor**. Measured against the install (2026-10-16,
+ * `.scratch/lootsizes.mjs`, every `*ITEM` flat record in all 93 shipped INFs): the loot art is
+ * `KEY.IMG` 21×7, `DEADBODY.IMG` 90×34, `TREASRE1…3.IMG` 35×24 / 87×31 / 99×36, `CHESTC` 63×27,
+ * `CHESTO` 71×29 — all below the threshold and all drawn correctly — and `EQUIPMEN.IMG` **84×72**,
+ * the pile with a helm on it, which crossed it and came out **3.28 m wide and 2.81 m tall**: a
+ * heap as tall as a wall and taller than the player. That is the owner's report, "the pile of
+ * loot with an helm is bigger then what it should be".
+ *
+ * So the question is not how tall the art is but **what the flat is**: a record the map places as
+ * a *thing* (it carries an `*ITEM` number — `game/dungeonItems.js`) is an object in a room and is
+ * drawn at the figure's density whatever its art's height; landscape with no `*ITEM` keeps the
+ * height split; and trees keep the third law that makes them a skyline.
+ *
+ * @param {number} width @param {number} height  the art's own pixels
+ * @param {string} [name]  the record's own name, which is what says tree or not
+ * @param {{item?: boolean}} [opts]  `item` — this flat is a thing the map placed (loot, a key, a
+ *   chest, a corpse), not landscape
+ * @returns {{w: number, h: number, scale: number}} world units
+ */
+export function flatSize(width, height, name = null, { item = false } = {}) {
+  const scale = isTreeArt(name) ? TREE_SCALE
+    : item ? SPRITE_SCALE
+    : height >= 64 ? SCENERY_SCALE : SPRITE_SCALE;
+  return { w: width * scale, h: height * scale, scale };
+}
+
 /**
  * @typedef {object} FlatCell
  * @property {number} row

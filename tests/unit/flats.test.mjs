@@ -13,7 +13,8 @@ import test from 'node:test';
 
 import { ArenaData } from '../../src/arena/arenaData.js';
 import { decodeLevel } from '../../src/game/mifLevel.js';
-import { collectFlats, flatBaseY, isTreeArt } from '../../src/game/flats.js';
+import { collectFlats, flatBaseY, flatSize, isTreeArt, SCENERY_SCALE, SPRITE_SCALE, TREE_SCALE } from '../../src/game/flats.js';
+import { DUNGEON_ITEMS } from '../../src/game/dungeonItems.js';
 import { CELL_SIZE } from '../../src/game/mifMesh.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 
@@ -76,6 +77,52 @@ test('the Imperial Dungeons hang their roots and chains from the ceiling', async
     assert.ok(base + height <= room.ceilingY + 1e-9,
       `${flat.name}: top ${base + height} over ${room.ceilingY}`);
   }
+});
+
+test('a thing the map placed is drawn as an object, not at the wall density that made the loot pile huge', () => {
+  // The owner, beside the original: "the pile of loot with an helm is bigger then what it
+  // should be".
+  //
+  // **The cause was the art's own height crossing a threshold.** The size law split on it — at
+  // or above a wall tile's 64 pixels took the *wall's* density (2.5 m per 64 px) — and every loot
+  // art in the install is under that except the one with the helm, `EQUIPMEN.IMG` at 84×72,
+  // which came out 3.28 m wide and **2.81 m tall**: a heap taller than the player and as tall as
+  // a wall. Measured across every `*ITEM` flat record in all 93 shipped INFs
+  // (`.scratch/lootsizes.mjs`): key 21×7, corpse 90×34, treasures 35×24 / 87×31 / 99×36, chests
+  // 63×27 and 71×29, boat 127×22 — and the pile at 84×72.
+  const pile = flatSize(84, 72, 'EQUIPMEN.IMG', { item: true });
+  assert.equal(pile.scale, SPRITE_SCALE, 'the heap on the floor is drawn at the figure density');
+  assert.ok(pile.h > 1.2 && pile.h < 1.35, `a waist-high heap: ${pile.h.toFixed(2)} m tall`);
+  assert.ok(pile.w < 1.6, `${pile.w.toFixed(2)} m wide`);
+  // …where the same art read as landscape is what the report saw.
+  assert.ok(flatSize(84, 72, 'EQUIPMEN.IMG').h > 2.5, 'the wall density made it 2.81 m');
+
+  // The landscape laws are untouched: a statue keeps the wall's, a tree the tree's, and a chest
+  // or a key is an object either way (both are under the old threshold).
+  assert.equal(flatSize(138, 138, 'NSTATUE1.IMG').scale, SCENERY_SCALE);
+  assert.equal(flatSize(148, 148, 'NOAK2.IMG').scale, TREE_SCALE);
+  assert.equal(flatSize(63, 27, 'CHESTC.IMG', { item: true }).scale, SPRITE_SCALE);
+  assert.equal(flatSize(63, 27, 'CHESTC.IMG').scale, SPRITE_SCALE);
+  assert.ok(Math.abs(flatSize(148, 148, 'NOAK2.IMG').h - 9.0) < 1e-9, 'the tallest tree is still three storeys');
+});
+
+test('every loot flat the shipped levels place is drawn below a person height', async () => {
+  // The law applied where it is seen: the levels' own `*ITEM` loot flats, art size and all.
+  let checked = 0;
+  for (const name of ['START.MIF', '39300577.MIF']) {
+    const { level, inf } = await decode(name);
+    const collected = collectFlats(level, inf);
+    for (const flat of collected.flats) {
+      const kind = DUNGEON_ITEMS[flat.itemIndex]?.kind;
+      if (!kind || !flat.name?.endsWith('.IMG')) continue;   // monsters and people are drawn by their own systems
+      const image = await data.img(flat.name);
+      const size = flatSize(image.width, image.height, flat.name, { item: true });
+      checked++;
+      assert.ok(size.h < 1.5, `${name} ${flat.name} (${image.width}×${image.height}) draws ${size.h.toFixed(2)} m tall`);
+      assert.ok(size.w < 2.5, `${name} ${flat.name} draws ${size.w.toFixed(2)} m wide, wider than a cell`);
+    }
+  }
+  assert.ok(checked >= 8, `${checked} loot flats checked across two levels`);
 });
 
 test('only roots, chains and a dangling flame hang — across every .INF in the install', async () => {

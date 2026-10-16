@@ -28,7 +28,9 @@
 //
 // The panel spans one of the cell's two axes (`built.doors[].panel`), and a swinging door
 // turns about a vertical line through one end of that span, by `SWING_DEGREES` — enough to
-// clear the doorway and lie against the wall the map put beside it. Sliding doors travel
+// clear the doorway and come to rest *just short of* the wall the map put beside it, which is
+// what `leafIntoSolid` below is the law of (the leaf turned 96° once, and clipped into it).
+// Sliding doors travel
 // along the panel's own axis (into the wall) and raising ones lift a whole cell; Arena's
 // fourth kind, `splitting`, is drawn as a slide, because a two-leaf split needs geometry
 // the cell does not carry (the panel is one picture, not two).
@@ -46,8 +48,25 @@ import { multiply, trs } from '../engine/world/mat4.js';
 export const DOOR_OPEN_SECONDS = 0.55;
 /** How long it takes to close again. */
 export const DOOR_CLOSE_SECONDS = 0.35;
-/** How far a swinging panel turns. */
-export const SWING_DEGREES = 96;
+/**
+ * How far a swinging panel turns.
+ *
+ * **Short of the jamb, by the original's own margin.** The panel spans a whole cell and is
+ * hinged at one end of that span, so at exactly 90° it comes to rest *in the plane of the wall
+ * beside it*; past 90° it goes through that wall. This port turned **96°**, which drove the
+ * far end of every swinging door 0.10 of a cell (26 cm) into the neighbouring cell — and that
+ * neighbour is solid by construction, because `mifMesh` gives a door `panel: 'x'` only when the
+ * two cells it does *not* swing into are walls — which is the owner's report, "when doors open
+ * they clip into the wall instead in normal arena they dont". Arena's own answer, read out of
+ * OpenTESArena (`Voxels/VoxelDoorUtils.cpp`, `getSwingingRotationRadians`):
+ *
+ *     constexpr Radians maxSwingRadians = Constants::HalfPi - bigEpsilon;   // bigEpsilon 0.005
+ *
+ * with the comment "Prevents Z-fighting with 32-bit depth" — i.e. the leaf stops a hair short
+ * of the wall rather than lying in its plane. 89.71° is that number, and the law it serves is
+ * `leafIntoSolid` below: **no part of a swinging leaf is ever inside a solid cell.**
+ */
+export const SWING_DEGREES = 90 - 0.005 * (180 / Math.PI);
 /** The highest lock level an unaided arm can still force. */
 export const HAND_FORCE_MAX = 10;
 
@@ -127,7 +146,7 @@ export function hingeFor(door, cellSize) {
  * @param {number} open  progress, 0…1 (clamped)
  * @returns {Float32Array} a 4×4 matrix
  */
-export function doorMatrix(door, cellSize, open) {
+export function doorMatrix(door, cellSize, open, { swingDegrees = SWING_DEGREES } = {}) {
   const t = Math.max(0, Math.min(1, open));
   const S = cellSize;
   if (door.kind === 'sliding' || door.kind === 'splitting') {
@@ -138,11 +157,64 @@ export function doorMatrix(door, cellSize, open) {
   }
   if (door.kind === 'raising') return trs(0, S * t, 0, 0, 0, 0);
   const { pivot } = hingeFor(door, cellSize);
-  const degrees = (door.panel === 'x' ? -1 : 1) * SWING_DEGREES * t;
+  const degrees = (door.panel === 'x' ? -1 : 1) * swingDegrees * t;
   const turn = trs(0, 0, 0, 0, degrees, 0);
   const intoPivot = trs(pivot[0], pivot[1], pivot[2], 0, 0, 0);
   const outOfPivot = trs(-pivot[0], -pivot[1], -pivot[2], 0, 0, 0);
   return multiply(multiply(intoPivot, turn), outOfPivot);
+}
+
+/**
+ * Where a door's leaf stands at `open`, as the **two ends of its own panel** in plan (x, z).
+ *
+ * The closed panel's ends are the ones `mifMesh` emits (`panel: 'x'` spans x at the cell's
+ * middle z; `panel: 'z'` is the mirror), and `doorMatrix` carries them wherever the swing,
+ * slide or lift takes them — so this is the same geometry the scene draws, asked as two points.
+ * The law below is what keeps the drawn leaf out of the wall.
+ *
+ * @param {{row: number, col: number, panel: 'x'|'z', kind?: string}} door
+ * @param {number} cellSize
+ * @param {number} open
+ * @returns {{x: number, z: number}[]} the hinge end first, the free end second
+ */
+export function doorLeaf(door, cellSize, open) {
+  const S = cellSize;
+  const x0 = door.row * S;
+  const z0 = door.col * S;
+  const ends = door.panel === 'z'
+    ? [{ x: x0 + S / 2, z: z0 }, { x: x0 + S / 2, z: z0 + S }]
+    : [{ x: x0, z: z0 + S / 2 }, { x: x0 + S, z: z0 + S / 2 }];
+  const m = doorMatrix(door, cellSize, open);
+  return ends.map((p) => ({ x: m[0] * p.x + m[8] * p.z + m[12], z: m[2] * p.x + m[10] * p.z + m[14] }));
+}
+
+/**
+ * The law of the swing: **a swinging leaf never enters a solid cell.**
+ *
+ * Samples the leaf across its own length (never its two ends: those sit exactly on the jamb and
+ * on the wall plane at rest, where "which cell is this" has no answer) and reports the first
+ * point that lands in a cell the level calls solid. Sliding and raising doors are exempt on
+ * purpose — their whole point is to travel *into* the wall the map leaves hollow for them — so
+ * a caller asks this about a `swinging` leaf, which is where the owner saw the clipping.
+ *
+ * @param {{row: number, col: number, panel: 'x'|'z', kind?: string}} door
+ * @param {number} cellSize
+ * @param {number} open
+ * @param {(row: number, col: number) => boolean} isSolid  the level's own answer for a cell
+ * @returns {{open: number, at: {x: number, z: number}, row: number, col: number}|null}
+ */
+export function leafIntoSolid(door, cellSize, open, isSolid) {
+  if (door.kind && door.kind !== 'swinging') return null;
+  const [hinge, tip] = doorLeaf(door, cellSize, open);
+  for (let i = 1; i < 22; i++) {
+    const t = i / 22;
+    const x = hinge.x + (tip.x - hinge.x) * t;
+    const z = hinge.z + (tip.z - hinge.z) * t;
+    const row = Math.floor(x / cellSize);
+    const col = Math.floor(z / cellSize);
+    if (isSolid(row, col)) return { open, at: { x, z }, row, col };
+  }
+  return null;
 }
 
 /**

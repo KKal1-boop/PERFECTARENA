@@ -15,10 +15,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { ArenaData } from '../../src/arena/arenaData.js';
+import { decodeLevel } from '../../src/game/mifLevel.js';
+import { ARENA_TEXTURE_ARCHIVE, buildLevelMesh } from '../../src/game/mifMesh.js';
+import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import {
-  FORCE_FAILED, HAND_FORCE_MAX, KEYWORTHY_LOCK, NEEDS_KEY, doorLine, forceChance, keyOpens,
-  lockAt, lockTable, openReason, placeKeys,
+  FORCE_FAILED, HAND_FORCE_MAX, KEYWORTHY_LOCK, NEEDS_KEY, SWING_DEGREES, doorLeaf, doorLine,
+  forceChance, keyOpens, leafIntoSolid, lockAt, lockTable, openReason, placeKeys,
 } from '../../src/game/doors.js';
+
+const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 
 /** A square room of open floor: `size × size`, nothing solid unless the caller says so. */
 function room(size = 12, solid = () => false) {
@@ -109,6 +115,67 @@ test('a room too small to be deep still gets its key: the first room of the Impe
   assert.equal(keys.length, 1, 'the room gets its key');
   assert.ok(keys[0].row < 4 && keys[0].col < 4, `and it lies in the room: ${JSON.stringify(keys[0])}`);
   assert.notDeepEqual([keys[0].row, keys[0].col], [1, 1], 'not under the player’s own feet while there is floor to spare');
+});
+
+test('a swinging leaf stops short of the jamb, and never swings into a wall', async () => {
+  // The owner, playing the port beside the original: "when doors open they clip into the wall
+  // instead in normal arena they dont".
+  //
+  // **The cause was the angle.** A panel spans a whole cell and is hinged at one end of that
+  // span, so at exactly 90° it comes to rest *in the plane of the wall beside it* — and this port
+  // turned **96°**, which drove the far end 0.10 of a cell (26 cm) through that wall. The
+  // neighbour is solid by construction: `mifMesh` gives a door `panel: 'x'` only when the two
+  // cells it does not swing into are walls. Arena's own margin is OpenTESArena's
+  // (`VoxelDoorUtils.cpp`: `maxSwingRadians = Constants::HalfPi - bigEpsilon`, 0.005 rad,
+  // "Prevents Z-fighting with 32-bit depth"), and the law is the one below.
+  assert.ok(SWING_DEGREES < 90, `the leaf stops short of the wall plane: ${SWING_DEGREES}°`);
+  assert.ok(SWING_DEGREES > 89, `…and still clears the doorway: ${SWING_DEGREES}°`);
+
+  // ── the geometry, as the scene draws it ────────────────────────────────────────────────
+  const door = { row: 10, col: 4, panel: 'x', kind: 'swinging' };
+  const shut = doorLeaf(door, 2.5, 0);
+  assert.deepEqual(shut, [{ x: 25, z: 11.25 }, { x: 27.5, z: 11.25 }], 'shut, the leaf spans its own cell');
+  const open = doorLeaf(door, 2.5, 1);
+  assert.ok(open[1].x < shut[1].x || Math.abs(open[1].x - shut[0].x) < 1e-9,
+    `open, the free end has swung round to the hinge: ${JSON.stringify(open)}`);
+  // A **slide** is exempt on purpose: it travels into the wall the map leaves hollow for it.
+  assert.equal(leafIntoSolid({ row: 10, col: 4, panel: 'x', kind: 'sliding' }, 2.5, 1, () => true), null);
+
+  // ── and the law, against the levels the install ships ──────────────────────────────────
+  const data = new ArenaData(nodeSource(ARENA_PATH), { onWarn: () => {} });
+  let swinging = 0;
+  let violations = [];
+  for (const [name, index] of [['START.MIF', 0], ['39300577.MIF', 0], ['IMPPAL.MIF', 1]]) {
+    const mif = await data.mif(name);
+    const level = mif.levels[index];
+    let inf = null;
+    try { inf = await data.inf(level.info); } catch { /* a level with no INF still decodes */ }
+    const decoded = decodeLevel(level, inf, { width: mif.width, depth: mif.depth ?? mif.height, mapType: 'interior' });
+    const built = buildLevelMesh(decoded, { archive: ARENA_TEXTURE_ARCHIVE });
+    // A **door cell is solid** in the collision mesh (you cannot walk through a shut one), so the
+    // level's own flag is not the question here: the leaf may stand in a doorway. Walls are.
+    const isSolid = (row, col) => {
+      const cell = decoded.cells?.[row * mif.width + col];
+      return !cell || (Boolean(cell.solid) && cell.kind !== 'door');
+    };
+    for (const leaf of built.doors ?? []) {
+      if (leaf.kind !== 'swinging') continue;
+      swinging++;
+      for (let step = 0; step <= 10; step++) {
+        const hit = leafIntoSolid(leaf, 2.5, step / 10, isSolid);
+        if (hit && violations.length < 6) {
+          violations.push(`${name} L${index} door (${leaf.row},${leaf.col}) ${leaf.panel} at open ${hit.open.toFixed(1)} → (${hit.at.x.toFixed(2)}, ${hit.at.z.toFixed(2)}) is in wall (${hit.row},${hit.col})`);
+        } else if (hit) violations.push('…');
+      }
+    }
+  }
+  assert.ok(swinging >= 50, `the shipped levels field swinging doors: ${swinging}`);
+  assert.deepEqual(violations, [], `${violations.length} of ${swinging} leaves enter a wall`);
+
+  // **Mutation check** (measured 2026-10-16, `.scratch/doorprobe.mjs`, 273 doors across eight
+  // levels): at the 96° this port used to turn, **244 of 244 swinging doors** put part of their
+  // leaf inside a wall; at 89.714°, 0 of 244. So the two lines above are the whole law, and the
+  // constant is what fails when it regresses.
 });
 
 test('a door tells the player what it is, and what it needs', async () => {
