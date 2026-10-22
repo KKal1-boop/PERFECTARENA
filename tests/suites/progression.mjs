@@ -32,7 +32,9 @@ export function makeProgressionSuite({ check, realErrors, shots, getPort }) {
 
     await page.goto(at());
     await page.waitFor('window.__debug?.scene === "interior" && !!window.__debug.progression', { label: 'the dungeon', timeoutMs: 90000 });
-    await page.waitFor('document.getElementById("combat")?.classList.contains("on")', { label: 'the combat HUD', timeoutMs: 60000 });
+    // The bottom-right `#combat` box was removed with the one panel (the owner's 2026-10-17 ask), so
+    // the fight's own lines are a band of `#hud`; the wait is for the panel to carry something.
+    await page.waitFor('(document.getElementById("hud")?.textContent ?? "").length > 0', { label: 'the combat HUD', timeoutMs: 60000 });
 
     const start = await progression();
     check('a character with no experience owes no level',
@@ -83,10 +85,14 @@ export function makeProgressionSuite({ check, realErrors, shots, getPort }) {
     check('and the panel is up, with 3 to 6 points to place',
       due.panel?.open === true && due.panel.points >= 3 && due.panel.points <= 6 && due.panel.left === due.panel.points,
       JSON.stringify(due.panel));
-    check('the HUD says the level is owed, and how far the next one is',
-      /level 1/.test(await page.evalJs('document.getElementById("combat").textContent'))
-      && /press L to place the points/.test(await page.evalJs('document.getElementById("combat").textContent')),
-      (await page.evalJs('document.getElementById("combat").textContent')).split('\n')[0]);
+    // **Restated to the HUD's own wording.** The check used to look for the sentence
+    // *press L to place the points*; the HUD's flag row now says `1 level owed (L)` instead —
+    // the same two facts (a level is owed, and `L` is the key) in the compact form the row
+    // was written for, beside the guard/stairway/chasm flags. The claim is unchanged.
+    const hudText = await page.evalJs('document.getElementById("hud").textContent');
+    check('the HUD says the level is owed, and which key places the points',
+      /level 1/.test(hudText) && /1 level owed \(L\)/.test(hudText),
+      hudText.split('\n')[0]);
     await page.screenshot(path.join(shots, 'progression-panel.png'));
 
     // ── the points go where the player puts them ─────────────────────────────

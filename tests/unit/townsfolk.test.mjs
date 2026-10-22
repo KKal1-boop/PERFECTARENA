@@ -1,16 +1,16 @@
-// TOWNSFOLK: THE ROSTER, THE PLACEMENT, AND EVERY WORD THEY SAY.
+// TOWNSFOLK: THE ROSTER, THE PLACEMENT, AND WHO A PERSON IS.
 //
-// Two things about a talk system are easy to get wrong in ways a player only notices much
-// later: a person standing inside a wall, and a sentence with a `%`-word still in it. Both
-// are checkable against the real files, so both are checked here.
+// Two things about a town are easy to get wrong in ways a player only notices much later: a
+// person standing inside a wall, and a figure whose own sex, race or outfit the code guesses at.
+// Both are checkable against the real files, so both are checked here.
 //
 //   * the roster is the archive's own people files — 65 walk files, ten sets, seven armour
 //     writings, and the fact that no `11`–`15` set has a plate figure at all;
-//   * every line a person can say comes out of `template.dat` and has no unfilled word in
-//     it, whether it needed a province substituted or not;
-//   * a person's *description* is read off the file name and nothing else, because the
-//     name generator's tables are not in this data set;
+//   * a person's *description* is read off the file name and nothing else;
 //   * placement is deterministic and never in a wall, a chasm or a decoration.
+//
+// **What they say is `tests/unit/dialogue.test.mjs` now** — the speech half moved to
+// `game/dialogue.js` on 2026-10-19, together with its tests.
 //
 // Run:  node --test tests/unit/townsfolk.test.mjs     (needs ARENA_PATH)
 
@@ -18,15 +18,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ArenaData } from '../../src/arena/arenaData.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
-import { loadArenaText, placeholdersOf } from '../../src/arena/arenaText.js';
-import { loadWorldMap } from '../../src/game/worldMap.js';
 import {
-  ARMOUR_WORDS, describePerson, fillTalkLine, folkCountFor, folkFromListing, greetingFor,
-  outfitsFromFolk, placeTownsfolk, talkCorpus, talkParts, topicsFor, viewFacing, viewFileFor,
+  ARMOUR_WORDS, describePerson, folkCountFor, folkFromListing,
+  balanceHousehold, outfitsFromFolk, placeTownsfolk, sexOfArt, viewFacing, viewFileFor,
 } from '../../src/game/townsfolk.js';
-
-/** A line a person could say: a whole sentence, not half of one. */
-const talkIsWholeSentence = (text) => /^["'(A-Z0-9]/.test(text) && /[.!?”"]$/.test(text);
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 const data = () => new ArenaData(nodeSource(ARENA), { onWarn: () => {} });
@@ -34,9 +29,6 @@ const data = () => new ArenaData(nodeSource(ARENA), { onWarn: () => {} });
 const archive = await data().bsa();
 const names = archive.names();
 const folk = folkFromListing(names);
-const library = await loadArenaText(data());
-const corpus = talkCorpus(library.talkTemplates);
-const world = await loadWorldMap(data());
 
 test('the roster is the archive\'s own people files, not a table of our own', () => {
   assert.equal(folk.length, 65, 'sixty-five walk files in this install');
@@ -68,104 +60,6 @@ test('a person is described by what their own file name says they wear', () => {
     assert.match(description, /^a person in /);
     assert.ok(description.includes(ARMOUR_WORDS[person.armour]), `${person.file} → ${description}`);
   }
-});
-
-test('the talk corpus is template.dat\'s own sentences, split by what can be filled', () => {
-  // 811 recorded lines over 613 ids (`docs/PROGRESS.md`), which are 2 462 `&`-separated
-  // parts; 1 823 of them are whole sentences, and the rest are continuations.
-  assert.equal(corpus.total, 811);
-  assert.equal(corpus.parts, 2462, 'the file\'s own parts, split on &');
-  assert.equal(corpus.dropped, 639, 'parts that begin or end mid-sentence');
-  assert.equal(corpus.plain.length + corpus.province.length + corpus.unfillable, corpus.parts - corpus.dropped);
-  assert.equal(corpus.plain.length, 561, 'whole sentences with no %-word at all');
-  assert.equal(corpus.province.length, 14, 'whole sentences that need only the country\'s name');
-
-  for (const line of corpus.plain) {
-    assert.equal(placeholdersOf(line.text).length, 0, `#${line.id} has no %-words`);
-    assert.equal(talkIsWholeSentence(line.text), true, `#${line.id} is a whole sentence: ${line.text.slice(0, 70)}`);
-  }
-  for (const line of corpus.province) {
-    const words = placeholdersOf(line.text);
-    assert.ok(words.length > 0 && words.every((w) => w === 'cn' || w === 'cn2'), `#${line.id} wants ${words.join(',')}`);
-    assert.equal(talkIsWholeSentence(line.text), true, `#${line.id} is a whole sentence`);
-  }
-  // No fragment may reach a player: the first version of this handed out
-  // "have been constructing some interior woodwork at the palace", which is half a line.
-  for (const corpusName of ['plain', 'province']) {
-    for (const line of corpus[corpusName]) {
-      assert.ok(line.text.length >= 30, `#${line.id} is long enough to be a sentence`);
-      assert.match(line.text, /^["'(A-Z0-9]/);
-      assert.match(line.text, /[.!?”"]$/);
-      assert.ok(!line.text.includes('&'), `#${line.id} carries no part separator`);
-    }
-  }
-});
-
-test('every line a person can say is complete, with no %-word left in it', () => {
-  // Every settlement in Tamriel, each with the neighbour the game's own map gives it:
-  // no line may reach a player in any of the 288 of them, at any seed.
-  const settlements = world.settlements();
-  assert.equal(settlements.length, 288);
-  for (const settlement of settlements.slice(0, 40)) {
-    const neighbour = settlements
-      .filter((s) => s.name !== settlement.name)
-      .sort((a, b) => (
-        Math.hypot(a.global.x - settlement.global.x, a.global.y - settlement.global.y)
-        - Math.hypot(b.global.x - settlement.global.x, b.global.y - settlement.global.y)
-      ))[0];
-    const where = { place: settlement.name, neighbour: neighbour.name, province: settlement.province };
-    for (let seed = 0; seed < 12; seed++) {
-      const greeting = greetingFor(corpus, seed, 0);
-      assert.ok(greeting, 'there is always a greeting');
-      assert.equal(placeholdersOf(greeting.text).length, 0, `greeting #${greeting.id} is whole`);
-      assert.ok(!greeting.text.includes('%'), `greeting #${greeting.id} shows no %`);
-      for (const topic of topicsFor(corpus, where, seed)) {
-        assert.ok(topic.text.length > 10, `${topic.key} is a sentence`);
-        assert.ok(!topic.text.includes('%'), `${topic.key} ("${topic.text.slice(0, 60)}") has no %-word left`);
-        assert.equal(placeholdersOf(topic.text).length, 0);
-      }
-    }
-  }
-  // A city-state line really does name the city-state it was asked about…
-  const told = corpus.province[0];
-  const filled = fillTalkLine(told.text, { place: 'Daggerfall', neighbour: 'Sentinel' });
-  assert.equal(filled.unfilled.length, 0);
-  assert.ok(filled.text.includes('Daggerfall'), filled.text.slice(0, 120));
-  // …and a line that wants a word nobody has is refused rather than shown with a hole.
-  const impossible = fillTalkLine('The %t of %cn sends his regards to %rf.', { place: 'Daggerfall' });
-  assert.ok(impossible.unfilled.includes('t') || impossible.unfilled.includes('rf'),
-    `an unfillable line is refused: ${JSON.stringify(impossible)}`);
-  // And with no place to name at all there is nothing to substitute, so the question
-  // is not offered — a dungeon has no city-state to ask about.
-  const nowhere = topicsFor(corpus, { place: undefined }, 1);
-  assert.equal(nowhere.some((t) => t.key === 'city'), false, 'no place, no city question');
-  assert.equal(nowhere.length, 1, 'but there is still a line of local talk');
-});
-
-test('a person\'s answer changes when you keep asking, and walks the whole corpus', () => {
-  const first = greetingFor(corpus, 11, 0);
-  const second = greetingFor(corpus, 11, 1);
-  assert.notEqual(first.text, second.text, 'a stranger who repeats one sentence feels dead');
-  assert.equal(greetingFor(corpus, 11, 0).text, first.text, 'and the walk is deterministic');
-  // A person walks the corpus one line at a time: every slot is visited before any of
-  // them comes round again. The corpus holds 561 slots but only 530 *distinct* sentences
-  // — the same line is recorded under more than one id, which is Arena's own redundancy
-  // and is kept, because the id is what the panel credits.
-  const distinct = new Set(corpus.plain.map((l) => l.text));
-  assert.equal(distinct.size, 530, 'thirty-one sentences are recorded more than once');
-  const seen = new Set();
-  for (let turn = 0; turn < corpus.plain.length; turn++) seen.add(greetingFor(corpus, 3, turn).text);
-  assert.equal(seen.size, distinct.size, `${seen.size} distinct over ${corpus.plain.length} turns`);
-  assert.equal(greetingFor(corpus, 3, corpus.plain.length).text, greetingFor(corpus, 3, 0).text, 'and then it starts again');
-  // Two people standing a cell apart do not say the same thing first.
-  assert.notEqual(greetingFor(corpus, 3, 0).text, greetingFor(corpus, 4, 0).text);
-});
-
-test('the game\'s part separator is respected, not printed', () => {
-  assert.deepEqual(talkParts('One.& Two.&&Three. '), ['One.', 'Two.', 'Three.']);
-  assert.deepEqual(talkParts(''), []);
-  const joined = [...corpus.plain, ...corpus.province].every((line) => !line.text.includes('&'));
-  assert.equal(joined, true, 'no line handed to a player carries a &');
 });
 
 /**
@@ -235,8 +129,6 @@ test('an empty install is a town with nobody in it, not a crash', () => {
   assert.deepEqual(folkFromListing(undefined), []);
   assert.deepEqual(placeTownsfolk({ level: null, folk }), []);
   assert.deepEqual(placeTownsfolk({ level: { cells: [] }, folk }), []);
-  assert.equal(greetingFor({ plain: [] }, 1), null);
-  assert.deepEqual(topicsFor({ plain: [], province: [] }, { province: 'X' }, 1), []);
   assert.equal(describePerson(undefined), 'a stranger');
 });
 
@@ -354,6 +246,76 @@ test('a key this install does not ship is dropped, and the roster is the fallbac
   assert.ok(bare.every((person) => outfits.has(person.outfit.key)));
   assert.equal(new Set(bare.map((person) => person.outfit.key)).size, drawn.size,
     'a missing pool and an empty roster-draw are the same street');
+});
+
+// ── a household's seats ──────────────────────────────────────────────────────────────────────
+//
+// The owner, 2026-10-18: *"npcs variety in houses … at the moment is only women"*. A room's whole
+// cast is drawn from the province's pool, and a draw of two or three can come out one-sided. The
+// answer is `placeTownsfolk`'s `sex` door, used by the scene to redraw one seat: it must draw only
+// figures whose own art names that sex (a cat-folk's art names none, so it cannot stand in), and a
+// pool with nobody of that sex must fall back to the whole draw rather than empty the room.
+
+test('a sexed draw takes only the roster\u2019s own men or women, and never guesses at a figure', () => {
+  assert.equal(sexOfArt('0CHN'), 'male');
+  assert.equal(sexOfArt('1CHN'), 'female');
+  assert.equal(sexOfArt('FMGENW'), 'female');
+  assert.equal(sexOfArt('FMGEN'), 'female');
+  assert.equal(sexOfArt('BABE0'), 'female');
+  assert.equal(sexOfArt('MLGEN'), 'male');
+  assert.equal(sexOfArt('MLGENT'), 'male');
+  assert.equal(sexOfArt('GUARD0'), 'male');
+  assert.equal(sexOfArt('KHAJIIT'), null, 'the cat-folk\u2019s art says nothing about sex');
+  assert.equal(sexOfArt('ARGONIAN'), null);
+  assert.equal(sexOfArt(''), null);
+  const women = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 21, count: 24, sex: 'female', minCells: 0,
+  });
+  assert.equal(women.length, 24);
+  assert.ok(women.every((person) => sexOfArt(person.outfit.key) === 'female'),
+    `every seat is a woman: ${[...new Set(women.map((p) => p.outfit.key))].join(', ')}`);
+  const men = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 21, count: 24, sex: 'male', minCells: 0,
+  });
+  assert.ok(men.every((person) => sexOfArt(person.outfit.key) === 'male'),
+    `every seat is a man: ${[...new Set(men.map((p) => p.outfit.key))].join(', ')}`);
+  // A pool with nobody of the asked-for sex is the whole draw — never an empty room.
+  const none = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 21, count: 6, art: ['0UNA'], sex: 'female', minCells: 0,
+  });
+  assert.equal(none.length, 6);
+  assert.deepEqual([...new Set(none.map((p) => p.outfit.key))], ['0UNA']);
+});
+
+test('a household whose whole draw is one sex is given a seat of the other, on its own cell', () => {
+  // The owner, 2026-10-18: *"npcs variety in houses … at the moment is only women"*. A house's
+  // two or three seats are drawn from one pool, and the draw can come out one-sided.
+  const women = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 31, count: 3, art: ['1UNA', '1LTR'], minCells: 0,
+  });
+  assert.equal(women.length, 3);
+  assert.ok(women.every((p) => sexOfArt(p.outfit.key) === 'female'), 'the draw is all women');
+  const cells = women.map((p) => `${p.place.row},${p.place.col}`);
+  const homes = balanceHousehold(women, { level: syntheticStreet(), folk, kinds: [], seed: 32 });
+  assert.equal(homes.length, 3, 'nobody is added or lost');
+  assert.deepEqual(homes.map((p) => `${p.place.row},${p.place.col}`), cells, 'and nobody moves');
+  assert.ok(homes.some((p) => sexOfArt(p.outfit.key) === 'male'), `a man is at home: ${homes.map((p) => p.outfit.key).join(', ')}`);
+  assert.equal(homes.at(-1).sexSwap, 'male', 'the swapped seat says so');
+  // The mirror image: a house of only men gets a woman.
+  const men = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 33, count: 3, art: ['0CHN', '0UNA'], minCells: 0,
+  });
+  assert.ok(men.every((p) => sexOfArt(p.outfit.key) === 'male'));
+  balanceHousehold(men, { level: syntheticStreet(), folk, kinds: [], seed: 34 });
+  assert.ok(men.some((p) => sexOfArt(p.outfit.key) === 'female'), `a woman is at home: ${men.map((p) => p.outfit.key).join(', ')}`);
+  // A mixed household is left exactly as it was, and a room of one has nothing to balance.
+  const mixed = placeTownsfolk({
+    level: syntheticStreet(), folk, kinds: [], seed: 35, count: 4, art: ['0UNA', '1UNA'], minCells: 0,
+  });
+  const before = mixed.map((p) => p.file);
+  assert.deepEqual(balanceHousehold(mixed, { level: syntheticStreet(), folk, kinds: [], seed: 36 }).map((p) => p.file), before);
+  const one = [women[0]];
+  assert.deepEqual(balanceHousehold(one, { level: syntheticStreet(), folk, kinds: [], seed: 37 }), one);
 });
 
 test('an empty pool is not a pool: the whole roster stands', () => {

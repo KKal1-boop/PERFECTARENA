@@ -35,7 +35,9 @@ export function localServerSource(arenaPath, mount = 'arena-local') {
   /** @type {Set<string>|null} */
   let listing = null;
   const source = {
-    label: `server:${arenaPath}`,
+    // An empty path is "whatever this server already serves" (`servedArenaSource`), and the
+    // title screen prints this line: `server:` reads as a bug, not as an answer.
+    label: arenaPath ? `server:${arenaPath}` : 'the install served with this page',
     listing,
     list: () => (listing ? Array.from(listing).sort() : []),
     /**
@@ -60,13 +62,44 @@ export function localServerSource(arenaPath, mount = 'arena-local') {
     getBytes: async (name) => {
       const upper = name.toUpperCase();
       const index = await source.ensureListing();
-      if (index && !index.has(upper)) return null;
+      // The index lists the root's loose files only. A name with a folder in it
+      // (`SPEECH/1400_00A.VOC`) is never in that index, and the server does
+      // resolve subpaths, so the index cannot answer for those: ask the server.
+      if (index && !upper.includes('/') && !index.has(upper)) return null;
       const res = await fetch(`/${mount}/${encodeURIComponent(upper)}?${query}`);
       if (!res.ok) return null;
       return new Uint8Array(await res.arrayBuffer());
     },
   };
   return source;
+}
+
+/**
+ * **The Arena this page was served from, if that server has one.**
+ *
+ * A phone cannot pick a folder: iOS ignores `webkitdirectory` on a file input, and an
+ * Android picker hands back one file at a time, so the shipping picker is a dead end on the
+ * owner request for complete Android and iOS support. `tools/serve.mjs` already serves the
+ * checkout ARENA folder at `/arena-local/` (see `defaultArenaRoot`), which means this page
+ * origin can answer whether there is an install to read before anybody is asked for one.
+ *
+ * The test is the same one the picker uses (`looksLikeArena`): the index has to name
+ * `GLOBAL.BSA`. A page opened from a server without that mount gets `null` and falls
+ * through to the picker exactly as before. Nothing is bundled and nothing is uploaded; the
+ * bytes are read from the same install the desktop picks by hand.
+ *
+ * @param {typeof fetch} [fetchFn]
+ * @returns {Promise<ArenaSource|null>}
+ */
+export async function servedArenaSource(fetchFn = fetch) {
+  try {
+    const res = await fetchFn('/arena-local/?arena=');
+    if (!res?.ok) return null;
+    const body = await res.json();
+    const names = Array.isArray(body?.names) ? body.names.map((n) => String(n).toUpperCase()) : null;
+    if (!names || !names.includes('GLOBAL.BSA')) return null;
+    return localServerSource('');
+  } catch { return null; }
 }
 
 /**

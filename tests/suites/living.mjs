@@ -76,9 +76,17 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
       return JSON.stringify({ top: Math.round(box.top), bottom: Math.round(box.bottom), status: Math.round(window.innerHeight * 0.735), visibleLines: Math.floor((box.height - 8) / 15.6), line });
     })()`);
     const bandBox = JSON.parse(band ?? 'null');
-    check('and the HUD sits below the status line rather than over the world above it',
-      (bandBox?.top ?? 0) >= (bandBox?.status ?? 1) - 1 && (bandBox?.bottom ?? 0) <= await page.evalJs('window.innerHeight'),
-      `HUD ${bandBox?.top}…${bandBox?.bottom}, status line ${bandBox?.status}`);
+    // **Restated, not loosened** (2026-10-17). The panel used to be required to start *below* the
+    // original's 147th row (0.735 of the window), which was true while the weapon art stood on
+    // that line. The owner's own report — *"the fists … are floating midscreen"* — moved the art
+    // to the window's bottom edge, and the HUD is now drawn **over** it (`world` suite: "the HUD
+    // panel is the overlay"). The claim that still matters is the one this check was written for:
+    // the panel is inside the window and has room for the lines it prints, so the hour a player
+    // reads is not under the fold.
+    check('and the HUD is inside the window with room for the lines it prints',
+      (bandBox?.bottom ?? 0) <= await page.evalJs('window.innerHeight')
+      && (bandBox?.visibleLines ?? 0) >= 6 && (bandBox?.top ?? 0) >= 0,
+      `HUD ${bandBox?.top}…${bandBox?.bottom} of ${await page.evalJs('window.innerHeight')}, ${bandBox?.visibleLines} lines`);
     check('every trade the town keeps is open at that hour',
       Object.values(arrived?.open ?? {}).every(Boolean) && (arrived?.trades?.length ?? 0) >= 3,
       `${(arrived?.trades ?? []).join(', ')} → ${JSON.stringify(arrived?.open ?? null)}`);
@@ -89,7 +97,11 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
     // four lines of it), so the claim is that each open trade is named on the line that says
     // what is open — not that each has a sentence of its own.
     const morningHud = await hud();
-    const tradeLine = morningHud.split('\n').find((line) => /^(Open:|Every trade here is shut)/.test(line)) ?? '';
+    // **The panel's lines are separate DOM rows, not newlines in `textContent`** — read from the
+    // panel as one string, the hour and the trade line run together ("…— morning.Open: a tavern…").
+    // The sentence is found in the whole text rather than at the start of a line; the claim — every
+    // open trade is named on the line that says what is open — is unchanged.
+    const tradeLine = (morningHud.match(/(Open: [^.]*\.|Every trade here is shut[^.]*\.)/) ?? [''])[0];
     check('and the HUD says which of them the street holds',
       (arrived?.trades ?? []).every((kind) => {
         const name = kind === 'mages' ? 'Mages Guild' : kind === 'equipment' ? 'equipment store' : kind;
@@ -137,7 +149,70 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
       shut?.inside === null && /^CITY/.test(shut?.map ?? ''),
       `inside=${JSON.stringify(shut?.inside)} map=${shut?.map}`);
 
+    // ── three in the morning: the tavern is still open ─────────────────────────
+    //
+    // The owner, 2026-10-17: *"taverns shoud be always open"*. The tavern used to keep
+    // 10:00–02:00 like the twin's own innkeeper, so a player walking a town in the small hours
+    // found every tavern in it barred — the one building a traveller wants, shut, with the beds
+    // and the town's talk behind the door. The law is checked the way the shut smith is: at the
+    // hour it used to be shut, and by walking in.
+    await page.goto(city('&clock=180'));
+    await ready('Daggerfall, the small hours');
+    const smallHours = await page.evalJs('window.__debug.living()');
+    check('at three in the morning the tavern is open and the smith is not',
+      smallHours?.open?.tavern === true && smallHours?.open?.equipment === false,
+      `${JSON.stringify(smallHours?.open ?? null)} at ${smallHours?.word}`);
+    await page.evalJs('JSON.stringify(window.__debug.teleportToDoor("tavern"))');
+    await settle();
+    await page.pressKey('KeyE');
+    await page.pressKey('KeyE', false);
+    await page.waitFor('window.__debug?.state().inside != null', { label: 'into the tavern at three', timeoutMs: 90000 });
+    const lateInn = await page.evalJs('window.__debug.state()');
+    check('…and its door opens the tavern at three in the morning, with its keeper behind the bar',
+      /^TAVERN\d\.MIF$/.test(lateInn.map ?? '') && lateInn.shops?.keeper === 'tavern',
+      `${lateInn.map} · keeper ${lateInn.shops?.keeper}`);
+    // **The patrons the install paints.** The owner, 2026-10-17: the missing sprites are *"static
+    // npcs … like AR-sprite-MAN01.png and moch more man02 etc that are sitting at the tavern"*.
+    // A tavern's `.INF` names one `BARTEND.DFA` and nobody else; `MAN01…04`/`WOMAN01…04` are now
+    // stills in the room, drawn at a person's height (the same law that fixed the giant court).
+    check('and the tavern holds its still patrons — the MAN/WOMAN sprites nobody had placed',
+      (lateInn.patrons?.length ?? 0) >= 2
+      && lateInn.patrons.every((p) => /^(?:MAN\d{2}|WOMAN\d{2})\.(?:IMG|DFA)$/.test(p.art))
+      && lateInn.patrons.every((p) => p.height > 1.0 && p.height < 2.1)
+      && lateInn.patrons.every((p) => (lateInn.scenery?.names ?? []).includes(p.art)),
+      JSON.stringify(lateInn.patrons));
+
+    // ── and the drinkers speak the tavern's own words ────────────────────────
+    //
+    // The owner, 2026-10-19: *"you need to also fix the dialogue npcs have. now its mostly random
+    // but it needs to be coherent with their race, place and personality"*. A tavern's drinker is the
+    // clearest case in the install, because the reference gives that family **no personality at
+    // all** — it gives them a bank (`ArenaAnimUtils.cpp`'s `isNpcTavernPatron`, items 83…90, and
+    // `GameWorldUiMvc.cpp` reads `#1430` for them) — and the words are a drinker's in a room with a
+    // bartender in it: *"Why don't you talk to the bartender? He actually likes strangers."*
+    const drinker = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.talkVoice("patron"))') ?? 'null');
+    check('a tavern holds a drinker whose art names them, and the install calls them a patron',
+      drinker?.persona === 'patron', JSON.stringify({ who: drinker?.who, persona: drinker?.persona }));
+    check('and a drinker answers with the tavern\u2019s own bank, not the town\u2019s prose',
+      drinker?.first?.key === 1430 && /drinker/.test(drinker.first.subject ?? ''),
+      JSON.stringify({ key: drinker?.first?.key, subject: drinker?.first?.subject }));
+    check('and knocking twice walks that bank rather than repeating it',
+      Boolean(drinker?.again?.text) && drinker.again.text !== drinker.first.text,
+      `"${String(drinker?.first?.text).slice(0, 40)}…" → "${String(drinker?.again?.text).slice(0, 40)}…"`);
+    check('and every one of the room\u2019s lines is complete, with no %-word in it',
+      [drinker?.first, drinker?.again].every((line) => typeof line?.text === 'string'
+        && line.text.length > 8 && !line.text.includes('%')),
+      `"${String(drinker?.first?.text).slice(0, 70)}…"`);
+    // The same room's keeper is the other half of the same law: a trade's bank speaks for the trade
+    // (`game/shops.js`), and their greeting is credited to the file it came from.
+    const keeper = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.talkVoice("keeper"))') ?? 'null');
+    check('and the barkeep speaks the tavern\u2019s own trade bank before the town\u2019s talk',
+      /tavern\.dat/.test(keeper?.service?.source ?? ''),
+      JSON.stringify({ who: keeper?.who, service: keeper?.service?.source }));
+
     // ── the clock can be moved, and the doors move with it ───────────────────
+    await page.goto(city('&clock=1380'));
+    await ready('Daggerfall, late again');
     await page.evalJs('window.__debug.setClock(600)');
     await settle();
     const morning = await page.evalJs('window.__debug.living()');
@@ -159,6 +234,7 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
       dayLight?.sunDir?.[0] < 0.95 && dayLight?.sunDir?.[1] > 0.5,
       `sun ${JSON.stringify(dayLight?.sunDir ?? null)} at ${dayLight?.hour}:00`);
     const beforeDark = dayLight?.ambient?.[0] ?? 0;
+
     // What a player actually sees at ten in the morning, in pixels, before the sun moves.
     const dayFrame = await brightness(page, 'living-day.png');
     check('and the daytime frame is a lit picture rather than a blank one',
@@ -174,6 +250,26 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
     check('and the town is genuinely darker — the ambient, the sun and the sky all move',
       (nightLight?.ambient?.[0] ?? 1) < beforeDark * 0.6 && nightLight?.skyMix > 0.5,
       `ambient ${beforeDark} → ${nightLight?.ambient?.[0]}, sky mixed ${nightLight?.skyMix}`);
+
+    // ── the night lights are the houses' windows and the lamps, not doorways ──
+    //
+    // The owner, 2026-10-17: *"at night in cities the lamps and the windows of the houses should
+    // have a light not the front of the inns like it is right now"*. Until this pass the scene put
+    // a flickering light at **every door** of a level, which lit each building's doorstep and
+    // nothing else. What each source *is* is readable from the scene's own light list, so the law
+    // is checked there and then in pixels.
+    const nightSources = nightLight?.sources ?? [];
+    const panes = nightSources.filter((s) => s.window === true);
+    check('the town is lit by the windows of its houses',
+      panes.length > 0 && panes.every((p) => p.nightOnly === true),
+      `${panes.length} window panes of ${nightSources.length} sources`);
+    check('…and a door is not a lamp: no light of the town is a doorway',
+      nightSources.every((s) => !(s.nightOnly === true && s.window !== true && s.lamp !== true)),
+      `${nightSources.filter((s) => s.nightOnly && !s.window && !s.lamp).length} doorway lights`);
+    const litFrame = await brightness(page, 'living-night-windows.png');
+    check('and the night street is still a lit picture, not a black frame',
+      litFrame.mean > 6 && litFrame.stats.distinctColors > 12,
+      `${litFrame.mean.toFixed(1)} of 255, ${litFrame.stats.distinctColors} colours`);
     // **The same street, at night, in pixels.** The numbers above are the light the renderer was
     // handed; this is the claim that the renderer did something with it — the defect a reader of
     // `__debug` alone could never catch is a pass that is computed every frame and drawn with
@@ -209,7 +305,11 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
     // (they are where `docs/PROGRESS.md`'s measured numbers came from), so the hour must **stand
     // down** when either is given — a number a caller pinned and the clock then overrode every
     // frame would be worse than no door at all. This loads its own page, so it comes last.
-    await page.goto(city('&ambient=0.9&sun=1.1'));
+    // **`&clock=600`**: the world remembers its own hour across page loads now (D-05), so a bare
+    // page arrives at whatever the last page left — this one read 3:00 and then asked a shut
+    // smith to open its door. An instruction in the URL still wins over the memory, and the light
+    // is what this block is about; pinning the hour keeps the two checks below about the light.
+    await page.goto(city('&clock=600&ambient=0.9&sun=1.1'));
     await ready('Daggerfall, pinned');
     const pinned = await page.evalJs('window.__debug.light()');
     check('a pinned light stays pinned, whatever the hour does to it',
@@ -326,6 +426,43 @@ export function makeLivingSuite({ check, realErrors, shots, getPort, decodePng, 
     check('and the town\'s records stayed where they belong: people move, their homes do not',
       (displaced?.moved ?? 0) > 0 && Boolean(displaced?.sample?.home),
       `${displaced?.moved} of ${displaced?.of} away from home, e.g. ${JSON.stringify(displaced?.sample?.place ?? null)} from home ${JSON.stringify(displaced?.sample?.home ?? null)}`);
+
+    // ── the people who never move (D-44) ────────────────────────────────────────
+    //
+    // The owner: *"you should add the npcs that dont move from the original arena the one in
+    // taverns the priest the ones you can ask rumors … they are probably object and not entities
+    // in the original arena"*. In Arena the trades that **serve from a spot** are fixtures on the
+    // street, and this port walked every one of them round the town — measured 2026-10-17, a
+    // priest stood on 22 cells in twenty-one minutes of the town's own day and never for longer
+    // than eight seconds. The law is `livingWorld.js`'s `POST_ACTIVITIES` on the goal, and the
+    // player's half is here: somebody takes a post, stays on it, and is still on the street.
+    let postSeen = null;
+    for (let i = 0; i < 60 && !postSeen; i++) {
+      await settle(500);
+      postSeen = await page.evalJs('(() => { const all = window.__debug.people() ?? []; const p = all.filter((x) => x.atPost && !x.atHome); return p.length ? { n: p.length, roles: [...new Set(p.map((x) => x.role ?? "(none)"))], index: all.indexOf(p[0]) } : null; })()');
+    }
+    check('a serving trade takes its post and stands on it (D-44)',
+      (postSeen?.n ?? 0) > 0,
+      `${postSeen?.n ?? 0} posted in the town's own morning: ${(postSeen?.roles ?? []).join(', ')}`);
+    if (postSeen && postSeen.index >= 0) {
+      const at = (i) => page.evalJs(`(() => { const p = window.__debug.people()[${i}]; return p ? { role: p.role ?? null, activity: p.activity ?? null, cell: p.place ? p.place.row + ',' + p.place.col : null, atPost: Boolean(p.atPost), atHome: Boolean(p.atHome), walking: Boolean(p.walking) } : null; })()`);
+      const first = await at(postSeen.index);
+      let away = 0, still = 0;
+      for (let i = 0; i < 12; i++) {
+        await settle(500);
+        const now = await at(postSeen.index);
+        if (!now || now.cell !== first?.cell) away++;
+        if (now?.atPost) still++;
+      }
+      // Six seconds of the town's own clock, and a post is a **place**: the same person, the same
+      // cell, still holding, while a walker crosses a cell every 1.5 s at the town's own pace.
+      check('and stays there: a post is a place, not a pause (D-44)',
+        still >= 10 && away === 0,
+        `${first?.role ?? '?'} ${first?.activity ?? '?'} at ${first?.cell ?? '?'}: posted in ${still}/12 samples, left its cell ${away} times`);
+      check('and a posted person is on the street, not indoors',
+        first?.atHome === false && first?.walking === false,
+        `atHome ${first?.atHome}, walking ${first?.walking} — a post is drawn, a home is not`);
+    }
 
     check('no console errors', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));

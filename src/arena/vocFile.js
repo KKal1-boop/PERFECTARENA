@@ -154,3 +154,18 @@ export function decodeVoc(bytes) {
   if (!segments.length) return null;
   return { rate: segments[0].rate, segments };
 }
+
+/**
+ * How long a clip plays, in seconds: its decoded samples at each segment's own rate. Built on
+ * `decodeVoc`, so repeat blocks count the way the player plays them.
+ *
+ * @param {Uint8Array} bytes the file's own bytes
+ * @returns {number|null} seconds, or null when the bytes are not a VOC file
+ */
+export function vocSeconds(bytes) {
+  const decoded = decodeVoc(bytes);
+  if (!decoded) return null;
+  let seconds = 0;
+  for (const segment of decoded.segments) seconds += segment.samples.length / segment.rate;
+  return seconds;
+}

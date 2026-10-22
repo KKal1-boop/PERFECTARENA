@@ -84,7 +84,10 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
     const taken = await page.evalJs('JSON.stringify(window.__debug.takeJobFromPerson("nearest"))');
     const job = JSON.parse(taken ?? 'null');
     check('a person hands out work, and the job carries the person who is owed for it',
-      job?.ok === true && /^Daggerfall#\d+,\d+$/.test(job.giverId ?? '') && /^a person in /.test(job.giverPerson ?? ''),
+      job?.ok === true && /^Daggerfall#\d+,\d+$/.test(job.giverId ?? '')
+        // The figure's own description: "a man of the town", "a woman of the town", or the
+        // generic "a person" when the install's art cannot say.
+        && /^a (?:person|man|woman|child)\b/.test(job.giverPerson ?? ''),
       `${job?.title} — ${job?.giverId} (${job?.giverPerson})`);
     check('and the id names the cell they were placed on, not the one they were standing on',
       job?.giverId === job?.regardId, `${job?.giverId} vs ${job?.regardId}`);
@@ -92,12 +95,13 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
     // This suite isolates personal hand-in; the bounties suite exercises real kills.
     // Seed a legitimately completed state through the quest machine, never the removed E shortcut.
     const currentJob = await page.evalJs('JSON.parse(localStorage.getItem("perfectarena.radiant"))');
-    if (currentJob.active.kind === 'slay') {
+    if (currentJob.active.kind === 'slay' || currentJob.active.kind === 'hunt') {
       const { applyRadiantEvent, slayProgress } = await import('../../src/game/radiantQuests.js');
       let state = currentJob;
       const progress = slayProgress(state.active);
       for (const encounterId of progress.ids) state = applyRadiantEvent(state, 'killed', {
-        where: state.active.target, questId: state.active.id, monster: progress.monster, encounterId,
+        where: state.active.target, cell: state.active.targetCell,
+        questId: state.active.id, monster: progress.monster, encounterId,
       }).state;
       await page.evalJs(`localStorage.setItem('perfectarena.radiant', ${JSON.stringify(JSON.stringify(state))})`);
       await page.goto(city); await ready();
@@ -105,7 +109,8 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
     const finished = await page.evalJs('JSON.stringify(window.__debug.jobs().active.completed ? {completed:true,objective:window.__debug.jobs().objective} : window.__debug.finishJob())');
     const done = JSON.parse(finished ?? 'null');
     check('the finished job waits with the one who asked, in the game\'s own words',
-      done?.completed === true && /^Return to a person in .+ for \d+ gold\.$/.test(done.objective ?? ''),
+      done?.completed === true
+        && /^Return to (?:a|the) (?:person|man|woman|child)\b.+ for \d+ gold\.$/.test(done.objective ?? ''),
       done?.objective);
 
     // ── the hand-in: the purse that had no door before ────────────────────────
@@ -134,21 +139,26 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
     check('a later character save cannot erase the personal reward',
       await page.evalJs(`JSON.parse(localStorage.getItem('perfectarena.character')).gold === ${purseAfter}`));
     check('and the journal records who paid',
-      /from a person in /.test(paid.entry ?? ''), paid.entry);
+      /from (?:a|the) (?:person|man|woman|child)\b/.test(paid.entry ?? ''), paid.entry);
 
     const warmer = await page.evalJs('window.__debug.regard()');
+    // **A job is a favour, not a transaction.** The reward moves the one who asked the way the
+    // twin's table says work does (`job` +25) *and* the way standing up for somebody does
+    // (`helped` +20), so one errand turns a stranger into a friend — plus the word exchanged
+    // when the job was taken (+3).
     check('doing somebody\'s work is the strongest good turn the game has',
-      warmer.people[0]?.regard === 28 && warmer.people[0]?.standing === 'neutral',
-      `regard ${warmer.people[0]?.regard} — a job (+25) and a word (+3), both on the same day`);
-    check('and they are not yet a friend: the threshold is the twin\'s, and 40 is 40',
-      warmer.people[0]?.regard < 40, `${warmer.people[0]?.regard} < FRIEND_AT`);
+      warmer.people[0]?.regard === 48 && warmer.people[0]?.standing === 'friend',
+      `regard ${warmer.people[0]?.regard} — a job (+25), the help it gave (+20) and a word (+3)`);
+    check('and they call the player a friend: the threshold is the twin\'s, and 48 is past 40',
+      warmer.people[0]?.regard >= 40, `${warmer.people[0]?.regard} ≥ FRIEND_AT`);
 
     // ── the ledger survives the page ──────────────────────────────────────────
     await page.goto(city);
     await ready();
     const persisted = await page.evalJs('window.__debug.regard()');
     check('the ledger is a save, not a scene\'s memory: it survives the page being loaded again',
-      persisted.tally.known >= 1 && persisted.people[0]?.regard === warmer.people[0]?.regard,
+      persisted.tally.known >= 1 && persisted.people[0]?.regard === warmer.people[0]?.regard
+        && persisted.people[0]?.standing === 'friend',
       `${persisted.tally.known} known, regard ${persisted.people[0]?.regard}`);
 
     // ── a blow at a townsperson is a blow at the town ─────────────────────────
@@ -210,6 +220,21 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
     check('a hostile street draws on the player: stand among them and they come',
       healthAfter < healthBefore,
       `${healthBefore} → ${healthAfter} health, facing ${JSON.parse(stood ?? 'null')?.description ?? 'nobody'}`);
+
+    // ── and one of them may know a spell ─────────────────────────────────────
+    // The owner, 2026-10-19: *"npcs that get angry in towns should [cast] too"*. The clock
+    // is armed here because the real first cast waits most of a minute; the bolt still
+    // travels through the same fight, and `combat().casts` is the count that proves it.
+    const castsBeforeTown = await page.evalJs('window.__debug.combat().casts');
+    const armed = await page.evalJs(`window.__debug.townspersonSpellReady(${Math.max(0, among)})`);
+    let castsAfterTown = castsBeforeTown;
+    for (let i = 0; i < 30 && castsAfterTown === castsBeforeTown; i++) {
+      await settle(100);
+      castsAfterTown = await page.evalJs('window.__debug.combat().casts');
+    }
+    check('an angry townsperson can throw a spell at the player',
+      armed?.hostile === true && castsAfterTown > castsBeforeTown,
+      `${castsBeforeTown} → ${castsAfterTown} casts · ${JSON.stringify(armed)}`);
     await page.screenshot(path.join(shots, 'm11-hostile-street.png'));
 
     check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));

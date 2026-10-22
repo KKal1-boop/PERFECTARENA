@@ -27,7 +27,7 @@ import {
   spellsWithCode,
 } from '../../src/arena/spellsFile.js';
 import {
-  CASTING_NOTE, EFFECTS, EFFECT_CODES, applySpell, buildSpellLibrary, canCast, costOf,
+  CASTING_NOTE, EFFECTS, EFFECT_CODES, LIGHT_SECONDS, applySpell, buildSpellLibrary, canCast, costOf,
   isKnown, knownSpellsOf, learnSpell, powerOf, restore, spendFor, spellFromLibrary, startingSpellsFor,
 } from '../../src/game/spells.js';
 
@@ -325,6 +325,10 @@ test('a self-spell lands on the caster: a heal mends, a shield wards, a light is
 
   const light = applySpell(spellFromLibrary(library, 'Light'), { character: everySpell });
   assert.equal(light.character.light.radius, 8);
+  // **A light is a minute, and the clock is on the character.** The scene decrements
+  // `light.seconds`; the spell seeds the full minute so a fresh cast is always 60.
+  assert.equal(LIGHT_SECONDS, 60);
+  assert.equal(light.character.light.seconds, 60);
   const levitate = applySpell(spellFromLibrary(library, 'Levitate'), { character: everySpell });
   assert.equal(levitate.character.levitating, true);
 

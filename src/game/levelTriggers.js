@@ -83,6 +83,24 @@ export function triggerText(inf, trigger) {
 }
 
 /**
+ * The riddle record behind a trigger, or null.
+ *
+ * `triggerText` answers the prose a panel shows; this answers the **whole record** the riddle
+ * door needs — the answers that open it, and the words for a right and a wrong one. The install
+ * ships one for every Staff-piece dungeon (`halls3`, `elden2`, `labrnth2`, `crystal4`, …), and
+ * the trigger beside each riddle door names it by `*TEXT` id.
+ *
+ * @param {import('../arena/infFile.js').InfFile} inf
+ * @param {{textIndex:number}} trigger
+ * @returns {{answers:string[], riddle:string, correct:string, wrong:string}|null}
+ */
+export function triggerRiddle(inf, trigger) {
+  const id = trigger?.textIndex;
+  if (id === null || id === undefined || id < 0 || !inf?.riddles) return null;
+  return inf.riddles.get(id) ?? null;
+}
+
+/**
  * A trigger's sound filename, looked up by the **slot number** the `@SOUND` line
  * itself carries — `"SPLASH.VOC 23"` is the level's sound 23, and a trigger
  * naming 23 means exactly that file, wherever it sits in the list.

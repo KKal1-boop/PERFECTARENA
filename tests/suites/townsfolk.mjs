@@ -136,15 +136,19 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
 
     // ── who is here, and where they stand ──────────────────────────────────────
     const people = await page.evalJs('window.__debug.townsfolk()');
+    // **A figure's sheet is the install's own file under its race's key** (`game/raceSkin.js`,
+    // D-45): a raced person is drawn as `MLGEN01W.CFA#darkElf`, so every check below reads the
+    // file through this. The suffix is the only thing a race adds to a name.
+    const bare = (file) => String(file ?? '').split('#')[0];
     // **Two rosters, and the archive is both.** `xxNNNWLK.CFA` is the armoured folk — the
     // sets that carry an armour word — and beside them the archive ships its own townsfolk:
     // the generic men and women (`MLGEN0#<W|T|D>`, `FMGEN[W|D]?0#`) and the watch's and the
     // remaining families' view sheets (`GUARD0#`, `BABE0#`, `PAT#`, `LGLIT0#`). The town used
     // to hold only the first, which is the reported "there are NPCs that are always still;
     // we ported the moving ones and are missing assets because of that" (`peopleKinds.js`).
-    const PEOPLE_ART = /^(\d\d(UNA|LTR|CHN|PLT|BAR|MAG|MNK)WLK|MLGEN0[1-5][WTD]|FMGENW?0[1-5]|FMGEND0[1-5]|GUARD0[1-6]|BABE0[1-6]|PAT[1-6]|LGLIT0[1-6])\.CFA$/;
+    const PEOPLE_ART = /^(\d\d(UNA|LTR|CHN|PLT|BAR|MAG|MNK)WLK|MLGEN0[1-5][WTD]|FMGENW?0[1-5]|FMGEND0[1-5]|GUARD0[1-6]|BABE0[1-6]|SWOLF0[1-6]|LIZARD[1-6]|PAT[1-6]|LGLIT0[1-6])\.CFA$/;
     check('every person is one of the install\'s own .CFA people',
-      people.length > 0 && people.every((p) => PEOPLE_ART.test(p.file)),
+      people.length > 0 && people.every((p) => PEOPLE_ART.test(bare(p.file))),
       people.map((p) => p.file).slice(0, 8).join(' '));
     const familyOf = (file) => (/^\d\d/.test(file) ? 'armoured' : file.replace(/[0-9].*$/, ''));
     const families = new Set(people.map((p) => familyOf(p.file)));
@@ -269,13 +273,16 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       Boolean(sharedFile?.player) && (sharedFile.walking.length === 0 || sharedFile.moving),
       `player's own sheet ${sharedFile?.player}; drawn among the town at ${JSON.stringify(sharedFile?.drawn ?? [])}; reported moving ${sharedFile?.moving}`);
 
-    // ── a person answers in their own art ─────────────────────────────────────────
+    // ── a person is the same person while they speak ─────────────────────────
     //
-    // The archive ships a **talk** sheet for the town's generic men and women
-    // (`MLGEN0#T.CFA`, `FMGEN0#.CFA` — `game/peopleKinds.js`), and the port loads it with
-    // the rest of the family and draws it while the panel is open. The person is picked by
-    // their own `actions`, so a roster that had no talk sheets would say so here rather
-    // than pass on somebody who only happens to be standing still.
+    // This check used to assert the opposite: the port drew the family's **talk** sheet
+    // (`MLGEN0#T.CFA`, `FMGEN0#.CFA`) the moment a conversation opened, and the owner saw
+    // what that is — *"a man and a woman of the town npcs change their clothes when i speak
+    // to them"*. Measured off the install's own bytes (`.scratch/talkart.mjs`):
+    // `MLGEN01W.CFA` is 52×99 with its cloth on palette indices 148/32/151/130, and
+    // `MLGEN01T.CFA` is 43×99 with 162/161/164/165 — a different tunic, not the same man
+    // mid-sentence. The standing sheet is kept for the whole conversation, so the claim is
+    // that the file **does not change** when the panel opens.
     const talkerIndex = await page.evalJs(`(() => {
       const people = window.__debug.people();
       return people.findIndex((p) => p.actions.some((f) => /^(MLGEN0[1-5]T|FMGEN0[1-5])\\.CFA$/.test(f)));
@@ -283,12 +290,18 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     check('the town has people whose own art includes a talk sheet', talkerIndex >= 0,
       `${talkerIndex} of ${folkB.length}`);
     if (talkerIndex >= 0) {
+      const beforeFile = (await page.evalJs(`window.__debug.people()[${talkerIndex}]`))?.file ?? null;
       const panel = await speakTo(talkerIndex);
       const answered = await page.evalJs(`window.__debug.people()[${talkerIndex}]`);
-      check('and a person the player speaks to answers in it, not in their walking frame',
-        panel?.shown === true && answered?.talking === true
-          && /^(MLGEN0[1-5]T|FMGEN0[1-5])\.CFA$/.test(String(answered?.file)),
-        JSON.stringify({ panel: panel?.shown, file: answered?.file, talking: answered?.talking }));
+      // The **figure** is what must not change: the direction digit may (a person turns to
+      // face the player when spoken to, `viewFacing`), and `FMGENW02` → `FMGENW01` is that
+      // turn. A talk sheet would have replaced `FMGENW0#` with `FMGEN0#` — a different tunic
+      // and a different pixel size, which is the defect this check exists for.
+      const figure = (file) => String(file ?? '').replace(/\.CFA.*$/, '').replace(/(MLGEN|FMGENW|FMGEND)0?[1-5]/, '$1');
+      check('and a person the player speaks to keeps their own figure — the clothes do not change',
+        panel?.shown === true && answered?.talking === false
+          && Boolean(beforeFile) && figure(answered?.file) === figure(beforeFile),
+        JSON.stringify({ panel: panel?.shown, before: beforeFile, after: answered?.file, talking: answered?.talking }));
       await page.pressKey('Escape');
       await page.pressKey('Escape', false);
       await settle(200);
@@ -326,12 +339,22 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       (await page.evalJs('document.getElementById("hud").textContent')).split('\n').at(-1));
     await page.screenshot(path.join(shots, 'm5-city-people.png'));
 
-    // ── the talk corpus, as the browser parsed it ─────────────────────────────
-    const corpus = await page.evalJs('window.__debug.talkLines()');
-    check('the talk corpus is template.dat, parsed in the browser too',
-      corpus.total === 811 && corpus.plain === 561 && corpus.province === 14, JSON.stringify(corpus));
-    check('the corpus is whole sentences, and the parts it dropped were fragments',
-      corpus.parts === 2462 && corpus.dropped === 639, JSON.stringify(corpus));
+    // ── the talk banks, as the browser parsed them ────────────────────────────
+    //
+    // `template.dat` is a **keyed** file and the page reads the keys (`game/dialogue.js`): the
+    // fifteen personality introductions (100…129), the rumours (159/185), the jokes (363), a
+    // province's oaths (364+race), a tavern's drinkers (1430), the hundred trades (262/263+). The
+    // counts are the install's own, so a parser that quietly lost a bank fails here.
+    const talk = await page.evalJs('window.__debug.talkLines()');
+    check('the talk banks are template.dat\u2019s own keys, parsed in the browser too',
+      talk.keys === 613 && talk.parts === 2462 && talk.sentences === 1823,
+      JSON.stringify(talk));
+    check('all fifteen personalities have both of their banks',
+      talk.personas === 15 && talk.intros === 78 && talk.introsAgain === 70, JSON.stringify(talk));
+    check('and the subject banks are there: rumours, jokes, oaths, trades, a tavern\u2019s drinkers',
+      talk.rumour === 34 && talk.jokes === 21 && talk.oathBanks === 8 && talk.oaths === 80
+      && talk.occupations === 100 && talk.trades === 100 && talk.patron === 40,
+      JSON.stringify(talk));
 
     // ── talking, with the T key ───────────────────────────────────────────────
     check('the panel is not up before anybody is spoken to',
@@ -369,7 +392,9 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     // project never wrote.
     const armourPhrases = Object.values(ARMOUR_WORDS).join('|');
     const heading = new RegExp('^(?:.+ — )?(?:a person in (?:' + armourPhrases + ')'
-      + '|a man of the town|a woman of the town|a guard of the watch'
+      + '|a man of the town|a man of the town, in a tunic'
+      + '|a woman of the town|a woman of the town, in a bodice|a guard of the watch'
+      + '|a lizard-folk of the marsh|a cat-folk of the Elsweyr sands'
       + '|a small figure of the LGLIT set|a stranger)$');
     check('T opens a conversation with the person in front of the player',
       panel.shown === true && heading.test(panel.who ?? ''),
@@ -379,16 +404,42 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     const named = await page.evalJs('JSON.stringify(window.__debug.names ? window.__debug.names() : null)');
     check('the corpus\'s own names are on the street\'s folk',
       named && JSON.parse(named).loaded === true && JSON.parse(named).named > 0, named);
+    // **Who is speaking, and out of which bank**: the personality the figure's own art carries
+    // (`game/dialogue.js`'s `personaFor`), the trade out of the install's hundred, and the words
+    // this game can fill. A citizen of a city-state is exactly that, and the line says so.
+    const voice = await page.evalJs('JSON.stringify(window.__debug.talkVoice("nearest"))');
+    const who = JSON.parse(voice ?? 'null');
+    check('the person in front of the player has a personality out of Arena\'s own fifteen',
+      Boolean(who) && typeof who.persona === 'string' && typeof who.personaName === 'string', voice);
+    check('and a trade out of the install\'s hundred, described in the file\'s own words',
+      Boolean(who?.occupation?.name) && who.occupation.line.length > 8,
+      who?.occupation ? `${who.occupation.name}: ${who.occupation.line}` : '(none)');
+    check('and the words the place gives them are filled in: the city-state, its kind, the province',
+      who?.values?.cn === 'Daggerfall' && ['city', 'town', 'village'].includes(who?.values?.ct)
+      && typeof who.values.lp === 'string' && who.values.lp.length > 3,
+      JSON.stringify({ cn: who?.values?.cn, ct: who?.values?.ct, lp: who?.values?.lp }));
+    check('and the player is addressed by their own race, which is the game\'s own habit',
+      typeof who?.values?.ra === 'string' && who.values.ra.length > 2, who?.values?.ra);
+    check('and the province\u2019s people swear by their own gods, not somebody else\u2019s',
+      typeof who?.values?.oth === 'string' && who.values.oth.length > 4, who?.values?.oth);
     check('what they say is Arena\'s own prose, with no %-word left in it',
       typeof panel.line === 'string' && panel.line.length > 20 && !panel.line.includes('%'),
       `"${(panel.line ?? '').replace(/\s+/g, ' ').slice(0, 90)}…"`);
     check('and it is a whole sentence, not half of one',
       /^["'(A-Z0-9]/.test(panel.line ?? '') && /[.!?”"]$/.test(panel.line ?? '') && !String(panel.line).includes('&'),
       `"${(panel.line ?? '').slice(0, 60)}…" starts and ends one`);
-    check('and the panel credits the file it came from',
-      /template\.dat #\d+/.test(panel.source ?? ''), panel.source);
+    check('and the panel credits the file it came from, and which of its banks spoke',
+      /template\.dat #\d+/.test(panel.source ?? '') && /introduction|words|drinker|talk/.test(panel.source ?? ''),
+      panel.source);
+    // The line the panel shows is the bank's own: a first meeting is the personality's "who are
+    // you" (100 + persona), which is what makes the greeting belong to *this* figure.
+    const greeted = await page.evalJs('window.__debug.talk()');
+    check('the greeting is the personality\u2019s own bank, not a line drawn from the whole file',
+      greeted?.subject && /introduction|remembered|drinker|talk/.test(greeted.subject)
+      && Number(String(panel.source ?? '').match(/#(\d+)/)?.[1] ?? -1) >= 100,
+      `${greeted?.subject} · ${panel.source}`);
     check('there is a question about this place, and one about the city-state',
-      panel.topics.length === 2 && panel.topics.some((t) => t.key === 'city'),
+      panel.topics.length >= 2 && panel.topics.some((t) => t.key === 'here') && panel.topics.some((t) => t.key === 'city'),
       panel.topics.map((t) => `${t.key}:${t.label}`).join(' · '));
     check('the second question is labelled with the city-state the player is in',
       panel.topics.some((t) => t.key === 'city' && /Ask about Daggerfall/.test(t.label ?? '')),
@@ -406,6 +457,41 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       /about Daggerfall/.test(asked.source ?? ''), asked.source);
     await page.screenshot(path.join(shots, 'm5-talking.png'));
 
+    // ── the way to the tavern, the shop, the guild and the palace ─────────────
+    //
+    // The owner, 2026-10-19: *"speaking with town npcs that are outside you need to be able to
+    // ask for directions for the nearest tavern, shop, mages guild and palace"*. The doors the
+    // street already has are measured against the player's feet by the scene
+    // (`nearbyBuildings`), and `game/dialogue.js` dresses each with Arena's own where-is bank
+    // (`template.dat` #260) — so what is checked here is the two halves: the questions exist
+    // for every building a city has, and each answer names a compass direction and a distance.
+    const directionVoice = await page.evalJs('window.__debug.talkVoice("nearest")');
+    const wanted = ['where:tavern', 'where:equipment', 'where:mages', 'where:palace'];
+    check('the street offers the way to its tavern, its shop, the Mages Guild and the palace',
+      wanted.every((key) => directionVoice?.topics?.some((topic) => topic.key === key)),
+      (directionVoice?.topics ?? []).map((topic) => `${topic.key}:${topic.label}`).join(' · '));
+    const directionTopics = (directionVoice?.topics ?? []).filter((topic) => String(topic.key).startsWith('where:'));
+    const compass = /\b(north|south|east|west)(-(east|west))?\b/i;
+    const spoken = directionTopics.map((topic) => String(topic.text ?? ''));
+    check('every direction names a compass bearing and a distance in metres, with no %-word',
+      spoken.length >= 4 && spoken.every((text) => compass.test(text) && /\d+ metres? off/.test(text) && !text.includes('%')),
+      spoken.map((text) => `"${text.replace(/\s+/g, ' ').slice(0, 70)}…"`).join(' | '));
+    check('and each one is measured to the building it names, not to the street\'s middle',
+      (directionVoice?.nearby ?? []).length >= 4
+      && directionVoice.nearby.some((entry) => entry.kind === 'tavern' && entry.distance > 0)
+      && directionVoice.nearby.every((entry) => /^(north|south|east|west)(East|West)?$/.test(String(entry.bearing))),
+      JSON.stringify(directionVoice?.nearby));
+    // A real click on the tavern question, through the panel's own button.
+    await page.clickSelector('#talk button[data-topic="where:tavern"]');
+    await settle(220);
+    const way = await page.evalJs('window.__debug.talkPanel()');
+    check('asking the way to the tavern answers with Arena\'s where-is words and the metres',
+      compass.test(way.line ?? '') && /\d+ metres? off/.test(way.line ?? ''),
+      `"${String(way.line ?? '').replace(/\s+/g, ' ').slice(0, 110)}…" · ${way.source}`);
+    check('and the credit says which half is Arena\'s',
+      /#260|where-is|this project/i.test(way.source ?? ''), way.source);
+    await page.screenshot(path.join(shots, 'm5-directions.png'));
+
     // ── asking again moves the conversation on ────────────────────────────────
     const first = await page.evalJs('window.__debug.talk()');
     await settle(120);
@@ -418,11 +504,37 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       !String(second?.line).includes('%') && String(second?.line).length > 20, String(second?.line).slice(0, 60));
 
     // ── walking away ──────────────────────────────────────────────────────────
+    //
+    // Two ways a conversation ends, and the owner named the second one on 2026-10-19: *"the speech
+    // gui should disappear once you get too far from who youre speaking to"*. The panel used to
+    // stand for ever, with the person frozen mid-street watching a player who had left. `Escape`
+    // is the deliberate end; **four cells away** is the distance one, and the seam says why.
     await page.pressKey('Escape');
     await page.pressKey('Escape', false);
     await settle(150);
     check('Escape ends the conversation',
       (await page.evalJs('window.__debug.talkPanel()')).shown === false);
+
+    const spoke = await speakTo('nearest');
+    const held = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.talking())') ?? 'null');
+    check('speaking holds the person, and the seam knows which record it is',
+      spoke.shown === true && Boolean(held?.place), JSON.stringify({ who: spoke.who, held: held?.place }));
+    check('and the panel has not been reported as closed while it is up',
+      (await page.evalJs('window.__debug.talkPanel()')).closed === null,
+      JSON.stringify((await page.evalJs('window.__debug.talkPanel()')).closed));
+    // Four cells is ten metres, well past the six the rule closes at (the reach that *opens* a
+    // conversation is four, and the close is deliberately wider so the edge is not a flicker).
+    await page.evalJs(`window.__debug.teleportCell(${(held?.place?.row ?? 0) + 4}, ${held?.place?.col ?? 0})`);
+    await settle(300);
+    const gone = await page.evalJs('window.__debug.talkPanel()');
+    check('walking out of earshot puts the panel away by itself',
+      gone.shown === false && gone.closed?.reason === 'out of earshot',
+      JSON.stringify({ shown: gone.shown, closed: gone.closed }));
+    check('and it closed at a distance a player really walked',
+      Number(gone.closed?.distance ?? 0) > 6, `${gone.closed?.distance} m`);
+    check('and the person they left goes back to their own day',
+      (await page.evalJs('JSON.stringify(window.__debug.talking())')) === 'null',
+      'the conversation record is cleared');
 
     // ── the work a person has to offer ────────────────────────────────────────
     //
@@ -453,12 +565,17 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
       `${offer?.reward} gold in ${offer?.days} days`);
     // A job that names a place the game cannot open would be worse than no job: the dungeon
     // list is the sixteen `.MIF`s this install really ships (the same list the board uses).
-    const dungeonKinds = ['artifact', 'slay', 'fetch', 'rescue'];
+    // **Three doors now**: a dungeon the install can open, a settlement it can name, or the
+    // open country around one (`radiantQuests.js`'s `where`). A wild job carries the cell it
+    // happens on and the landmark it is near, and a dungeon job still carries its `.MIF`.
+    const dungeonKinds = ['artifact', 'slay', 'fetch'];
     check('and it points somewhere this install can open',
       dungeonKinds.includes(offer?.kind)
         ? /^[A-Z0-9_]+\.MIF$/i.test(offer?.targetMif ?? '') && offer?.draftDungeons > 0 && offer?.province === 'High Rock'
-        : Boolean(offer?.target),
-      `${offer?.kind} → ${offer?.target} (${offer?.targetMif ?? 'a settlement'}), ${offer?.draftDungeons} dungeons to draw from`);
+        : offer?.targetKind === 'wild'
+          ? Boolean(offer?.targetCell?.row) && Boolean(offer?.targetCell?.col) && Boolean(offer?.targetNear)
+          : Boolean(offer?.target),
+      `${offer?.kind} → ${offer?.target} (${offer?.targetKind ?? 'a settlement'}${offer?.targetMif ? ` ${offer.targetMif}` : ''}), ${offer?.draftDungeons} dungeons to draw from`);
     check('the offer is shown with a button to take it',
       /^Take the job — /.test(offerPanel.accept ?? ''), offerPanel.accept);
     await page.screenshot(path.join(shots, 'm5-city-job.png'));
@@ -557,9 +674,14 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     // gender, `@` the direction 1…5 — `peopleKinds.js`'s header carries the provenance), so the
     // check picks a *citizen* and walks the eye from his face to his back: two directions of one
     // family, not two strangers.
-    const walksOf = (files) => (files ?? []).filter((f) => /^(MLGEN0[1-5]W|FMGENW0[1-5])\.CFA$/.test(String(f)));
+    // **Four citizen families, not two** (2026-10-18): the archive draws `MLGEN0#W` and
+    // `MLGEN0#T` (two men) and `FMGENW0#` and `FMGEN0#` (two women), each five directions
+    // (`peopleKinds.js`). A citizen can be any of them, so both the walk list and the
+    // direction parse every spelling — a `T` man was a *citizen with no walk art* to this
+    // check the moment he was added.
+    const walksOf = (files) => (files ?? []).filter((f) => /^(MLGEN0[1-5][WT]|FMGENW?0[1-5])\.CFA$/.test(String(f)));
     const directionOf = (file) => {
-      const m = /^MLGEN0([1-5])W/.exec(String(file)) ?? /^FMGENW0([1-5])/.exec(String(file));
+      const m = /^MLGEN0([1-5])[WT]/.exec(String(file)) ?? /^FMGENW?0([1-5])/.exec(String(file));
       return m ? Number(m[1]) : null;
     };
     let citizen = null;
@@ -596,29 +718,106 @@ export function makeTownsfolkSuite({ check, realErrors, shots, getPort }) {
     // ── whose faces these are (D-45) ─────────────────────────────────────────
     // The owner's second half: *"in morrowind mostly dark elf npcs in skyrim mostly nords in
     // blackmarsh i want lizard mans repurpused as npcs to simulate argonians … all provinces
-    // should have a mix of people but mostly their race of people"*. This archive draws **one
-    // human body** and ships no palette to recolour it by race (measured: no `.COL`, no `.PAL`),
-    // so the half that is real art is the one the owner named — the Lizard Man's own sheets
-    // (`LIZARD1…6.CFA`) standing in for Black Marsh's folk. The check is the player's own: walk a
-    // Black Marsh street and most of it is lizard-folk; walk High Rock and none of it is.
+    // should have a mix of people but mostly their race of people"*. Two things answer it and this
+    // is both of them.
+    //
+    // The **art** half: the Lizard Man's own sheets (`LIZARD1…6.CFA`) stand in for Black Marsh's
+    // folk — the one race-specific figure the archive carries (`game/peopleKinds.js`).
+    //
+    // The **skin** half (`game/raceSkin.js`): Arena ships one human body and no per-race art, so a
+    // person's race is the install's own palette with its six skin entries (229, 231, 232, 234,
+    // 235, 236 — measured off the sheets' own pixels) rescaled to that race's ramp, and the sheet
+    // is loaded under a **raced key** (`MLGEN01W.CFA#darkElf`). A raced figure is therefore a
+    // different texture of the same file, and every check below reads the *file* through `bare()`.
+    //
+    // **A person's race is an identity, and its art is one of two kinds.** A palette race is the
+    // install's own body under a suffixed sheet key (`MLGEN01W.CFA#nord`); a **figure race** is a
+    // whole figure the archive already draws as that race (`raceSkin.RACE_FIGURE`: the Lizard Man
+    // stands in for an Argonian, D-45), so its sheet is `LIZARD1.CFA` with **no suffix** — a suffix
+    // there would lay a second skin over art that already is the race, which is the "green people"
+    // the owner refused. So the law checked here is `person.race` for everyone, and the suffix
+    // *when the sheet is a palette race*; the figure's own name is the rest.
+    // **The key carries a face *and* a head** (`raceSkin.js`'s `skinSpec`): a Dunmer with fair
+    // hair is `MLGEN01W.CFA#darkElf+blonde`, so the race is the part of the suffix before the
+    // `+` and the head is the part after it. Reading `endsWith('#' + race)` here would have
+    // failed every person whose head was drawn — which is most of a street.
+    const specOf = (file) => {
+      const text = String(file ?? '');
+      const mark = text.indexOf('#');
+      return mark < 0 ? null : text.slice(mark + 1);
+    };
+    const raceOf = (file) => (specOf(file) ?? '').split('+')[0] || null;
+    // **Two figures carry their race in the art itself** (2026-10-18): the Lizard Man's sheets
+    // are an Argonian with no suffix, and the snow wolf's are a Khajiit under its own coat
+    // (`#khajiitFur` / `#khajiitFur:black`). Their names are not a race key, so neither can be
+    // read by the palette-race test below: a black-coated cat in Lilmoth was "a person with no
+    // race" to this check the moment the coats were added.
+    const figureRaceOf = (file) => {
+      const art = bare(file);
+      if (/^LIZARD[1-6]\.CFA$/.test(art)) return 'argonian';
+      if (/^SWOLF0[1-6]\.CFA$/.test(art)) return 'khajiit';
+      return null;
+    };
+    const carriesRace = (person) => typeof person.race === 'string' && person.race.length > 0
+      && (figureRaceOf(person.file) === person.race || raceOf(person.file) === person.race);
+    const racedCount = (people) => people.filter(carriesRace).length;
     await page.goto(`http://localhost:${getPort()}/?location=Lilmoth&${q}`);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
       { label: 'Lilmoth', timeoutMs: 120000 });
     const marsh = await page.evalJs('window.__debug.people()');
-    const lizard = marsh.filter((person) => /^LIZARD[1-6]\.CFA$/.test(String(person.file)));
+    const lizard = marsh.filter((person) => /^LIZARD[1-6]\.CFA$/.test(bare(person.file)));
     check('Black Marsh\'s streets are mostly lizard-folk, drawn from the Lizard Man\'s own sheets',
       marsh.length > 0 && lizard.length * 2 > marsh.length,
-      `${lizard.length} of ${marsh.length} figures: ${[...new Set(lizard.map((p) => p.file))].sort().join(', ')}`);
+      `${lizard.length} of ${marsh.length} figures: ${[...new Set(lizard.map((p) => bare(p.file)))].sort().join(', ')}`);
     check('and each of them is one figure at five directions, so the eye can walk around them',
       lizard.length > 0 && lizard.every((person) => person.view >= 1 && person.view <= 5),
       `views ${[...new Set(lizard.map((p) => p.view))].sort().join(',')}`);
+    check('and every one of them is drawn under the Argonians\' own skin',
+      lizard.length > 0 && lizard.every((person) => person.race === 'argonian'),
+      `races ${[...new Set(lizard.map((p) => p.race))].join(',')}`);
+    // **Mostly their own race, and a real mix.** The player's half of the province table: most of a
+    // street is the province's own people and not all of the rest is one other race, which is the
+    // owner's *"all provinces should have a mix of people but mostly their race of people"*.
+    const share = (people, race) => people.filter((p) => p.race === race).length / Math.max(1, people.length);
+    check('a province\'s street is mostly its own race, and still a mix of others',
+      share(marsh, 'argonian') > 0.5 && racedCount(marsh) === marsh.length
+        && new Set(marsh.map((p) => p.race)).size >= 2,
+      `${(share(marsh, 'argonian') * 100).toFixed(0)}% argonian of ${marsh.length}, ${racedCount(marsh)} carry their race, races ${[...new Set(marsh.map((p) => p.race))].sort().join(',')}`);
+    await page.goto(`http://localhost:${getPort()}/?location=Necrom&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
+      { label: 'Necrom', timeoutMs: 120000 });
+    const morrowind = await page.evalJs('window.__debug.people()');
+    check('and Morrowind is mostly Dark Elves, every one drawn under a skin of their own',
+      morrowind.length > 0 && share(morrowind, 'darkElf') > 0.5
+        && racedCount(morrowind) === morrowind.length,
+      `${(share(morrowind, 'darkElf') * 100).toFixed(0)}% darkElf of ${morrowind.length}, ${racedCount(morrowind)} carry their race, races ${[...new Set(morrowind.map((p) => p.race))].sort().join(',')}`);
     await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&${q}`);
     await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
       { label: 'Daggerfall again', timeoutMs: 120000 });
     const rock = await page.evalJs('window.__debug.people()');
     check('and a province the archive draws no lizard-folk for has none',
-      rock.length > 0 && rock.every((person) => !/^LIZARD/.test(String(person.file))),
+      rock.length > 0 && rock.every((person) => !/^LIZARD/.test(bare(person.file))),
       `${rock.length} figures, families ${[...new Set(rock.map((p) => p.family ?? 'armoured'))].sort().join(',')}`);
+    // ── and a street is not one head ──────────────────────────────────────────
+    // The owner: *"you could also have the blonde hair in npcs change color to a random hair
+    // color like you do with the skin color to make more npc variety"*. The colours are drawn
+    // per person (`raceSkin.js`'s `hairForPerson`), carried in the sheet key, and reported on
+    // the page — so the claim is the page's own: several heads on a street of one province, and
+    // each head keeping its colour.
+    const heads = new Set(morrowind.map((person) => person.hair).filter(Boolean));
+    check('a street of one race is not one hair colour: the heads are drawn per person',
+      heads.size >= 3,
+      `${heads.size} heads: ${[...heads].sort().join(', ')} of ${morrowind.length} people`);
+    check('and every raced person carries their head in the sheet key they are drawn under',
+      morrowind.every((person) => {
+        if (/^(LIZARD|SWOLF0[1-6])/.test(bare(person.file))) return true;
+        const spec = specOf(person.file) ?? '';
+        return person.hair ? spec === `${person.race}+${person.hair}` : spec === person.race;
+      }),
+      morrowind.slice(0, 4).map((p) => `${p.file} (${p.race}/${p.hair})`).join(' '));
+    check('and High Rock is mostly Bretons, so it is not one race everywhere',
+      rock.length > 0 && share(rock, 'breton') > 0.4 && share(rock, 'darkElf') === 0,
+      `${(share(rock, 'breton') * 100).toFixed(0)}% breton of ${rock.length}, races ${new Set(rock.map((p) => p.race)).size}`);
 
     // ── a dungeon has no townsfolk in it ──────────────────────────────────────
     await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&${q}`);

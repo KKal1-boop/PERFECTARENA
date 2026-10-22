@@ -491,6 +491,14 @@ export function worldClock(world) {
   return isRecord(clock) ? foldClock(clock.day, clock.minutes) : null;
 }
 
+/** Advance a persisted clock once; callers supply their live clock when a scene is running. */
+export function advanceWorldTime(world, minutes, fallback = { day: 1, minutes: 600 }) {
+  if (!Number.isFinite(minutes) || minutes < 0) throw new RangeError('Elapsed minutes must be finite and non-negative');
+  const before = worldClock(world) ?? fallback;
+  const after = setWorldClock(world, before.day, before.minutes + minutes);
+  return { ...after, days: after.day - before.day };
+}
+
 /**
  * A JSON-safe copy of anything, or null when there is no such copy.
  *

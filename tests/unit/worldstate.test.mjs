@@ -22,8 +22,18 @@ import {
   STANDINGS, WORLD_ENTRY_MAX, WORLD_PEOPLE_MAX, WORLD_PLACE_MAX, WORLD_STATE_VERSION,
   createWorldState, doorStateAt, lootTakenAt, noteKill, parseWorld, serializeWorld, setDoorState,
   setQuest, setRegard, setWorldClock, setWorldPlayer, takeLoot, visitPlace, worldClock,
-  worldPlayer, worldSummary,
+  worldPlayer, worldSummary, advanceWorldTime,
 } from '../../src/game/worldState.js';
+
+test('travel and rest advance one persisted clock, including midnight and multi-day journeys', () => {
+  const world = createWorldState();
+  assert.deepEqual(advanceWorldTime(world, 8 * 60, { day: 4, minutes: 1330 }), { day: 5, minutes: 370, days: 1 });
+  assert.deepEqual(advanceWorldTime(world, 3 * 1440 + 120), { day: 8, minutes: 490, days: 3 });
+  assert.deepEqual(worldClock(parseWorld(serializeWorld(world))), { day: 8, minutes: 490 });
+  assert.deepEqual(advanceWorldTime(world, 0), { day: 8, minutes: 490, days: 0 });
+  assert.throws(() => advanceWorldTime(world, -1), RangeError);
+  assert.throws(() => advanceWorldTime(world, NaN), RangeError);
+});
 
 // ── a fresh world ─────────────────────────────────────────────────────────────
 

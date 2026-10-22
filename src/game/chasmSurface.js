@@ -28,8 +28,25 @@
 // Everything below is pure: a level in, geometry and numbers out. The scene does the
 // uploading and the drawing, and `tests/unit/chasm.test.mjs` holds the merging to "every
 // chasm cell covered exactly once, and no other cell covered" against the real maps.
+//
+// ## The surface is the line you climb out from (the owner's report, 2026-10-17)
+//
+// *"in dungeons there should be shallow pits you can climb instead of just holes … the water
+// should be deep and you should climb out of it"*. The surface this module lays sits **at the
+// bank** (one `SURFACE_DROP` under it, below), and the bed under it is now a real depth per
+// kind — `mifMesh.js`'s `CHASM_DEPTHS`: a dry pit 1.2 m, water 1.55 m, lava 1.0 m, against the
+// 0.45 m shelf the port used to sink so that the motor's own step could always walk back out.
+// Water is therefore past the waist and up to the chin of a 1.7 m eye, so nothing walks out of
+// it, and the way out is the engine's ledge climb (`engine/player/motor.js`,
+// `CLIMB_LEDGE_MAX_WATER`): a swimmer's reach is measured **from this surface**, so a bank up to
+// 0.9 m over the water line is haulable however deep the water is. A wet chasm's surface is the
+// height that makes that arithmetic work, so moving the bed moves the climb's reach with it (the
+// two numbers are asserted against each other in `tests/unit/climbing.test.mjs`).
 
-/** How far below the bank a surface floats, in world units. Enough to read as a surface. */
+/**
+ * How far below the bank a surface floats, in world units. Enough to read as a surface — and
+ * the line a swimmer's hands reach over for the ledge climb (see the header).
+ */
 export const SURFACE_DROP = 0.02;
 
 /**
@@ -158,6 +175,9 @@ export function mergeSquares(mask, width, height) {
  * @param {import('./mifLevel.js').ArenaLevel} level
  * @param {{kind: 'water'|'lava', cellSize: number}} opts
  * @returns {{kind: string, field: string, tint: readonly number[], squares: object[], quads: {x:number,z:number,size:number,y:number}[], cells: number, covered: number, largest: number}}
+ *   `y` is the SURFACE's own height, one `SURFACE_DROP` under the bank — which is the line a
+ *   swimmer's hands reach over for the ledge climb (`motor.js`'s `CLIMB_LEDGE_MAX_WATER`), and
+ *   the line the scene's own `submerged` test is measured against.
  */
 export function surfacePlanes(level, opts) {
   const { kind, cellSize } = opts;

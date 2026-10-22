@@ -17,11 +17,21 @@ import { ArenaData } from '../../src/arena/arenaData.js';
 import { RAW_CIF, cifFrame, parseCif } from '../../src/arena/cifFile.js';
 import { WEAPONS, weaponById } from '../../src/game/combat.js';
 import {
-  ART_BASELINE, FISTS_STATES, FRAMES_PER_SECOND, IDLE_HOLD_SECONDS, MELEE_STATES,
-  SCREEN, SWING_DIRECTIONS, WEAPON_SHEETS, familyOfWeapon, placeWeapon, sheetIndices,
+  ARROW_STATES, ART_BASELINE, FISTS_STATES, FRAMES_PER_SECOND, IDLE_HOLD_SECONDS, MELEE_STATES,
+  SCREEN, SWING_DIRECTIONS, WEAPON_SHEETS, familyOfWeapon, placeWeapon, sheetFor, sheetIndices,
   swingDirection, weaponsWithoutArt, createWeaponRig,
 } from '../../src/game/weaponView.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
+import { parseCfa } from '../../src/arena/cfa.js';
+import { unpackPklite } from '../../src/arena/pklite.js';
+import fs from 'node:fs';
+
+async function weaponSheet(file) {
+  if (!file.endsWith('.CFA')) return data.cif(file);
+  const cfa = parseCfa(await data.must(file), file);
+  assert.deepEqual(cfa.warnings, []);
+  return { images: cfa.frames.map(frame => ({ ...frame, xOffset: cfa.xOffset, yOffset: cfa.yOffset })) };
+}
 
 const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 const data = new ArenaData(nodeSource(ARENA_PATH), { onWarn: () => {} });
@@ -89,27 +99,33 @@ test('SWORD.CIF is 33 screen-positioned frames, and the offsets place the swing'
 test('every melee sheet has 33 frames and the fists sheet 13, as the table indexes them', async () => {
   for (const [family, sheet] of Object.entries(WEAPON_SHEETS)) {
     const exists = await data.has(sheet.file);
-    if (!exists) continue;                       // FLAIL.CIF and BOW.CIF: not in this install
-    const cif = await data.cif(sheet.file);
+    assert.ok(exists, `${family}: original ${sheet.file} must be present`);
+    const cif = await weaponSheet(sheet.file);
     const wanted = Math.max(...Object.values(sheet.states).flat(), -1);
     assert.ok(cif.images.length > wanted,
       `${sheet.file}: ${cif.images.length} frames must cover the state table's ${wanted}`);
     const melee = sheet.states === MELEE_STATES;
-    assert.equal(cif.images.length, melee ? 33 : 13, `${sheet.file}: frame count`);
+    assert.equal(cif.images.length, melee ? 33 : family === 'bow' ? 2 : 13, `${sheet.file}: frame count`);
   }
-  // The two sheets this install does not ship are named as missing rather than drawn wrong.
+  // The two sheets this install does not ship: each is drawn from a documented stand-in —
+  // the flail from `MACE.CIF`, the bow from the install's own `ARROWS.CIF` missile art
+  // (`ARROW_STATES`, the owner's *"bow has no animation in first person"*).
   assert.equal(await data.has('FLAIL.CIF'), false);
   assert.equal(await data.has('BOW.CIF'), false);
-  assert.deepEqual(weaponsWithoutArt(['FLAIL.CIF', 'BOW.CIF']).sort(),
-    ['flail', 'long-bow', 'short-bow'].sort());
+  assert.equal(sheetFor('flail').file, 'STAR.CIF');
+  assert.equal(sheetFor('flail').substitute, false);
+  assert.equal(sheetFor('bow').file, 'ARROWHLF.CFA');
+  assert.equal(sheetFor('bow').substitute, false);
+  assert.equal(sheetFor('mace').substitute, false, 'a mace is drawn from its own sheet');
+  assert.deepEqual(weaponsWithoutArt(['FLAIL.CIF', 'BOW.CIF']).sort(), [],
+    'both families are drawn from a stand-in, so neither is art-less');
 });
 
 test('the archive has exactly the sheets the weapon families name', async () => {
   const archive = await data.bsa();
   for (const [family, sheet] of Object.entries(WEAPON_SHEETS)) {
     const present = archive.has(sheet.file);
-    if (family === 'flail' || family === 'bow') assert.equal(present, false, `${family} should have no art here`);
-    else assert.equal(present, true, `${family} needs ${sheet.file}`);
+    assert.equal(present, true, `${family} needs original ${sheet.file}`);
   }
 });
 
@@ -221,7 +237,7 @@ test('the baseline is 147 because the install\'s own frames say so', async () =>
   const offLine = [];
   for (const [family, sheet] of Object.entries(WEAPON_SHEETS)) {
     if (!(await data.has(sheet.file))) continue;
-    const cif = await data.cif(sheet.file);
+    const cif = await weaponSheet(sheet.file);
     for (const index of sheetIndices(family)) {
       const frame = cifFrame(cif, index);
       const bottom = frame.yOffset + frame.height;
@@ -230,17 +246,14 @@ test('the baseline is 147 because the install\'s own frames say so', async () =>
       else offLine.push(bottom);
     }
   }
-  // Two thirds of the 178 frames the state tables can show stand on the line exactly: 146
-  // at 147 and 13 fists at 146. The rest are the side sweeps caught mid-arc (a wide low
-  // slash sits 8 or 19 pixels above it) and the mace's raised overhead, 90 above it — which
-  // is why the rule is the *line* and every frame keeps its own distance from it rather
-  // than pinning the picture.
-  assert.equal(frames, 178, `the install's sheets hold ${frames} frames the tables use`);
-  assert.equal(onTheLine, 146, `frames whose bottom is exactly ${ART_BASELINE}`);
-  // Nothing dips *below* the line by more than a pixel of rounding — that is what would put
-  // the art behind the original's status area — and nothing above it is further off than
-  // the mace's raised frame.
-  assert.equal(offLine.filter((b) => b > ART_BASELINE + 1).length, 0, `below the line: ${offLine.join(' ')}`);
+  // Including STAR.CIF and ARROWHLF.CFA: 213 frames, 173 exactly on baseline.
+  // Side sweeps and fists preserve the offsets encoded by the original art.
+  assert.equal(frames, 213, `the install's sheets hold ${frames} frames the tables use`);
+  assert.equal(onTheLine, 173, `frames whose bottom is exactly ${ART_BASELINE}`);
+  // STAR.CIF's original frame 4 extends two pixels below the nominal baseline.
+  const star = await data.cif('STAR.CIF');
+  assert.deepEqual(star.images.map((f, i) => ({ i, bottom: f.yOffset + f.height })).filter(f => f.bottom > 148), [{ i: 4, bottom: 149 }]);
+  assert.deepEqual(offLine.filter(b => b > ART_BASELINE + 1), [149]);
   assert.ok(offLine.every((b) => b >= 57), `the furthest above it is the mace's raised frame: ${Math.min(...offLine)}`);
   assert.ok(offLine.filter((b) => Math.abs(b - ART_BASELINE) <= 1).length >= 12, 'the fist sheet rides the line at 146');
 });
@@ -281,7 +294,7 @@ test('every frame of every sheet lands on the line, inside the window', async ()
   for (const screen of [{ width: 960, height: 600, baseline: 470 }, { width: 439, height: 799, baseline: 700 }]) {
     for (const [family, sheet] of Object.entries(WEAPON_SHEETS)) {
       if (!(await data.has(sheet.file))) continue;
-      const cif = await data.cif(sheet.file);
+      const cif = await weaponSheet(sheet.file);
       for (const index of sheetIndices(family)) {
         const frame = cifFrame(cif, index);
         const place = placeWeapon(frame, screen);
@@ -296,18 +309,62 @@ test('every frame of every sheet lands on the line, inside the window', async ()
   }
 });
 
-test('a weapon whose art this install lacks swings nothing, and says which', async () => {
+test('flail and bow use the filenames embedded in the original executable, without substitutes', async () => {
   const archive = await data.bsa();
-  for (const id of ['flail', 'long-bow']) {
-    const rig = createWeaponRig(id);
-    assert.equal(archive.has(rig.file), false, `${id} → ${rig.file}, which this install has not`);
-    rig.swing('down');
-    rig.step(0.2);
-    // The rig still runs its own states — a bow *fires*, because that is the only swing
-    // state its sheet has — and what is missing is the art, which the loader refuses so the
-    // scene can say so rather than draw another weapon's frames.
-    assert.equal(rig.direction, 'down', `${id}: the player asked for the overhead chop`);
-    assert.equal(rig.state, id === 'flail' ? 'down' : 'firing', `${id}: resolved state`);
-    assert.ok(Number.isInteger(rig.frame));
+  // The flail: `FLAIL.CIF` is absent, `MACE.CIF` is the same class of weapon, and the rig keeps
+  // the melee table — both sheets are Arena's own 33-frame twelve-state ones.
+  const flailRig = createWeaponRig('flail');
+  assert.equal(flailRig.file, 'STAR.CIF');
+  assert.equal(archive.has(flailRig.file), true);
+  assert.equal(flailRig.substitute, false);
+  assert.equal(flailRig.ownFile, 'STAR.CIF');
+  flailRig.swing('down');
+  flailRig.step(0.2);
+  assert.equal(flailRig.state, 'down');
+  assert.deepEqual(sheetIndices('flail'), sheetIndices('mace'), 'the flail swings the melee table');
+
+  // The bow: `BOW.CIF` is absent too, and the shot is drawn from `ARROWS.CIF` — nine frames of
+  // the install's own missile art, placed on Arena's screen in a 3×3 grid (measured here, off
+  // the file's own headers). The centre column is the arrow **leaving**: bottom-centre, middle,
+  // top-centre, which is the animation the owner asked for.
+  const bowRig = createWeaponRig('long-bow');
+  assert.equal(bowRig.file, 'ARROWHLF.CFA');
+  assert.equal(bowRig.loaded, undefined, 'the rig itself never loads bytes; the scene does');
+  assert.equal(archive.has(bowRig.file), true);
+  assert.equal(bowRig.substitute, false);
+  assert.equal(bowRig.ownFile, 'ARROWHLF.CFA');
+  assert.deepEqual(sheetIndices('bow'), [0, 1], 'the original bow has idle/draw and firing frames');
+  const exe = unpackPklite(new Uint8Array(fs.readFileSync(`${ARENA_PATH}/ACD.EXE`))).image;
+  const filenames = Buffer.from(exe).toString('latin1');
+  assert.ok(filenames.includes('staff.cif\0sword.cif\0mace.cif\0star.cif\0hammer.cif\0axe.cif\0arrowhlf.cfa\0hand.cif\0'));
+  const original = await weaponSheet(bowRig.file);
+  assert.equal(original.images.length, 2);
+  assert.deepEqual([original.images[0].xOffset, original.images[0].yOffset, original.images[0].width, original.images[0].height], [141, 97, 36, 50]);
+  const arrows = parseCif(archive.get('ARROWS.CIF'), 'ARROWS.CIF');
+  assert.equal(arrows.images.length, 9);
+  // A 3×3 grid, read row by row: each row runs left → centre → right across Arena's screen.
+  for (const r of [0, 1, 2]) {
+    const row = arrows.images.slice(r * 3, r * 3 + 3);
+    assert.ok(row[0].xOffset < row[1].xOffset && row[1].xOffset < row[2].xOffset,
+      `row ${r} runs left/centre/right: ${row.map((im) => im.xOffset)}`);
   }
+  // …and the centre column descends, which is the arrow's own flight (frame 7 lowest).
+  assert.ok(arrows.images[1].yOffset < arrows.images[4].yOffset
+    && arrows.images[4].yOffset < arrows.images[7].yOffset, 'the centre column descends');
+  assert.equal(arrows.images[7].yOffset, Math.max(...arrows.images.map((im) => im.yOffset)), 'frame 7 is the lowest');
+
+  // …and the rig plays that sequence when the bow is loosed, one frame at a time.
+  bowRig.swing('forward');
+  assert.equal(bowRig.state, 'unsheathing');
+  assert.equal(bowRig.frame, 0, 'the original bow starts nocked');
+  bowRig.step(FRAMES_PER_SECOND ? 1 / FRAMES_PER_SECOND : 0.1);
+  assert.equal(bowRig.state, 'firing', 'a bow fires; it does not swing');
+  const seen = [bowRig.frame];
+  for (let i = 0; i < 24; i++) {
+    bowRig.step(1 / FRAMES_PER_SECOND);
+    if (bowRig.state !== 'firing') break;
+    if (bowRig.frame !== seen[seen.length - 1]) seen.push(bowRig.frame);
+  }
+  assert.deepEqual(seen, [1], 'the original firing frame lasts seven ticks');
+  assert.equal(bowRig.frame, 0, 'then the bow returns to its idle frame');
 });

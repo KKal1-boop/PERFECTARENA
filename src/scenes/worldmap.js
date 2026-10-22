@@ -31,6 +31,8 @@
 // monospace province names of its own invention over art Arena had drawn for exactly this screen.
 
 import { ArenaData } from '../arena/arenaData.js';
+import { parseDfa } from '../arena/dfa.js';
+import { parseImg } from '../arena/image.js';
 import { loadWorldMap, TERRAIN_GLYPH } from '../game/worldMap.js';
 import {
   BLINK_PERIOD_MS, ICON_MAX_SCALE, MARKER_COLORS, MARKER_ICONS, MARKER_KINDS, MARKER_RECORDS,
@@ -39,23 +41,26 @@ import {
   plateIndexFor, provinceMapRecord, provincePointOf,
 } from '../game/mapScreen.js';
 import { buildQuestChain, nearestSettlement, stageMif } from '../game/questData.js';
+import { cellOriginOfPixel, pixelOfCell, provincePixelOf, youAreHere, WORLD_GRID_VERSION } from '../game/tamrielGrid.js';
+import { locationGlobalPoint } from '../arena/cityDataFile.js';
 import { applyQuestEvent, createQuestState, currentObjective, questLog } from '../game/questState.js';
 import { loadArenaText } from '../arena/arenaText.js';
 import {
   advanceDays, applyRadiantEvent, buildBoard, discoverLooseMifs, enterableDungeons,
-  enterableFromListing, namedSettlements, radiantLog, radiantObjective,
+  enterableFromListing, generateQuest, namedSettlements, radiantLog, radiantObjective, repairWildTargets,
 } from '../game/radiantQuests.js';
 import { DUNGEON_BLOCKS_MIF } from '../game/dungeonPlan.js';
 
 import {
   LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY,
-  loadCharacter, loadQuestState, saveCharacter, saveQuestState,
-  loadRadiantState, saveRadiantState, loadRegard,
+  loadCharacter, loadQuestState, saveCharacter, saveQuestState, loadLastLocation, saveLastLocation,
+  loadRadiantState, saveRadiantState, loadRegard, loadWorldState, saveWorldState,
 } from '../game/save.js';
 import { peopleKnown, regardTally, standingWord } from '../game/regard.js';
 import { classById } from '../game/character.js';
 import { escapeHtml } from '../engine/ui/escape.js';
 import { beginNewGame } from './newGame.js';
+import { advanceWorldTime, worldClock } from '../game/worldState.js';
 
 // The three save keys are re-exported here because this scene was their first
 // home; `game/save.js` now owns them so every scene shares one implementation.
@@ -81,7 +86,7 @@ const PALACE_PROVINCE_ID = 8;
  * `scenes/interior.js`'s `OPENING_DUNGEON_POINT` is the same pixel — the one place every part of
  * the port already agrees about.
  */
-const PALACE_POINT = Object.freeze({ x: 172, y: 106 });
+const PALACE_POINT = Object.freeze({ x: 175, y: 99 });
 
 /**
  * The name a location is identified by in the map's own bookkeeping.
@@ -114,6 +119,27 @@ function toMapImageData(indices, palette, width, height) {
     data[i * 4 + 3] = 255;
   }
   return new ImageData(data, width, height);
+}
+
+/**
+ * Expand a sprite frame for the travel card: index 0 is the **cutout** here (a horse, not a map).
+ *
+ * @param {Uint8Array} indices @param {{rgb: Uint8Array}} palette
+ * @param {number} width @param {number} height
+ * @returns {ImageData}
+ */
+function toSpriteImageData(indices, palette, width, height) {
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < indices.length; i++) {
+    const v = indices[i];
+    if (v === 0) continue;
+    const p = v * 3;
+    out[i * 4] = palette.rgb[p];
+    out[i * 4 + 1] = palette.rgb[p + 1];
+    out[i * 4 + 2] = palette.rgb[p + 2];
+    out[i * 4 + 3] = 255;
+  }
+  return new ImageData(out, width, height);
 }
 
 /** The quest state carried between page loads. */
@@ -177,6 +203,10 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   const loose = await discoverLooseMifs(source);
   const dungeons = enterableDungeons(world, enterableFromListing(loose));
   let radiant = loadRadiantState();
+  // A country job written before the short-walk rule may still point a whole pixel or two
+  // from its anchor (the owner's "too far from North Keep to reasonably walk to it"); pull
+  // it back beside the gate and save the repair, so an in-progress job is not lost.
+  if (repairWildTargets(radiant, world)) saveRadiantState(radiant);
   // Who the world knows, written by the streets and read here: the same record the towns
   // and shops write (`game/save.js`'s `REGARD_KEY`), so a page load between the two does not
   // lose it.
@@ -194,21 +224,19 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   /**
    * Where the player last stood, as the game saved it.
    *
-   * `{name, dungeon}` — the location's own name, and whether it was a dungeon. The
-   * distinction is the board's whole rule below (a board hangs in a town, not in a
-   * dungeon) and it is the only thing this scene knows about the player's position.
+   * `{name, dungeon, seed, wild, country}` — the location's own name and whether it was a dungeon
+   * (the board's rule below: a board hangs in a town, not in a dungeon), the **world cell** of the
+   * country foot when there is one (`wild`, written by every gate crossing and kept up with the walk
+   * by `scenes/interior.js`'s `maybeSaveWildFoot`), and `country` — whether the page the player is
+   * *on* is the country at all. The last of those is what tells a player standing out in the wild
+   * from one standing in a town that merely remembers the cell outside its gate, and it is the
+   * difference the map's own mark is drawn from (`standMark`).
    *
-   * @returns {{name: string|null, dungeon: boolean}}
+   * @returns {{name: string|null, dungeon: boolean, seed: number|null,
+   *   wild: {row: number, col: number}|null, country: boolean}}
    */
   function lastLocation() {
-    try {
-      const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(LAST_LOCATION_KEY);
-      if (!raw) return { name: null, dungeon: false, seed: null };
-      const saved = JSON.parse(raw);
-      return { name: saved?.name ?? null, dungeon: Boolean(saved?.dungeon), seed: saved?.seed ?? null };
-    } catch {
-      return { name: null, dungeon: false, seed: null };
-    }
+    return loadLastLocation(world) ?? { name: null, dungeon: false, seed: null, wild: null, country: false };
   }
 
   /**
@@ -221,7 +249,20 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
    * walks *every* record; see `radiantQuests.namedSettlements`.
    */
   function boardGiver() {
-    return nearestSettlement(world, lastLocationGlobal()) ?? namedSettlements(world)[0] ?? null;
+    // **The full location record, not `nearestSettlement`'s summary.** That helper answers
+    // `{name, province, global, …}` for a written card — no `tamriel`, no `provinceID`, no
+    // `id` — and a board built on it sent every wild target to the *painted-map* pixel: the
+    // job came out in the wrong place with a one-pace walk (the owner's "too far from North
+    // Keep" and the crash that followed). The map's own nearest is measured in the world grid
+    // the board's wild targets use, and the record it returns has everything a job needs.
+    const point = lastLocationGlobal();
+    let best = null;
+    for (const settlement of namedSettlements(world)) {
+      const at = settlement.tamriel ?? settlement.global;
+      const distance = Math.hypot(at.x - point.x, at.y - point.y);
+      if (!best || distance < best.distance) best = { settlement, distance };
+    }
+    return best?.settlement ?? namedSettlements(world)[0] ?? null;
   }
 
   /**
@@ -308,6 +349,8 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     switches: 0,
     icons: {},
     plaquesDrawn: [],
+    /** Where the player's own mark went on the last frame — see `drawHereMark`. */
+    here: null,
     warnings: mapScreen.warnings.slice(),
   };
   let lastBlink = false;
@@ -347,7 +390,125 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const source = markerCanvases[kind]?.steady;
     if (source) canvas.getContext('2d').drawImage(source, 0, 0);
   }
+  // ── the dev teleport ────────────────────────────────────────────────────────
+  //
+  // The owner, 2026-10-17: *"you need to add for me in the region and total map a way to click a
+  // button and there click anywhere in the map and teleport there for tasting purposes so i can
+  // tell you whats wrong in the persistent world"*. Both levels of the screen answer it, and what
+  // a click *means* is the game's own arithmetic rather than a rule of this project's:
+  //
+  //   * on **Tamriel** the picture *is* the 320×200 world map, so the pixel under the pointer is
+  //     already a world pixel (`game/worldMap.js`);
+  //   * on a **province** the picture is the hand-drawn province map, whose pixels are exactly the
+  //     `local` pair `CITYDATA.64` keeps for a place — which is what `provincePointOf` reads them
+  //     as — so `locationGlobalPoint(province, { local })` is the whole conversion.
+  //
+  // From that world pixel `game/tamrielGrid.js` gives the **world cell** (256 cells to a pixel,
+  // `cellOriginOfPixel`), and the cell is what `?wild=row,col` takes.
+  //
+  // A click that lands *on* a marker is still that marker's: a settlement's marker is a place with
+  // a name and the card is where a place is explained, so the armed mode only takes the bare map.
+  // **The developer teleport button is gone.** The owner, 2026-10-22: *"Teleport (dev) button
+  // under 'M or esc to close' should be removed"*. The map is the player's page now; the
+  // `?wild=` door the button used is still the game's own (the world map's travel links speak
+  // it), so nothing of the feature is lost — only the switch in the legend.
   host.appendChild(legend);
+
+  const tools = document.createElement('div');
+  tools.id = 'map-tools';
+  tools.innerHTML = `<label>Map <select id="map-region" aria-label="Map province">
+    <option value="">All Tamriel</option>${world.provinces.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}</select></label>
+    <div class="map-nav"><button id="map-prev" aria-label="Previous province">◀</button><button id="map-continent">Tamriel</button><button id="map-next" aria-label="Next province">▶</button></div>
+    <label><input type="checkbox" id="map-terrain"> Terrain / biome</label>
+    <label><input type="checkbox" id="map-borders"> Province borders</label>
+    <label>Find a place <input id="map-search" type="search" placeholder="City, village or dungeon…" aria-label="Search places"></label>
+    <select id="map-kind" aria-label="Place type"><option value="">All places</option>${MARKER_KINDS.map((k) => `<option value="${k}">${k}</option>`).join('')}</select>
+    <div id="map-results" role="list" aria-label="Matching places"></div>
+    <div id="map-readout" aria-live="polite"></div>
+    <small>Terrain colours: forest · mountain · desert · sea.<br>Biome classes, not measured elevation. Borders use the original map masks.</small>`;
+  host.appendChild(tools);
+  const regionSelect = tools.querySelector('#map-region');
+  const searchInput = tools.querySelector('#map-search');
+  const kindSelect = tools.querySelector('#map-kind');
+  const resultList = tools.querySelector('#map-results');
+  const readout = tools.querySelector('#map-readout');
+  let terrainVisible = false, bordersVisible = false;
+  const inspectionCache = new Map();
+  regionSelect.onchange = () => regionSelect.value === '' ? backToTamriel() : openProvince(world.provinces[Number(regionSelect.value)]);
+  tools.querySelector('#map-continent').onclick = () => backToTamriel();
+  tools.querySelector('#map-prev').onclick = () => openProvince(world.provinces[((shownProvince?.id ?? 0) + 8) % 9]);
+  tools.querySelector('#map-next').onclick = () => openProvince(world.provinces[((shownProvince?.id ?? -1) + 1) % 9]);
+  tools.querySelector('#map-terrain').onchange = (e) => { terrainVisible = e.target.checked; draw(); };
+  tools.querySelector('#map-borders').onchange = (e) => { bordersVisible = e.target.checked; draw(); };
+  searchInput.oninput = kindSelect.onchange = () => { updateSearch(); draw(); };
+
+  /** Filters never alter place coordinates or their travel identity. */
+  function matchesFilter(location) {
+    return (!kindSelect.value || location.kind === kindSelect.value)
+      && (!searchInput.value.trim() || location.name.toLowerCase().includes(searchInput.value.trim().toLowerCase()));
+  }
+
+  function updateSearch() {
+    const matches = world.locations.filter((l) => (!shownProvince || l.provinceID === shownProvince.id) && matchesFilter(l));
+    resultList.innerHTML = `<small>${matches.length} matching places</small>`;
+    if (!searchInput.value.trim() && !kindSelect.value) return;
+    for (const location of matches.slice(0, 40)) {
+      const button = document.createElement('button');
+      button.textContent = `${location.name} · ${location.province} · ${location.kind}`;
+      button.setAttribute('role', 'listitem');
+      button.onclick = () => {
+        if (!shownProvince) openProvince(world.provinces[location.provinceID]);
+        select(location); centerOn(location.local); draw();
+      };
+      resultList.appendChild(button);
+    }
+  }
+
+  function updateReadout() {
+    const clock = opts.clock?.() ?? worldClock(loadWorldState()) ?? { day: Math.max(1, radiant.day), minutes: 600 };
+    const you = standMark();
+    const at = pointerAt ? toWorld(pointerAt) : null;
+    const province = shownProvince ?? (at ? world.provinceAt(at) : world.provinces[you?.provinceID]);
+    const cursor = at ? ` · pointer ${Math.floor(at.x)},${Math.floor(at.y)} (${shownProvince ? 'province' : 'map'})` : '';
+    readout.textContent = `Day ${clock.day + (clock.turned ?? 0)} · ${String(Math.floor(clock.minutes / 60)).padStart(2, '0')}:${String(clock.minutes % 60).padStart(2, '0')} · ${province?.name ?? 'open sea'}\n`
+      + (you ? `You: ${you.label} · world ${you.global.x},${you.global.y}` : 'No saved position') + cursor;
+  }
+
+  /** Cached inspection layers: the install gives biome classes, not an elevation raster. */
+  function inspectionLayer(kind) {
+    const key = `${shownProvince?.id ?? 'tamriel'}:${kind}`;
+    if (inspectionCache.has(key)) return inspectionCache.get(key);
+    const layer = document.createElement('canvas'); layer.width = 320; layer.height = 200;
+    const context = layer.getContext('2d');
+    if (kind === 'terrain') {
+      const colors = { temperate: '#46783c', mountain: '#c0c6ce', desert: '#cda556' };
+      for (const province of (shownProvince ? [shownProvince] : world.provinces)) {
+        for (let y = 0; y < 200; y += 2) for (let x = 0; x < 320; x += 2) {
+          const local = { x, y };
+          const global = world.mapPoint(province.id, local);
+          const projected = shownProvince ? local : world.mapPoint(province.id, local);
+          if (!shownProvince && world.masks && !world.masks[province.id].get(projected.x, projected.y)) continue;
+          const here = youAreHere(world, global.y * 256, global.x * 256);
+          context.fillStyle = here.sea ? '#254e76' : colors[here.climate];
+          context.fillRect(projected.x, projected.y, shownProvince ? 2 : 1, shownProvince ? 2 : 1);
+        }
+      }
+    } else if (world.masks) {
+      const pixels = context.createImageData(320, 200);
+      for (let y = 0; y < 200; y++) for (let x = 0; x < 320; x++) {
+        const p = shownProvince ? world.mapPoint(shownProvince.id, { x, y }) : { x, y };
+        const owner = world.masks.find((mask) => mask.get(p.x, p.y));
+        if (!owner) continue;
+        if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => !owner.get(p.x + dx, p.y + dy))) {
+          const i = (y * 320 + x) * 4;
+          pixels.data.set([255, 218, 104, 230], i);
+        }
+      }
+      context.putImageData(pixels, 0, 0);
+    }
+    inspectionCache.set(key, layer);
+    return layer;
+  }
 
   /** The visible window onto the 320×200 map, in CSS pixels. */
   const viewport = { scale: 1, offsetX: 0, offsetY: 0, width: 0, height: 0, fit: 1, dpr: 1 };
@@ -498,8 +659,19 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     if (!stage) return null;
     if (stage.kind === 'finale') return { name: stage.title, global: { ...PALACE_POINT }, finale: true };
     if (stage.kind === 'escape') return null;
+    // **A piece's trail starts at its clue.** The stage names the dungeon that holds the
+    // Staff piece, but the player cannot go there until the map in the other dungeon names it
+    // (`game/questState.js`'s `mapKnown`). This marker used to say "the piece is here" at the
+    // piece dungeon from the first minute, so the one place the quest actually sent the player
+    // — the clue dungeon — had no marker at all. The owner, 2026-10-19: *"you should add quest
+    // markers for the staff pieces of the main quest"*. With the map in hand the same marker
+    // moves to the piece's own dungeon, which is what the stage always meant.
+    if (stage.kind === 'piece' && !quest.mapKnown && stage.clue?.title) {
+      const clue = world.byName(stage.clue.title);
+      if (clue) return { ...clue, finale: false, clue: true };
+    }
     const hit = world.byName(stage.title);
-    return hit ? { ...hit, finale: false } : null;
+    return hit ? { ...hit, finale: false, clue: false } : null;
   }
 
 
@@ -514,6 +686,12 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const picture = currentPicture();
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(picture.canvas, viewport.offsetX, viewport.offsetY, picture.width * s, picture.height * s);
+    if (terrainVisible) {
+      ctx.save(); ctx.globalAlpha = 0.65;
+      ctx.drawImage(inspectionLayer('terrain'), viewport.offsetX, viewport.offsetY, 320 * s, 200 * s);
+      ctx.restore();
+    }
+    if (bordersVisible) ctx.drawImage(inspectionLayer('borders'), viewport.offsetX, viewport.offsetY, 320 * s, 200 * s);
 
     // ── the blink ───────────────────────────────────────────────────────────
     //
@@ -533,13 +711,19 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     // strobbing map instead of vanishing into it, and each carries a word.
     const spotlight = new Set();
     const words = new Map();
-    const stand = whereThePlayerIs();
-    if (stand) { spotlight.add(markerKey(stand)); words.set(markerKey(stand), 'you are here'); }
+    // **Where the player is, in whichever space they are in** — a settlement's own record when they
+    // are inside one, and the **world cell** when they are out in the country (`standMark`). The
+    // reading here used to be the save's last *settlement* either way, so a player standing in the
+    // middle of the wilderness was shown a city's icon and told they were in it.
+    const stand = standMark();
+    if (stand?.record) { spotlight.add(markerKey(stand.record)); words.set(markerKey(stand.record), 'you are here'); }
     const stage = stageLocation();
     const palace = stage?.finale ? palaceMarker(true) : palaceMarker(false);
     if (stage && !stage.finale) {
       spotlight.add(markerKey(stage));
-      words.set(markerKey(stage), chain.stages[quest.step]?.kind === 'piece' ? 'the piece is here' : 'the trail leads here');
+      words.set(markerKey(stage), stage.clue
+        ? 'the map is here'
+        : chain.stages[quest.step]?.kind === 'piece' ? 'the piece is here' : 'the trail leads here');
     }
     if (radiant.active) {
       const hit = world.byName(radiant.active.completed ? radiant.active.giver : radiant.active.target);
@@ -558,10 +742,10 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const drawn = {};
     const iconScale = Math.min(s, ICON_MAX_SCALE);
     const places = shownProvince
-      ? world.locations.filter((l) => l.provinceID === shownProvince.id)
+      ? placesOf(shownProvince).filter((l) => l.wildJob || matchesFilter(l))
       : [];
     for (const location of places) {
-      const kind = markerKind(location.kind);
+      const kind = location.wildJob ? 'dungeon' : markerKind(location.kind);
       const icon = kind ? MARKER_ICONS[kind] : null;
       if (!icon) continue;
       const p = toScreen(provincePointOf(location));
@@ -575,27 +759,18 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       const canvas = markerCanvases[kind]?.[phase ? 'blinking' : 'steady'];
       if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
       drawn[kind] = (drawn[kind] ?? 0) + 1;
-      if (isSpot || isSelected) {
-        drawLabel(words.get(key) ?? dungeonLabel(location), p.x, p.y - h / 2 - 3);
+      if (isSpot || isSelected || location.wildJob) {
+        drawLabel(location.wildJob ? `your job \u2014 ${location.label ?? location.name}` : (words.get(key) ?? dungeonLabel(location)), p.x, p.y - h / 2 - 3);
       } else if (kind === 'city') {
         drawLabel(location.name, p.x, p.y + h / 2 + 11);
       }
     }
-    // The continent carries one mark: where the player is. `CITYDATA` puts no palace on a province
-    // map, so the palace is drawn on the world map and on the Imperial Province's own map.
-    const here = whereThePlayerIs();
+    // The player's own mark: the record's icon on the continent (the province's own maps hold their
+    // places already), and the **little dot** for a cell out in the country, on whichever of the two
+    // levels is showing. `CITYDATA` puts no palace on a province map, so the palace is drawn on the
+    // world map and on the Imperial Province's own map.
+    mapArtState.here = drawHereMark(stand, blink, iconScale, drawn);
     const palaceHere = !shownProvince || shownProvince.id === PALACE_PROVINCE_ID;
-    if (!shownProvince && here) {
-      const kind = markerKind(here.kind) ?? 'city';
-      const icon = MARKER_ICONS[kind];
-      const p = toScreen(here.global);
-      const w = icon.width * iconScale;
-      const h = icon.height * iconScale;
-      const canvas = markerCanvases[kind]?.[(!blink) ? 'blinking' : 'steady'];
-      if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
-      drawn[kind] = (drawn[kind] ?? 0) + 1;
-      drawLabel(here.name, p.x, p.y - h / 2 - 3);
-    }
     if (palace && palaceHere && !shownProvince) {
       const icon = MARKER_ICONS.city;
       const p = toScreen(palace.point);
@@ -734,7 +909,11 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       return null;
     }
     shownProvince = hit;
+    regionSelect.value = String(hit.id);
+    updateSearch(); updateReadout();
     openedProvinces.add(hit.name);
+    // The armed teleport's hint names the level of the screen it will act on.
+    if (devArmed) setDevArmed(true);
     selected = null;
     hovered = null;
     pointerAt = null;
@@ -750,10 +929,13 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   function backToTamriel() {
     if (!shownProvince) return false;
     shownProvince = null;
+    regionSelect.value = '';
+    updateSearch(); updateReadout();
     selected = null;
     hovered = null;
     pointerAt = null;
     hoverLabel.classList.remove('on');
+    if (devArmed) setDevArmed(true);
     updateCard();
     updateBar();
     centerOn({ x: art.width / 2, y: art.height / 2 });
@@ -770,7 +952,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
 
   /** A place's screen point **in the view that is showing**: its province pixel, or its world pixel. */
   function screenPointOf(location) {
-    return shownProvince ? toScreen(provincePointOf(location)) : toScreen(location.global);
+    return shownProvince ? toScreen(provincePointOf(location)) : toScreen(location.tamriel ?? location.global);
   }
 
   /**
@@ -782,11 +964,139 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   function whereThePlayerIs() {
     const saved = lastLocation();
     if (saved.name) {
-      const named = world.byName(saved.name);
+      const named = saved.locationID != null && saved.provinceID != null
+        ? world.byId(saved.provinceID, saved.locationID) : world.byName(saved.name, saved.provinceID);
       if (named) return named;
     }
     if (saved.seed == null) return null;
     return world.locations.find((l) => String(l.dungeonSeed) === String(saved.seed)) ?? null;
+  }
+
+  /**
+   * **Where the mark goes, and what to call it** — the player's own position, for both levels of
+   * the map and for the status bar.
+   *
+   * Two answers, and the save tells them apart:
+   *
+   *   * the last **settlement** record (`whereThePlayerIs`) when the player is standing in one —
+   *     the map's own `CITYDATA` icon, where it has always been, its name under it;
+   *   * otherwise the last **world cell** (`game/save.js`'s `wild`, written by every gate crossing
+   *     and kept up with the walk), read through the very grid the game's own country pages are
+   *     built from (`game/tamrielGrid.js`'s `pixelOfCell` / `provincePixelOf`) — which is where the
+   *     little dot goes.
+   *
+   * The second case is what the owner asked for: *"there is no way for me to see a little dot on
+   * the entire map that says \"you are here\" … when im in the wilderness it says im in a city but
+   * im not"*. Out in the country the save still names the settlement the player walked out of, and
+   * the map drew **that settlement's icon** as if they were standing in it; the cell itself was in
+   * the record the whole time.
+   *
+   * `provinceID` is the province the cell's own pixel falls in (`worldMap.js`'s `provinceAt`), so a
+   * province's own hand-drawn map can say whether the mark belongs on it — and the province map's
+   * coordinates are the file's own pair, scaled exactly as a location's are.
+   *
+   * @returns {{record: object|null, country: boolean, kind: string|null, global: {x: number, y: number},
+   *   local: {x: number, y: number}, provinceID: number|null, label: string}|null}
+   */
+  function standMark() {
+    const saved = lastLocation();
+    if (saved.country && saved.wild) {
+      const pixel = pixelOfCell(saved.wild.row, saved.wild.col);
+      const province = world.provinceAtWorld(pixel);
+      const nearest = nearestSettlement(world, pixel);
+      return {
+        record: null,
+        country: true,
+        kind: null,
+        global: pixel,
+        tamriel: pixel,
+        local: provincePixelOf(world, pixel),
+        provinceID: province?.id ?? null,
+        label: `the country near ${nearest?.name ?? 'nowhere'}`,
+      };
+    }
+    const record = whereThePlayerIs();
+    if (!record) return null;
+    return {
+      record,
+      country: false,
+      kind: markerKind(record.kind) ?? 'city',
+      global: record.tamriel ?? record.global,
+      tamriel: record.tamriel ?? record.global,
+      local: provincePointOf(record),
+      provinceID: record.provinceID ?? null,
+      label: record.name || dungeonLabel(record),
+    };
+  }
+
+  /**
+   * The map's own **little dot** for a player standing in the country.
+   *
+   * Arena's four marker records are for *places*, and a wilderness cell is not one — so this is the
+   * one mark on this screen that is not the archive's, and it says so: a dot in the map's own gold
+   * (`mapScreen.colors`), strobing against the map's blink the way a spotlighted marker does, with
+   * the words the owner asked for under it. It is drawn at the map's scale rather than at an icon's:
+   * the mark is a position, not a place, and a wilderness cell has no icon to draw.
+   *
+   * @param {{x: number, y: number}} p  the point, in CSS pixels
+   * @param {boolean} blink  which of the two records this frame is on
+   * @param {number} scale  the map's own scale, before `ICON_MAX_SCALE`
+   */
+  function drawHereDot(p, blink, scale) {
+    const gold = blink ? mapScreen.colors.steady : mapScreen.colors.blinking;
+    const radius = Math.max(2, 1.6 * Math.min(scale, ICON_MAX_SCALE));
+    ctx.save();
+    ctx.fillStyle = `rgb(${gold.r},${gold.g},${gold.b})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * **Draw the player's own position on the level that is up**, and say what was drawn.
+   *
+   * The continent carries the record's own icon (the province maps hold their places already, and
+   * the palace is the one exception — see `palaceMarker`); a player out in the country gets the dot
+   * on **both** levels, because their cell is not one of the places either map holds. On a
+   * province's map the mark is drawn only when the cell's province is the one showing, and the
+   * settlement's own icon there is left to the marker loop above (which already blinks it and labels
+   * it "you are here" through `spotlight`).
+   *
+   * @returns {object|null} the reading the debug seam reports as `mapArt.here`
+   */
+  function drawHereMark(stand, blink, scale, drawn) {
+    if (!stand) return null;
+    const level = shownProvince ? 'province' : 'tamriel';
+    const onThisMap = !shownProvince || stand.provinceID === shownProvince.id;
+    const where = {
+      level,
+      country: stand.country,
+      global: stand.global,
+      local: stand.local,
+      provinceID: stand.provinceID,
+      label: stand.label,
+      drawn: false,
+      at: null,
+    };
+    if (!onThisMap) return where;
+    if (stand.country) {
+      const p = toScreen(shownProvince ? stand.local : (stand.tamriel ?? stand.global));
+      drawHereDot(p, blink, scale);
+      drawLabel('you are here', p.x, p.y - 4);
+      return { ...where, drawn: true, at: { x: Math.round(p.x), y: Math.round(p.y) } };
+    }
+    if (shownProvince) return where;    // the province's own icon loop drew it
+    const icon = MARKER_ICONS[stand.kind];
+    if (!icon) return where;
+    const p = toScreen(stand.tamriel ?? stand.global);
+    const w = icon.width * scale;
+    const h = icon.height * scale;
+    const canvas = markerCanvases[stand.kind]?.[(!blink) ? 'blinking' : 'steady'];
+    if (canvas) ctx.drawImage(canvas, p.x - w / 2, p.y - h / 2, w, h);
+    drawn[stand.kind] = (drawn[stand.kind] ?? 0) + 1;
+    drawLabel(stand.label, p.x, p.y - h / 2 - 3);
+    return { ...where, drawn: true, at: { x: Math.round(p.x), y: Math.round(p.y) } };
   }
 
   /**
@@ -840,7 +1150,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       return null;
     }
     const scale = Math.min(viewport.fit * viewport.scale, ICON_MAX_SCALE);
-    for (const location of placesOf(shownProvince)) {
+    for (const location of placesOf(shownProvince).filter((l) => l.wildJob || matchesFilter(l))) {
       const p = screenPointOf(location);
       const distance = Math.hypot(p.x - point.x, p.y - point.y);
       const radius = Math.max(7, markerHitRadius(location) * scale + 4);
@@ -849,13 +1159,59 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     return best;
   }
 
-  /** The 48 places `CITYDATA` puts in a province, in the file's own order. */
+  /**
+   * **The job's own mark in the country.**
+   *
+   * A wild job is a world cell, not a `CITYDATA` place, so `world.byName` cannot find it and
+   * the province map had nothing to draw. This builds the one marker a wild target needs:
+   * the cell's own pixel on the painted map, the province's local point for the province
+   * screen, and the settlement that anchors the arrival URL. The owner: *"some should also
+   * point to the wilderness instead of the dungeon of a city"*.
+   */
+  function wildJobMarker() {
+    const active = radiant?.active;
+    if (!active || active.completed || active.targetKind !== 'wild' || !active.targetCell) return null;
+    const pixel = active.targetGlobal ?? pixelOfCell(active.targetCell.row, active.targetCell.col);
+    const province = world.provinces.find((p) => p.name === active.targetProvince)
+      ?? world.provinceAtWorld(pixel);
+    if (!province) return null;
+    const local = world.localPointAt(pixel, province.id) ?? { x: pixel.x, y: pixel.y };
+    // The settlement the player actually travels to. Its own record (not just its name) is
+    // carried, because `CITYDATA` repeats a few names across provinces (D-40) and the arrival
+    // has to be `province` + `placeId`, not the first match of a name.
+    const anchorPlace = (active.targetAnchorID != null && active.targetAnchorProvinceID != null
+      ? world.byId(active.targetAnchorProvinceID, active.targetAnchorID)
+      : null)
+      ?? world.locations.find((l) => l.provinceID === province.id
+        && l.name && l.name === active.targetAnchor) ?? null;
+    return {
+      name: active.targetAnchor ?? province.name,
+      label: active.target,
+      kind: 'wild', wildJob: true,
+      provinceID: province.id, province: active.targetProvince ?? province.name,
+      id: `job:${active.id}`,
+      anchorId: anchorPlace?.id ?? active.targetAnchorID ?? null,
+      anchorProvinceID: anchorPlace?.provinceID ?? active.targetAnchorProvinceID ?? province.id,
+      cell: { ...active.targetCell },
+      walk: active.targetWalk ?? null,
+      global: { x: pixel.x, y: pixel.y }, tamriel: { x: pixel.x, y: pixel.y },
+      local,
+      climate: active.targetClimate ?? world.worldClimateAt(pixel),
+      coastal: false,
+    };
+  }
+
+  /** The 48 places `CITYDATA` puts in a province, in the file's own order, and the job. */
   function placesOf(province) {
-    return world.locations.filter((l) => l.provinceID === province.id);
+    const list = world.locations.filter((l) => l.provinceID === province.id);
+    const job = wildJobMarker();
+    if (job && job.provinceID === province.id) list.push(job);
+    return list;
   }
 
   function describe(location) {
     if (!location) return '';
+    if (location.wildJob) return `${location.label ?? location.name} \u2014 a job in the open country, ${location.province}`;
     const kindName = { city: 'city-state', town: 'town', village: 'village', dungeon: 'dungeon', palace: 'the Imperial Palace' }[location.kind] ?? location.kind;
     return `${dungeonLabel(location)} — ${kindName}, ${location.province}`;
   }
@@ -870,6 +1226,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
    * layout, which is also what the loader travels by.
    */
   function dungeonLabel(location) {
+    if (location.wildJob) return location.label ?? location.name;
     if (location.kind !== 'dungeon') return location.name;
     if (location.name) return location.name;
     return `an unnamed dungeon (seed ${location.dungeonSeed})`;
@@ -886,8 +1243,33 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
    */
   function travelUrl(location) {
     const folder = source?.arenaPath ?? params.get('arena') ?? null;
-    const arena = folder ? `&arena=${encodeURIComponent(folder)}` : '';
+    const arena = (folder ? `&arena=${encodeURIComponent(folder)}` : '')
+      + `&grid=${WORLD_GRID_VERSION}`
+      + (location.provinceID != null ? `&province=${location.provinceID}` : '')
+      + (location.id != null ? `&placeId=${location.id}` : '');
     if (location.kind === 'palace') return `?interior=IMPPAL.MIF${arena}`;
+    // **A spot of open country, by its cell** — the dev teleport's own door (`devTravelToPixel`),
+    // and the same URL the gate crossing and a dungeon's way out build, so it lands in the
+    // persistent country by the door a walk uses rather than by one of its own.
+    // **A country job is reached on foot, not teleported to.** The owner, 2026-10-19: *"you
+    // should not be able to teleport to the sidequest questmarkers in the wild because it
+    // crashes the game and instead the questmarker should be closer to a dungeon village or
+    // town so you can teleport there instead and then reach the location walking"*. So the job's
+    // marker travels to its **anchor** — a place with a real `CITYDATA` record — and the last
+    // cells are walked. A bare world cell (the dev door's `?wild=`) still uses the cell door.
+    if (location.kind === 'wild' && location.wildJob && location.name) {
+      // Built separately from `arena`: the marker's own `id` is `job:<quest>`, which is not a
+      // `placeId`, and the arrival's province/place come from the anchor record instead.
+      const road = (folder ? `&arena=${encodeURIComponent(folder)}` : '')
+        + `&grid=${WORLD_GRID_VERSION}`
+        + (location.anchorProvinceID != null ? `&province=${location.anchorProvinceID}` : '')
+        + (location.anchorId != null ? `&placeId=${encodeURIComponent(location.anchorId)}` : '');
+      return `?location=${encodeURIComponent(location.name)}${road}`;
+    }
+    if (location.kind === 'wild') {
+      const where = location.name ? `&location=${encodeURIComponent(location.name)}` : '';
+      return `?wild=${Math.round(location.cell.row)},${Math.round(location.cell.col)}${where}${arena}`;
+    }
     if (location.kind === 'dungeon') {
       // A dungeon the player's own folder has no map for is entered **by seed**: the page
       // then assembles its level out of the install's pieces (`game/dungeonPlan.js`). Until
@@ -905,20 +1287,26 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   /** How far, in days, from wherever the player is to here. */
   function travelDays(location) {
     const from = lastLocationGlobal();
-    const to = location.global ?? PALACE_POINT;
+    const to = location.tamriel ?? location.global ?? PALACE_POINT;
     return world.travel(from, to);
   }
 
   function lastLocationGlobal() {
     const saved = lastLocation();
-    const named = saved.name ? world.byName(saved.name) : null;
-    if (named) return named.global;
+    // **Out in the country the journey starts at the cell itself** — the world pixel the player's
+    // own foot is on (`game/tamrielGrid.js`'s `pixelOfCell`). Measuring from the settlement they
+    // walked out of is measuring from up to a hundred and twenty-eight cells away, and the same
+    // reading answers the board's own giver (`boardGiver`), so a wild-standing player reads the
+    // board of the town nearest *them*.
+    if (saved.country && saved.wild) return pixelOfCell(saved.wild.row, saved.wild.col);
+    const named = whereThePlayerIs();
+    if (named) return named.tamriel ?? named.global;
     // A dungeon with no name is found by its seed — the same number the page was entered
     // by, and the one that decides its layout.
     const bySeed = saved.seed == null
       ? null
       : world.locations.find((l) => String(l.dungeonSeed) === String(saved.seed));
-    return bySeed ? bySeed.global : PALACE_POINT;
+    return bySeed ? bySeed.tamriel : PALACE_POINT;
   }
 
   function updateCard() {
@@ -926,9 +1314,9 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       card.innerHTML = '';
       card.classList.remove('on');
       return;
-    }
-    const { days } = travelDays(selected);
-    const kindName = { city: 'city-state', town: 'town', village: 'village', dungeon: 'dungeon', palace: 'the Imperial Palace' }[selected.kind] ?? selected.kind;
+    }      const { days } = travelDays(selected);
+    const kindName = selected.wildJob ? 'the open country'
+      : { city: 'city-state', town: 'town', village: 'village', dungeon: 'dungeon', palace: 'the Imperial Palace' }[selected.kind] ?? selected.kind;
     // **Both of a place's climates, or the card lies.** The owner's report: *"MORROWIND NOW JUST
     // SAYS DESERT BUT WHEN YOU GET INTO IT ITS COMPLETELY MOUNTAIN"* — the card named the country
     // and the city the player then walked into was built of its architecture. A place whose two
@@ -939,34 +1327,152 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       ? `${selected.climate} country, ${selected.architecture} buildings`
       : selected.climate;
     const seed = selected.kind === 'dungeon' ? selected.dungeonSeed : selected.citySeed;
-    const nearest = selected.kind === 'dungeon' ? nearestSettlement(world, selected.global) : null;
+    const nearest = selected.kind === 'dungeon' ? nearestSettlement(world, selected.tamriel ?? selected.global) : null;
     const generated = selected.kind === 'dungeon' && !(loose.has(String(selected.mif ?? '').toUpperCase()));
     card.innerHTML = `
       <h2>${dungeonLabel(selected)}</h2>
       <p class="sub">${kindName} · ${selected.province} · ${look}${selected.coastal ? ' · coastal' : ''}</p>
       <p class="sub">${days} day${days === 1 ? '' : 's'} of travel${nearest ? ` · nearest town ${nearest.name} (${nearest.distance} px)` : ''}</p>
-      <p class="sub">${selected.kind === 'dungeon'
-        ? `dungeon seed <code>${seed}</code> → ${generated
-          ? 'assembled from this install\'s own dungeon blocks (<code>RANDOM1.MIF</code>)'
-          : `<code>${selected.mif ?? stageMif(selected)}</code>`}`
-        : `city seed <code>${seed}</code>`}</p>
-      <button id="map-travel">Travel</button>
-      <button id="map-close" class="ghost">Cancel</button>`;
+      <p class="sub">${selected.wildJob
+        ? `a spot of country ${selected.walk ? `about <b>${selected.walk} paces</b> ` : ''}out of ${escapeHtml(selected.name)} — no fast travel to a spot of country: choose ${escapeHtml(selected.name)} itself and walk out of its gate`
+        : selected.kind === 'dungeon'
+          ? `dungeon seed <code>${seed}</code> → ${generated
+            ? 'assembled from this install\'s own dungeon blocks (<code>RANDOM1.MIF</code>)'
+            : `<code>${selected.mif ?? stageMif(selected)}</code>`}`
+          : `city seed <code>${seed}</code>`}</p>`
+      // **The job's own mark has no travel button.** Its anchor (a town, village or city) is a
+      // real place with its own marker and its own Travel; this marker is the last leg, and a
+      // journey straight to a bare world cell is the crash the owner reported. The button stays
+      // in place, disabled and named for what it is, so the card still says why there is no
+      // journey rather than looking broken.
+      + (selected.wildJob
+        ? `<button id="map-travel" disabled title="This is a spot in the open country — travel to ${escapeHtml(selected.name)} and walk the last leg.">Travel — on foot from ${escapeHtml(selected.name)}</button>`
+        : '<button id="map-travel">Travel</button>')
+      + '<button id="map-close" class="ghost">Cancel</button>';
     card.classList.add('on');
-    card.querySelector('#map-travel').onclick = () => travel(selected);
+    const go = card.querySelector('#map-travel');
+    if (go && !selected.wildJob) go.onclick = () => travel(selected);
     card.querySelector('#map-close').onclick = () => select(null);
   }
 
   function select(location) {
     selected = location;
     updateCard();
-    if (location) saveLast({ name: location.name });
+    // Selecting a card is not travelling: keep the departure position intact.
   }
 
-  function saveLast(entry) {
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify(entry));
-    } catch { /* ignore */ }
+  function saveLast(entry) { saveLastLocation(entry); }
+
+  /**
+   * **The horse on the road** — `HORSE.DFA`, used as fast travel's loading screen.
+   *
+   * The owner, 2026-10-19: *"fast traveling needs to briefly show the HORSE.DFA"*, then later
+   * *"needs to show while the fast travel is loading as a loading screen not it first shows then
+   * it loads otherwise it just takes more time"*. The card therefore goes up **before** the
+   * destination is built and stays over the scene until it is standing: the animation and the
+   * level load share one wait, rather than adding a fixed second before the load starts.
+   *
+   * **The palette is the world map's, not the character sheet's.** `FastTravelUiView::
+   * getPaletteTextureAsset` in OpenTESArena returns `ArenaTextureName::WorldMap`, i.e.
+   * `TAMRIEL.MNU` — so the horse, rider, sky and grass are indices into that screen's own
+   * embedded palette, read as they are. An earlier pass read them through `CHARSHT.COL` and
+   * added 128 to compensate, which is a rotation of a table the art was never drawn against;
+   * the result was the owner's *"HORSE.DFA has inverted colors now"*. `TAMRIEL.MNU`'s entry
+   * 236 is the sky's teal, 210 the grass, 65 the horse's brown — the picture reads at once.
+   *
+   * If the art cannot be read the card is still a loading screen: a journey happens, the player
+   * sees where they are going, and the failure is only the missing picture.
+   *
+   * @param {string} [destination] the place the player is travelling to
+   * @returns {{finish: () => Promise<void>}}
+   */
+  function showTravelHorse(destination = '') {
+    const host = document.createElement('div');
+    host.id = 'travel-horse';
+    Object.assign(host.style, {
+      position: 'fixed', inset: '0', zIndex: '12000', display: 'flex',
+      flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px',
+      background: 'radial-gradient(ellipse at center, rgba(28,24,18,0.78) 0%, rgba(4,6,10,0.96) 72%)',
+      color: '#e7d8b4', font: '600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace',
+      letterSpacing: '0.14em', textTransform: 'uppercase', opacity: '1',
+      transition: 'opacity 180ms ease-out', pointerEvents: 'none',
+    });
+    const scale = 3;
+    const canvas = document.createElement('canvas');
+    canvas.width = 132 * scale;
+    canvas.height = 82 * scale;
+    Object.assign(canvas.style, { imageRendering: 'pixelated', filter: 'drop-shadow(0 12px 18px rgba(0,0,0,0.65))' });
+    const caption = document.createElement('div');
+    caption.textContent = destination ? `on the road to ${destination}` : 'on the road';
+    const hint = document.createElement('div');
+    hint.textContent = 'loading…';
+    Object.assign(hint.style, { opacity: '0.62', fontSize: '11px' });
+    host.appendChild(canvas);
+    host.appendChild(caption);
+    host.appendChild(hint);
+    document.body.appendChild(host);
+
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    const started = performance.now();
+    /** @type {HTMLCanvasElement[]} */
+    let bitmaps = [];
+    let finishing = false;
+    // The scene build normally takes longer than this; the floor only stops a very fast load
+    // from flashing the horse for one frame. It never runs after the build has finished.
+    const MIN_VISIBLE_MS = 450;
+    const FADE_MS = 180;
+    const tick = () => {
+      if (!host.isConnected) return;
+      if (bitmaps.length) {
+        const frame = bitmaps[Math.floor((performance.now() - started) / 75) % bitmaps.length];
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+
+    // Decode while the card is already standing, so the loading screen is visible during the
+    // work rather than after it. `data.must` and the palette are normally in memory by now.
+    void (async () => {
+      try {
+        const [bytes, mnuBytes] = await Promise.all([
+          data.must('HORSE.DFA'),
+          data.bytes('TAMRIEL.MNU').catch(() => null),
+        ]);
+        const dfa = parseDfa(bytes, 'HORSE.DFA');
+        // The screen's own palette; a copy without `TAMRIEL.MNU` keeps the card with the
+        // character sheet's colours rather than failing the loading screen outright.
+        const palette = (mnuBytes && parseImg(mnuBytes, 'TAMRIEL.MNU')?.palette)
+          || await data.palette('CHARSHT.COL');
+        canvas.width = dfa.width * scale;
+        canvas.height = dfa.height * scale;
+        ctx.imageSmoothingEnabled = false;
+        bitmaps = dfa.frames.map((frame) => {
+          const temp = document.createElement('canvas');
+          temp.width = frame.width; temp.height = frame.height;
+          temp.getContext('2d').putImageData(toSpriteImageData(frame.indices, palette, frame.width, frame.height), 0, 0);
+          return temp;
+        });
+      } catch (err) {
+        console.warn(`[travel] HORSE.DFA was not readable: ${err?.message ?? err}`);
+        hint.textContent = 'loading…';
+      }
+    })();
+
+    return {
+      /** Hold the card until the arriving scene is built, then fade it away. */
+      async finish() {
+        if (finishing) return;
+        finishing = true;
+        const left = Math.max(0, MIN_VISIBLE_MS - (performance.now() - started));
+        if (left) await new Promise((resolve) => setTimeout(resolve, left));
+        host.style.opacity = '0';
+        await new Promise((resolve) => setTimeout(resolve, FADE_MS));
+        host.remove();
+      },
+    };
   }
 
   /**
@@ -982,24 +1488,62 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
    *   the old spelling of this parameter is what made fast travel a no-op, see below)
    * @returns {{to: string, url: string, days: number}|false|{to: unknown, url: string, days: number}}
    */
-  function travel(marker) {
-    if (!marker) return false;
+  async function travel(marker) {
+    if (!marker || leaving) return false;
+    // **A job's own mark in the country is not a destination.** The owner, 2026-10-21: *"radiant
+    // quests that take place in the wilderness spawn in the tamriel map a quest marker that if you
+    // travel to it it crashes so the travel button for that questmarker should be disabled"*. The
+    // marker is a world cell with no `CITYDATA` record, and a journey there is the crash: the
+    // arrival page needs a place to be. So it is refused here as well as in the card, and the
+    // player is told what to do instead — travel to the anchor (the town the job stands outside
+    // of, a real marker of its own) and walk the last leg.
+    if (marker.wildJob) {
+      message = `The camp is reached on foot — travel to ${marker.name} and walk the last ${marker.walk ? `${marker.walk} paces` : 'leg'} out of its gate.`;
+      messageUntil = performance.now() + 3200;
+      return { refused: 'wild-job', to: marker.label ?? marker.name };
+    }
+    // A wild job's marker is a *place in the country*, not an arrival: the journey ends at the
+    // settlement that anchors it (`wildJobMarker`'s `name`), which is a real `location=` page.
+    const atAnchor = marker.wildJob
+      ? ((marker.anchorProvinceID != null && marker.anchorId != null
+        ? world.byId(marker.anchorProvinceID, marker.anchorId)
+        : world.byName(marker.name)) ?? marker)
+      : marker;
     const url = travelUrl(marker);
-    saveLast({ name: marker.name, dungeon: marker.kind === 'dungeon', seed: marker.dungeonSeed ?? null });
-    status(`travelling to ${marker.name}`);
-    const days = travelDays(marker).days;
+    const journey = travelDays(atAnchor);
+    const days = journey.days;
+    // A country arrival writes the record a walk writes (`interior.js`'s `maybeSaveWildFoot`): the
+    // cell the player's own foot is on and the country flag beside it, so the map's "you are here"
+    // and the journey lengths are measured from the spot rather than from the nearest town.
+    saveLast(marker.kind === 'wild' && !marker.wildJob
+      ? { name: marker.name, provinceID: marker.provinceID, locationID: marker.id, dungeon: false, seed: null, wild: { row: marker.cell.row, col: marker.cell.col }, country: true }
+      : { name: atAnchor.name, provinceID: atAnchor.provinceID ?? marker.provinceID, locationID: atAnchor.id ?? marker.id, dungeon: atAnchor.kind === 'dungeon', seed: atAnchor.dungeonSeed ?? null });
+    const destination = marker.wildJob ? marker.name : (marker.label ?? marker.name);
+    status(`travelling to ${destination}`);
     // The road costs days, and a day is what a deadline is measured in — so the
     // calendar moves with the player and a job can genuinely run out while they are
     // somewhere else. This is the whole of the "time passes" rule.
-    radiant = advanceDays(radiant, days);
+    const memory = loadWorldState();
+    // Distance also determines a non-zero arrival-hour shift; the same journey always
+    // takes the same number of hours. Compute before saving the destination above.
+    const arrival = advanceWorldTime(memory, days * 1440 + (1 + journey.pixels % 8) * 60,
+      { day: Math.max(1, radiant.day ?? 1), minutes: 600 });
+    saveWorldState(memory);
+    radiant = advanceDays(radiant, Math.max(0, arrival.day - (radiant.day ?? 0)));
     saveRadiantState(radiant);
-    message = `Travelling to ${marker.name} — ${days} day${days === 1 ? '' : 's'}.`;
+    message = `Travelling to ${destination} — ${days} day${days === 1 ? '' : 's'}; arrival ${String(Math.floor(arrival.minutes / 60)).padStart(2, '0')}:${String(arrival.minutes % 60).padStart(2, '0')}.`;
     messageUntil = performance.now() + 1200;
-    if (overlay && typeof opts.onTravel === 'function') {
-      // Let the message be *seen* before the map comes down and the scene rebuilds.
-      draw();
-      return { to: opts.onTravel(marker), url, days };
-    }
+    // The journey's own picture, **over** the build rather than before it. The card goes up
+    // first; each door is awaited with it still standing, and `finish` brings it down only when
+    // the destination exists (or the build failed).
+    const card = showTravelHorse(destination);
+    try {
+      if (overlay && typeof opts.onTravel === 'function') {
+        // Let the message be *seen* behind the card as the map comes down.
+        draw();
+        await Promise.resolve(opts.onTravel(marker));
+        return { to: destination, url, days };
+      }
     // **The map's own page hands the journey off in place, exactly as the overlay does.**
     //
     // This used to be `location.href = url`, and that line was written against the wrong
@@ -1014,8 +1558,13 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     // live `FileList` in this page's memory (`arena/browserSource.js`), and a page load
     // cannot reopen it, so every journey asked the player for their game folder again. The
     // scene is rebuilt here instead, with the *same* source, so the folder is picked once.
-    void handOff(url, marker, days);
-    return { to: marker.name, url, days };
+      const scene = await handOff(url, marker, days);
+      return { to: destination, url, days, scene };
+    } finally {
+      // The card is the load, not a delay before it: it stays up until the arriving scene
+      // has been built (or the build failed and the map came back).
+      await card.finish();
+    }
   }
 
   /**
@@ -1202,9 +1751,16 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   function updateBar() {
     const side = radiantObjective(radiant);
     const objective = currentObjective(quest, chain);
+    // **The bar says where the player is, and it says it honestly** (B26): the settlement's own name
+    // when they are in one, `the country near …` when they are standing in the wild — the same
+    // reading the map's own mark is drawn from (`standMark`), so the words and the dot never
+    // disagree. It used to show the view instead (`Tamriel — click a province`), which is what the
+    // map is *of*, not where the player is.
+    const you = standMark();
     bar.innerHTML = `<span class="obj">${objective}</span>`
       + (side ? `<span class="side">${side}</span>` : '')
       + `<span class="pieces">Staff pieces ${quest.pieces}/8</span>`
+      + `<span class="you">you are here — ${you ? escapeHtml(you.label) : 'nowhere yet'}</span>`
       + `<span class="where">${shownProvince ? `${shownProvince.name} — Esc back to Tamriel` : 'Tamriel — click a province'}</span>`
       + `<span class="hint">${overlay ? 'M or Esc to close · ' : ''}B the board · drag to pan · wheel to zoom</span>`;
   }
@@ -1227,6 +1783,62 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     return true;
   }
 
+  // ── the dev teleport, live ─────────────────────────────────────────────────
+  // See the button's own block above for what a click means. `devArmed` is the mode the button
+  // toggles, and the hint beside it says which half of the screen is next.
+  let devArmed = false;
+
+  /** Arm or disarm the teleport, and say so in the legend and on the status line. */
+  function setDevArmed(on) {
+    devArmed = Boolean(on);
+    draw();
+    return devArmed;
+  }
+
+  /**
+   * The **world pixel** a click on the map is standing on.
+   *
+   * @param {{x: number, y: number}} cssPoint  a point in CSS pixels inside the canvas
+   * @returns {{x: number, y: number}} a world pixel (0…319 × 0…199)
+   */
+  function devGlobalOf(cssPoint) {
+    const pixel = toWorld(cssPoint);
+    return shownProvince ? world.mapPoint(shownProvince.id, pixel)
+      : { x: Math.round(pixel.x), y: Math.round(pixel.y) };
+  }
+
+  /**
+   * Stand the player in the open country at a world pixel.
+   *
+   * A **settlement's own pixel** is the one case that is not country: the click is inside a town,
+   * and the town is a place with a name, a seed and a page — so it travels to the settlement
+   * itself (`travel`, the same door a marker click uses) rather than dropping the player beside it.
+   *
+   * @param {{x: number, y: number}} global  a world pixel
+   * @returns {Promise<object|null>|{to: string, url: string, days: number}|false}
+   */
+  function devTravelToPixel(global) {
+    const point = {
+      x: Math.max(0, Math.min(world.width - 1, Math.round(global.x))),
+      y: Math.max(0, Math.min(world.height - 1, Math.round(global.y))),
+    };
+    const here = world.locations.find((l) => l.tamriel.x === point.x && l.tamriel.y === point.y && l.kind !== 'dungeon');
+    if (here) { setDevArmed(false); return travel(here); }
+    const nearest = nearestSettlement(world, point);
+    const province = world.provinceAtWorld(point);
+    const marker = {
+      name: nearest?.name ?? province?.name ?? 'the open country',
+      kind: 'wild',
+      global: point,
+      cell: cellOriginOfPixel(point),
+      province: province?.name ?? null,
+      climate: world.worldClimateAt(point),
+      provinceID: nearest?.provinceID, id: nearest?.id,
+    };
+    setDevArmed(false);
+    return travel(marker);
+  }
+
   // ── input ──────────────────────────────────────────────────────────────────
   let dragging = null;
   view.addEventListener('pointerdown', (e) => {
@@ -1236,6 +1848,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   view.addEventListener('pointermove', (e) => {
     const rect = view.getBoundingClientRect();
     pointerAt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    updateReadout();
     if (dragging) {
       const dx = e.clientX - dragging.x;
       const dy = e.clientY - dragging.y;
@@ -1266,6 +1879,15 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const rect = view.getBoundingClientRect();
     const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const hit = locationAt(at);
+    // ── the armed teleport takes the click ────────────────────────────────────
+    // A marker is still a marker (the card is where a place is explained, and its own Travel
+    // button is the door), so the mode takes the bare map — and a click on a marker while armed
+    // travels straight to it rather than asking again, because the button was the asking.
+    if (devArmed) {
+      if (hit) devTravelToPixel(hit.location.tamriel ?? hit.location.global);
+      else devTravelToPixel(devGlobalOf(at));
+      return;
+    }
     if (shownProvince) {
       select(hit ? hit.location : null);
       draw();
@@ -1291,11 +1913,12 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   }, { passive: false, signal });
   addEventListener('resize', () => { resize(); draw(); }, { signal });
   addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     // In an overlay, `M` and Escape put the map away and the game is still standing
     // behind it — the page does not change, so the picked folder is still open and the
     // player is exactly where they were. On the map's own page, Escape only drops the
     // selection (there is nowhere to go back to).
-    if (overlay && (e.code === 'Escape' || e.code === 'KeyM')) { close(); return; }
+    if (overlay && (e.code === 'KeyM' || (e.code === 'Escape' && !shownProvince))) { close(); return; }
     // Escape walks back out of a province, which is the way the two-level screen is left: the
     // continent is always one key or one click away.
     if (e.code === 'Escape' && shownProvince) { backToTamriel(); return; }
@@ -1312,6 +1935,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   }, { signal });
 
   resize();
+  updateSearch(); updateReadout();
   renderSheet();
   updateBar();
   refreshBoard();
@@ -1322,7 +1946,10 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   let frames = 0;
   // The map's own frames stop with `close()`: an overlay that kept its rAF running
   // would keep painting a canvas nobody is looking at for the rest of the session.
-  const animate = () => { if (!alive) return; frames++; draw(); requestAnimationFrame(animate); };
+  let nextReadout = 0;
+  const animate = () => { if (!alive) return; frames++;
+    if (performance.now() >= nextReadout) { nextReadout = performance.now() + 1000; updateReadout(); }
+    draw(); requestAnimationFrame(animate); };
   requestAnimationFrame(animate);
   status(overlay ? 'Tamriel — the world map' : 'Tamriel ready');
 
@@ -1334,6 +1961,8 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   const hooks = {
     state: () => ({
       scene: 'worldmap',
+      inspection: { terrain: terrainVisible, borders: bordersVisible, matches: world.locations.filter(matchesFilter).length },
+      clock: opts.clock?.() ?? worldClock(loadWorldState()),
       provinces: world.provinces.length,
       locations: world.locations.length,
       settlements: world.settlements().length,
@@ -1356,12 +1985,28 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       // The screen's own records, as the last frame drew them: which of the two marker records the
       // map is on, how many times it has switched, which icons went down, and whose province plate
       // is on the pointer. A test can only tell "the game's art" from "a circle" by reading this.
+      // Where the *player* is, as the map reads it: the country cell when they are standing in the
+      // wild and the settlement's record when they are in one (`standMark`), plus what the last
+      // frame actually drew of it (`mapArt.here`). The owner's report is why it is a reading of its
+      // own: the map used to answer a city for a player in the middle of nowhere.
+      you: (() => {
+        const mark = standMark();
+        return mark && {
+          country: mark.country,
+          kind: mark.kind,
+          label: mark.label,
+          global: mark.global,
+          local: mark.local,
+          provinceID: mark.provinceID,
+        };
+      })(),
       mapArt: {
         screen: mapArtState.screen,
         record: mapArtState.record,
         blinking: mapArtState.blinking,
         switches: mapArtState.switches,
         icons: { ...mapArtState.icons },
+        here: mapArtState.here && { ...mapArtState.here },
         plaques: [...mapArtState.plaquesDrawn],
         warnings: [...mapArtState.warnings],
       },
@@ -1452,6 +2097,10 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       return radiant.offers.map((o) => ({
         id: o.id, kind: o.kind, title: o.title, target: o.target,
         targetMif: o.targetMif, targetProvince: o.targetProvince,
+        // **Where the work is**, as on the street's panel: `wild` carries a world cell and
+        // the landmark it sits near, a dungeon carries its `.MIF`.
+        targetKind: o.targetKind ?? null, targetCell: o.targetCell ?? null,
+        targetNear: o.targetNear ?? null, targetAnchor: o.targetAnchor ?? null,
         days: o.days, reward: o.reward, dataText: o.dataText, source: o.source,
       }));
     },
@@ -1498,8 +2147,17 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       const province = world.provinces.find((p) => p.id === hit.provinceID) ?? null;
       if (province && shownProvince?.id !== province.id) openProvince(province);
       const p = screenPointOf(hit);
-      return { x: p.x, y: p.y, world: hit.global, local: provincePointOf(hit), name: hit.name, province: hit.province };
+      return { x: p.x, y: p.y, world: hit.tamriel ?? hit.global, tamriel: hit.tamriel, local: provincePointOf(hit), name: hit.name, province: hit.province };
     },
+    continentMarkerAt: (name) => {
+      const hit = world.byName(name);
+      if (!hit) return null;
+      const p = toScreen(hit.tamriel ?? hit.global);
+      return { ...p, global: hit.global, tamriel: hit.tamriel, local: hit.local };
+    },
+    alignment: () => world.locations.map((l) => ({ name: l.name, kind: l.kind, provinceID: l.provinceID,
+      local: l.local, global: l.global, tamriel: l.tamriel,
+      artIndex: art.indices[l.tamriel.y * 320 + l.tamriel.x] })),
     select: (name) => { const hit = name ? world.byName(name) : null; select(hit); draw(); return hit ? hit.name : null; },
     travel: (name) => {
       const hit = name ? world.byName(name) : selected;
@@ -1644,7 +2302,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     closest: (x, y) => {
       let best = null;
       for (const location of world.locations) {
-        const d = Math.hypot(location.global.x - x, location.global.y - y);
+        const d = Math.hypot(location.tamriel.x - x, location.tamriel.y - y);
         if (!best || d < best.d) best = { d, location };
       }
       return best ? { name: best.location.name, distance: Math.round(best.d), kind: best.location.kind, climate: best.location.climate } : null;
@@ -1657,6 +2315,21 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
       return hit ? travelUrl(hit) : null;
     },
     /**
+     * The active country job's map mark: where it stands, how far the walk is, and the URL
+     * clicking it would use. **A wild job never travels to its own cell** — this is the seam
+     * that proves the journey ends at the anchor town instead (`scenes/worldmap.js`'s
+     * `travelUrl` and `travel`).
+     */
+    wildJob: () => {
+      const mark = wildJobMarker();
+      if (!mark) return null;
+      return {
+        name: mark.name, label: mark.label, walk: mark.walk, cell: mark.cell,
+        anchorId: mark.anchorId, anchorProvinceID: mark.anchorProvinceID,
+        url: travelUrl(mark),
+      };
+    },
+    /**
      * Travel to a location **for real**, exactly as a click on its marker does.
      *
      * `travelUrl` says where a journey *would* go; this is the journey. On the map's own
@@ -1666,16 +2339,70 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
      * @param {string} name
      * @returns {Promise<object|null>|null}
      */
+    /**
+     * The dev teleport, as the button and the click it arms use it.
+     *
+     * `global` is a **world pixel** (0…319 × 0…199) — the number the map's own arithmetic
+     * produces from a click (`devGlobalOf`), so a check can drive the journey without guessing
+     * at a screen position: `arm(true)` then `devTravel({ x, y })` is the button and the click.
+     */
+    devTravel: (global) => devTravelToPixel(global),
+    /** Arm the teleport exactly as the button does, and answer the mode it left behind. */
+    armDevTravel: (on) => setDevArmed(on),
+    /** Whether the teleport is armed (the button's own state). */
+    devArmed: () => devArmed,
+    /** The world pixel a click at a CSS point on the canvas would teleport to. */
+    devPixelAt: (cssPoint) => devGlobalOf(cssPoint),
+    /** The same reading the click path uses, for a caller that has a screen point. */
+    travelToPixel: (cssPoint) => devTravelToPixel(devGlobalOf(cssPoint)),
     travelTo: (name) => {
       const hit = name ? world.byName(name) : selected;
-      if (!hit) return null;
-      const days = travelDays(hit).days;
-      if (overlay && typeof opts.onTravel === 'function') return Promise.resolve(opts.onTravel(hit));
-      const url = travelUrl(hit);
-      saveLast({ name: hit.name, dungeon: hit.kind === 'dungeon', seed: hit.dungeonSeed ?? null });
-      radiant = advanceDays(radiant, days);
-      saveRadiantState(radiant);
-      return handOff(url, hit, days);
+      return hit ? travel(hit) : null;
+    },
+    /**
+     * **The job's own mark in the country**, as the map draws it.
+     *
+     * A wild job is not a `CITYDATA` place, so there is nothing in `world` to click: this is the
+     * marker `wildJobMarker()` builds, and `selectWildJob` / `travelToWildJob` are the card and
+     * the journey a player's click reaches.
+     */
+    wildJob: () => {
+      const marker = wildJobMarker();
+      return marker ? { name: marker.name, label: marker.label, walk: marker.walk,
+        cell: marker.cell, province: marker.province, anchorId: marker.anchorId } : null;
+    },
+    selectWildJob: () => {
+      const marker = wildJobMarker();
+      if (!marker) return null;
+      select(marker);
+      return { name: marker.name, label: marker.label, walk: marker.walk, cell: marker.cell };
+    },
+    travelToWildJob: () => {
+      const marker = wildJobMarker();
+      return marker ? travel(marker) : null;
+    },
+    /**
+     * Take a **country job** on this page, as a conversation in a town does.
+     *
+     * The offer is drawn from the world exactly as the street's is (`generateQuest`), so a page
+     * that must show a wilderness marker does not depend on the board's luck. For a test only:
+     * a player reaches a wild job through somebody who offers it.
+     */
+    makeWildJob: (kind = 'hunt') => {
+      try {
+        const giver = boardGiver();
+        const offer = generateQuest({ world, library, kind, seed: 0x5eed, giver, day: radiant.day ?? 1, dungeons });
+        if (offer.targetKind !== 'wild') return null;
+        const result = applyRadiantEvent(radiant, 'accept', { offer });
+        if (!result.ok) return { ok: false, reason: result.reason };
+        radiant = result.state;
+        saveRadiantState(radiant);
+        draw(); updateBar(); updateBoard();
+        return { ok: true, id: offer.id, kind: offer.kind, target: offer.target,
+          cell: offer.targetCell, anchor: offer.targetAnchor, walk: offer.targetWalk };
+      } catch (err) {
+        return { ok: false, reason: String(err?.message ?? err) };
+      }
     },
     /** A line on the map's own status bar, for a scene that has just failed to build. */
     message: (text) => { message = String(text ?? ''); messageUntil = performance.now() + 8000; draw(); return message; },

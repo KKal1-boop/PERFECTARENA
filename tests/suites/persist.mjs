@@ -244,6 +244,40 @@ export function makePersistSuite({ check, realErrors, shots, getPort }) {
       + toSpawn.toFixed(1) + " from the spawn " + JSON.stringify(cellOf(spawn))
       + ", and " + toTarget.toFixed(1) + " from the cell they were put on (" + JSON.stringify(TARGET)
       + (toTarget > 2 ? " — a standing player was moved off it, D-47" : ""));
+    // A room advances the live hour and both calendars, not just radiant.day.
+    await clear();
+    await page.goto(city('&clock=1380'));
+    await ready('the tavern rest fixture');
+    await page.evalJs('window.__debug.teleportToDoor("tavern")');
+    await sleep(250);
+    await page.pressKey('KeyE'); await page.pressKey('KeyE', false);
+    await page.waitFor('window.__debug.state().inside?.kind === "tavern"', { label: 'the tavern', timeoutMs: 60000 });
+    await page.evalJs('window.__debug.grantGold(100)');
+    const beforeRest = await clock();
+    const slept = await page.evalJs('window.__debug.rest()');
+    const afterRest = await clock();
+    const restMemory = await worldHour();
+    check('a tavern room advances to tomorrow morning in the live and persisted clock',
+      slept && afterRest.day === beforeRest.day + 1 && afterRest.hour === 8
+      && restMemory.day === afterRest.day && restMemory.minutes === afterRest.minutes,
+      `${JSON.stringify(beforeRest)} → ${JSON.stringify(afterRest)} / saved ${JSON.stringify(restMemory)}`);
+    check('the quest calendar agrees with the rested world clock',
+      await page.evalJs('window.__debug.side().day === window.__debug.living().clock.day'));
+    // Camp on safe country ground; remove fixture encounters through the normal damage seam.
+    await clear();
+    await page.goto(`http://localhost:${PORT}/?location=Daggerfall&wild&clock=1330&${q}`);
+    await ready('the camp rest fixture');
+    await page.evalJs('window.__debug.pause(true); window.__debug.combat().monsters.forEach((m, i) => window.__debug.damageEnemy(i, 100000))');
+    const campBefore = await clock();
+    const camp = await page.evalJs('window.__debug.rest()');
+    const campAfter = await clock();
+    check('safe camping advances eight hours across midnight, including the persisted day',
+      camp && campAfter.minutes === (campBefore.minutes + 480) % 1440 && campAfter.day === campBefore.day + 1,
+      `${JSON.stringify(campBefore)} → ${JSON.stringify(campAfter)}`);
+    const persistedCamp = await worldHour();
+    check('camp, calendar and world memory agree', persistedCamp?.minutes === campAfter.minutes
+      && persistedCamp?.day === campAfter.day && await page.evalJs('window.__debug.side().day') === campAfter.day,
+      JSON.stringify(persistedCamp));
     await page.screenshot(path.join(shots, 'persist-the-hour.png'));
     check('the persist suite leaves no console error behind', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400) || 'none');

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { CUTSCENES, cutsceneByName, cutsceneNames, decodeCutscene, frameBytes } from '../../src/game/cutscene.js';
+import { cutsceneSong } from '../../src/game/arenaMusic.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 const file = (name) => path.join(ARENA, name);
@@ -81,6 +82,24 @@ test('the reader’s RGBA packing unpacks to the bytes a canvas wants', () => {
   assert.equal(frameBytes(colours, reuse), reuse);
 });
 
+test('every movie the install ships decodes and carries a cue', () => {
+  // The owner, 2026-10-19: *"all cutscenes with appropriate audio are added to the game"*.
+  // This walks the install's own directory rather than a hand list: a `.FLC` that is not in
+  // the catalogue, or that the FLIC reader cannot open, is a movie a player can never see.
+  const loose = fs.readdirSync(ARENA).filter((name) => /\.FLC$/i.test(name)).sort();
+  assert.ok(loose.length >= 17, `${loose.length} loose movies`);
+  for (const name of loose) {
+    const movie = decodeCutscene(bytesOf(name), name);
+    assert.equal(movie.ok, true, `${name}: ${movie.reason ?? ''}`);
+    assert.equal(movie.width, 320, `${name} width`);
+    assert.equal(movie.height, 200, `${name} height`);
+    assert.ok(movie.frameCount > 0, `${name} frames`);
+    const first = movie.next();
+    assert.ok(first && first.colours.some((word) => (word & 0xffffff) !== 0), `${name} has a drawn first frame`);
+    assert.ok(cutsceneSong(name), `${name} has no music cue`);
+  }
+});
+
 test('the big opening loads, and a name the install does not ship is refused honestly', () => {
   const intro = bytesOf('INTRO.FLC');
   if (intro) {
@@ -92,4 +111,73 @@ test('the big opening loads, and a name the install does not ship is refused hon
   const refused = decodeCutscene(new Uint8Array(64).fill(0x42), 'NOSUCH.FLC');
   assert.equal(refused.ok, false);
   assert.match(String(refused.reason), /FLIC reader/);
+});
+
+// THE START-UP'S ORDER — Arena's own start-up sequence (OpenTESArena `IntroUiMVC.cpp`): a title
+// and a quote card of 5 s, the scroll movie, then the three scroll pictures held for 13, 13 and
+// 10 s. The king's betrayal (`INTRO.FLC`) is **not** a start-up card: it opens the game after
+// creation, so skipping a title card can never skip the story. Every step's file must be in the
+// install, loose or in GLOBAL.BSA.
+import { NEW_GAME_STEPS, STARTUP_STEPS } from '../../src/game/cutscene.js';
+import { parseImg } from '../../src/arena/image.js';
+import { parseBsa } from '../../src/arena/bsaArchive.js';
+
+test('the start-up runs in Arena\'s own order and timing, and the betrayal is not one of its cards', () => {
+  const order = STARTUP_STEPS.map((s) => s.file);
+  assert.deepEqual(order, [
+    'TITLE.IMG', 'QUOTE.IMG', 'SCROLL.FLC', 'SCROLL01.IMG', 'SCROLL02.IMG', 'SCROLL03.IMG',
+  ]);
+  const stills = STARTUP_STEPS.filter((s) => s.kind === 'still');
+  assert.deepEqual(stills.map((s) => s.seconds), [5, 5, 13, 13, 10]);
+  for (const step of STARTUP_STEPS.filter((s) => s.kind === 'movie')) {
+    assert.ok(cutsceneByName(step.file), `${step.file} is a catalogued movie`);
+  }
+  // **The king's murder opens the game, not the browser.** It plays after creation, on every
+  // new game, whatever the tab has already seen.
+  assert.deepEqual(NEW_GAME_STEPS.map((s) => s.file), ['INTRO.FLC']);
+  assert.ok(!order.includes('INTRO.FLC'), 'the start-up cards do not carry the story movie');
+});
+
+test('every opening picture is in the install and decodes with a palette', () => {
+  const archive = fs.existsSync(file('GLOBAL.BSA'))
+    ? parseBsa(new Uint8Array(fs.readFileSync(file('GLOBAL.BSA'))), 'GLOBAL.BSA')
+    : null;
+  const pictures = STARTUP_STEPS.filter((s) => s.kind === 'still');
+  for (const step of pictures) {
+    const loose = bytesOf(step.file);
+    const bytes = loose ?? archive?.get(step.file) ?? null;
+    assert.ok(bytes, `${step.file} is in the install (loose or GLOBAL.BSA)`);
+    const img = parseImg(new Uint8Array(bytes), step.file);
+    assert.equal(img.width, 320, `${step.file} is 320 wide`);
+    assert.equal(img.height, 200, `${step.file} is 200 high`);
+    const paletteFile = step.paletteFile ?? step.file;
+    const paletteBytes = bytesOf(paletteFile) ?? archive?.get(paletteFile);
+    const palette = img.palette ?? (paletteBytes ? parseImg(new Uint8Array(paletteBytes), paletteFile).palette : null);
+    assert.ok(palette, `${step.file} has a palette, its own or ${paletteFile}'s`);
+  }
+});
+
+// THE DREAM AFTER CREATION — `TEMPLATE.DAT` key 1400 as captions, with the player's name filled in.
+import { dreamCaptions } from '../../src/game/cutscene.js';
+import { parseTemplateDat, templateEntries, templateStrings } from '../../src/arena/templateDat.js';
+
+test('the dream narration (key 1400) is captions, one sentence group at a time, with the name filled', { skip: !fs.existsSync(file('TEMPLATE.DAT')) && 'no TEMPLATE.DAT' }, () => {
+  const [entry] = templateEntries(parseTemplateDat(new Uint8Array(fs.readFileSync(file('TEMPLATE.DAT')))), 1400);
+  assert.ok(entry, 'key 1400 exists');
+  const captions = dreamCaptions(templateStrings(entry.value), { pcf: 'Ulf', pcn: 'Ulf Stone' });
+  assert.ok(captions.length > 3, 'the narration spans several captions');
+  assert.ok(captions.every((c) => c.length > 0), 'no empty caption');
+  assert.ok(captions.every((c) => !c.includes('%pcf')), 'the first name is filled in');
+  assert.ok(captions.join(' ').includes('Ulf, listen to me'), 'the name reads as the file means it');
+  assert.ok(captions[0].startsWith('Do not fear for it is I, Ria Silmane.'), 'the speech opens with the file\'s first line');
+  for (const c of captions) {
+    const sentences = c.split(/(?<=[.!?])\s+/).length;
+    assert.ok(c.length <= 140 || sentences === 1, 'a caption is at most 140 characters unless one sentence is longer');
+  }
+});
+
+test('dreamCaptions fills a placeholder and groups sentences up to the limit', () => {
+  const grouped = dreamCaptions(['One. Two. Three.'], {}, 10);
+  assert.deepEqual(grouped, ['One. Two.', 'Three.']);
+  assert.deepEqual(dreamCaptions(['Hello %pcf.'], { pcf: 'Ann' }), ['Hello Ann.']);
 });

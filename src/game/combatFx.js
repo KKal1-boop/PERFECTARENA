@@ -64,6 +64,40 @@ export function fitAttackToGround(attack, collider) {
   return attack;
 }
 
+/** The shaft's own wood, and the head's iron. This project's colours, like the blood's. */
+export const ARROW_SHAFT = Object.freeze([0.76, 0.66, 0.44]);
+export const ARROW_HEAD = Object.freeze([0.28, 0.27, 0.25]);
+
+/**
+ * **The colours a spell is drawn with** — this project's, like the blood's red.
+ *
+ * A cast had no picture at all before this: the character lost the points, the creature lost the
+ * health, and nothing happened on screen between `Z` and the notice — the owner, 2026-10-18:
+ * *"particles for magic and working magic"*. Arena's own cast art lives in `A.EXE`/the sprites
+ * this checkout does not decode as a cast, so the tell is built from the palette a spell already
+ * names: a damage event carries its element (`game/spells.js`), and each element gets one colour
+ * that reads at a glance. A self spell (a heal, a ward, a light) is the same burst in its own
+ * colour at the caster's hands.
+ *
+ * @type {Readonly<Record<string, readonly [number, number, number]>>}
+ */
+export const MAGIC_COLOURS = Object.freeze({
+  fire: Object.freeze([1, 0.45, 0.12]),
+  // **`cold` is the element the bestiary and the spell file name** (`Ice Bolt`, the snow wolf's
+  // bolt, the ice golem's), so it must be here or a bolt of ice is drawn in magic's purple.
+  cold: Object.freeze([0.55, 0.8, 1]),
+  frost: Object.freeze([0.55, 0.8, 1]),
+  ice: Object.freeze([0.55, 0.8, 1]),
+  shock: Object.freeze([0.82, 0.74, 1]),
+  poison: Object.freeze([0.45, 0.85, 0.32]),
+  disease: Object.freeze([0.55, 0.7, 0.25]),
+  heal: Object.freeze([0.5, 1, 0.62]),
+  magic: Object.freeze([0.72, 0.42, 1]),
+});
+
+/** How many motes one cast throws, and how long they live. */
+export const MAGIC_MOTES = Object.freeze({ min: 10, max: 20, life: 0.55 });
+
 export class CombatFx {
   constructor() {
     this.particles = [];
@@ -73,10 +107,26 @@ export class CombatFx {
     this.bursts = 0;
     /** How many landed blows have sprayed blood (`blood()`), for the seam and the tests. */
     this.bloodSprays = 0;
+    /** How many casts have thrown motes (`magicBurst`), for the seam and the tests. */
+    this.magicBursts = 0;
+    /**
+     * **Arena's blood explosion** (`BLOODEXP.CFA`), one per landed blow.
+     *
+     * The old spray was a ring of coloured quads this project invented; the install ships the
+     * original's own five-frame blood burst, and the scene draws it as a billboard where the
+     * wound is (`liveBatches`). This list is the animation's clock — the sprite's frame comes
+     * from `age / life` — so the record lives here with the rest of the effects.
+     *
+     * @type {{x: number, y: number, z: number, age: number, life: number}[]}
+     */
+    this.sprays = [];
     /** The bolts in flight, set each frame by the scene (`game/ranged.js` owns their life). */
     this.bolts = [];
+    /** The player's arrows in flight, set each frame by the scene (`game/archery.js`). */
+    this.arrows = [];
   }
   setBolts(bolts = []) { this.bolts = bolts; }
+  setArrows(arrows = []) { this.arrows = arrows; }
   burst(x, y, z, outcome = 'hit', heavy = false) {
     // **A landed blow is blood, not sparks.** Arena's own hit feedback is the wound, and the
     // owner's report names this port's coloured debris among the things that read as foreign
@@ -131,10 +181,54 @@ export class CombatFx {
       this.particles.push({
         x, y, z, vx: Math.sin(angle) * speed, vz: Math.cos(angle) * speed,
         vy: 0.9 + (i % 4) * 0.35, life: 0.48, age: 0, colour: BLOOD_COLOUR, size: 0.045,
+        art: 'blood',
       });
       emitted++;
     }
+    // **One burst of the install's own art, at the wound.** `BLOODEXP.CFA` is Arena's five-frame
+    // blood explosion; the drops above are its clock and its seam, and the scene draws the
+    // sprite. A spray that is already up is replaced rather than stacked, so a flurry of blows
+    // on one creature does not paint five explosions in the same square metre.
+    this.sprays = this.sprays.filter((spray) => Math.hypot(spray.x - x, spray.z - z) > 0.7);
+    if (this.sprays.length >= 8) this.sprays.shift();
+    this.sprays.push({ x, y, z, age: 0, life: 0.5 });
     this.bloodSprays++;
+    return emitted;
+  }
+  /**
+   * **A cast's tell** — motes of the spell's own element, rising out of where it landed.
+   *
+   * The burst is a cone when the scene knows which way the spell travelled (toward a creature)
+   * and an even ring when it does not (a self spell), the same reading `blood()` uses. `power`
+   * adds motes and reach, so a novice's spark and a battlemage's fireball are not the same puff,
+   * and the pool's own `FX_MAX_PARTICLES` ceiling still bounds the whole scene.
+   *
+   * @param {number} x @param {number} y @param {number} z  where the spell landed, world space
+   * @param {{element?: string, power?: number, dir?: number[]|null}} [opts]  `dir` is `[dx, dz]`
+   * @returns {number} how many motes were emitted
+   */
+  magicBurst(x, y, z, { element = 'magic', power = 1, dir = null } = {}) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return 0;
+    const colour = MAGIC_COLOURS[String(element).toLowerCase()] ?? MAGIC_COLOURS.magic;
+    const p = Number.isFinite(power) && power > 0 ? power : 1;
+    const count = Math.max(MAGIC_MOTES.min, Math.min(MAGIC_MOTES.max, Math.round(MAGIC_MOTES.min + p * 2)));
+    const aimed = Array.isArray(dir) && Number.isFinite(dir[0]) && Number.isFinite(dir[1]) && Math.hypot(dir[0], dir[1]) > 1e-6
+      ? Math.atan2(dir[0], dir[1]) : null;
+    let emitted = 0;
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= FX_MAX_PARTICLES) this.particles.shift();
+      const spread = aimed === null ? i / count * Math.PI * 2 : aimed + (i / count * 2 - 1) * 0.8;
+      const speed = 0.9 + (i % 4) * 0.22 + Math.min(1.4, p * 0.08);
+      this.particles.push({
+        x, y, z,
+        vx: Math.sin(spread) * speed,
+        vz: Math.cos(spread) * speed,
+        vy: 1.1 + (i % 3) * 0.4,
+        life: MAGIC_MOTES.life, age: 0, colour, size: 0.05, art: 'spark',
+      });
+      emitted++;
+    }
+    this.magicBursts++;
     return emitted;
   }
   step(dt) {
@@ -143,6 +237,8 @@ export class CombatFx {
       p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
     }
     this.particles = this.particles.filter((p) => p.age < p.life);
+    for (const spray of this.sprays) spray.age += dt;
+    this.sprays = this.sprays.filter((spray) => spray.age < spray.life);
   }
   vertex(x, y, z, colour, alpha) {
     if (this.count >= FX_MAX_VERTICES) return;
@@ -155,7 +251,11 @@ export class CombatFx {
     this.count = 0; this.telegraphs = 0;
     for (const actor of actors) {
       const a = actor.attack;
-      if (!a || (actor.monster?.health ?? actor.fighter?.health ?? 0) <= 0) continue;
+      // **A spell cast wears the attack animation but is not a melee blow.** There is no ring to
+      // plant: the caster's answer is the bolt, and the owner's earlier rule stands ("a caster
+      // throws and throws only"). The animation is still drawn by the actor pass, which reads
+      // `actor.attack` and therefore plays frames 8–11 exactly as a swing does.
+      if (!a || a.spell || (actor.monster?.health ?? actor.fighter?.health ?? 0) <= 0) continue;
       const active = a.elapsed >= a.profile.windup && a.elapsed < a.profile.windup + a.profile.active;
       if (a.elapsed >= a.profile.windup + a.profile.active) continue;
       const f = attackFootprint(a), progress = Math.min(1, a.elapsed / a.profile.windup);
@@ -188,7 +288,12 @@ export class CombatFx {
     // frame of its flight.
     for (const bolt of this.bolts) {
       const r = 0.09;
-      const colour = bolt.fire ? [1, 0.45, 0.12] : [0.55, 0.75, 1];
+      // **The bolt is its own element.** This used to be two colours — orange for `fire`, blue
+      // for everything else — so a shock, a poison and a magic bolt all flew as the same ice
+      // shard. `fireBolt` carries the element from the bestiary, and the palette is the one the
+      // impact motes already use (`magicBurst`).
+      const element = String(bolt.element ?? (bolt.fire ? 'fire' : 'magic')).toLowerCase();
+      const colour = MAGIC_COLOURS[element] ?? MAGIC_COLOURS.magic;
       this.quad(
         [bolt.x - cameraRight[0] * r, bolt.y - r, bolt.z - cameraRight[2] * r],
         [bolt.x + cameraRight[0] * r, bolt.y - r, bolt.z + cameraRight[2] * r],
@@ -203,7 +308,43 @@ export class CombatFx {
         [bolt.x - cameraRight[0] * r, bolt.y, bolt.z - cameraRight[2] * r],
         colour, 0.95);
     }
+    // ── the player's arrows ────────────────────────────────────────────────
+    // **A shaft, not a spark.** A caster's bolt is a glow (`ranged.js`), and a bow's missile is a
+    // piece of wood: one thin ribbon along the arrow's own travel, with the head end brighter.
+    // It is the same two-triangle quad the effects pool already draws, so an arrow costs no
+    // texture and no draw call of its own; the install's `ARROWS.CIF` is the 12×9 projectile art
+    // the original draws from the first person, and at the range a bow is used a 12-pixel sprite
+    // in the world is a speck — this is the world's own arrow, and it is this project's reading.
+    for (const arrow of this.arrows) {
+      const travel = Math.hypot(arrow.vx, arrow.vz) || 1;
+      const ux = arrow.vx / travel, uz = arrow.vz / travel;
+      const length = 0.55;
+      const half = 0.022;
+      const tailX = arrow.x - ux * length, tailZ = arrow.z - uz * length;
+      const rx = cameraRight[0] * half, rz = cameraRight[2] * half;
+      this.quad(
+        [tailX - rx, arrow.y, tailZ - rz], [tailX + rx, arrow.y, tailZ + rz],
+        [arrow.x + rx, arrow.y, arrow.z + rz], [arrow.x - rx, arrow.y, arrow.z - rz],
+        ARROW_SHAFT, 0.95,
+      );
+      // The head, a darker point so the direction of flight reads at a glance.
+      const backX = arrow.x - ux * 0.09, backZ = arrow.z - uz * 0.09;
+      this.quad(
+        [backX - rx * 1.6, arrow.y, backZ - rz * 1.6],
+        [backX + rx * 1.6, arrow.y, backZ + rz * 1.6],
+        [arrow.x + rx * 0.2, arrow.y, arrow.z + rz * 0.2],
+        [arrow.x - rx * 0.2, arrow.y, arrow.z - rz * 0.2],
+        ARROW_HEAD, 1,
+      );
+    }
+    // **The wound and the cast are Arena's own sprites, not this pass's quads.** `SPPARTS.RCI`
+    // is the install's 9×9 spark and `BLOODEXP.CFA` its five-frame blood burst; both are drawn
+    // by the scene through the billboard pass that draws every other piece of Arena art,
+    // because this pass is a flat colour program with no texture unit. A defence's tell (a
+    // parry's flash, a block's dust, a charge's ring) has no Arena art of its own and keeps the
+    // quad it always had, so `art` is the one switch between the two drawings.
     for (const p of this.particles) {
+      if (p.art) continue;
       const r = p.size, rx = cameraRight[0] * r, rz = cameraRight[2] * r;
       this.quad([p.x - rx, p.y - r, p.z - rz], [p.x + rx, p.y - r, p.z + rz],
         [p.x + rx, p.y + r, p.z + rz], [p.x - rx, p.y + r, p.z - rz], p.colour, 1 - p.age / p.life);

@@ -62,8 +62,9 @@ function inputOf(keys, pressed) {
     down: keys.has('KeyQ'),
     jump: keys.has('Space'),
     run: keys.has('ShiftLeft') || keys.has('ShiftRight'),
-    sneak: keys.has('ControlLeft'),
-    crouch: pressed.has('KeyC'),
+    sneak: keys.has('ControlLeft') || keys.has('ControlRight'),
+    // `Ctrl` crouches (`scenes/interior.js`'s `inputOf`): `C` is the spellbook's key.
+    crouch: pressed.has('ControlLeft') || pressed.has('ControlRight'),
     autoRun: false,
   };
 }

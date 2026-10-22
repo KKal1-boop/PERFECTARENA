@@ -15,7 +15,7 @@
 //     one frame and answers it. `rewind()` starts again from frame 1.
 //   * the ring frame (the FLIC format's extra frame header) is *not* played as a frame: the
 //     reader's own `bufferNextFrame` wraps `currentFrame` to 1 after the last one, so a
-//     cutscene that wants to hold its last frame does so in the player, not here.
+//     narrated scene loops its movie in the player (`rewind()`), not here.
 //
 // The palette arrives per frame (`COLOR_256` chunks are inside the frames, as Arena wrote
 // them), so every frame is decoded to packed RGBA words with the palette the file carried
@@ -24,6 +24,7 @@
 // No DOM lives here: this is the library a player, a test or a lab tool drives.
 
 import { FlcFile } from '../engine/formats/flcFile.js';
+import { fillSpeech } from './dialogue.js';
 
 /**
  * The install's loose `.FLC`s and the story beat each one belongs to.
@@ -49,8 +50,104 @@ export const CUTSCENES = Object.freeze([
   { file: 'END01.FLC', beat: 'ending', what: 'the first ending' },
   { file: 'END02.FLC', beat: 'ending', what: 'the second ending' },
   { file: 'AFLC2.FLC', beat: 'ending', what: 'a closing animation' },
+  // **The revised release's endgame pair** (UESP's Deluxe note): `NUKING.FLC` is the newer
+  // Emperor shot that replaced `KING.FLC`, and `NUJAGDTH.FLC` the newer Tharn death that
+  // replaced `JAGARDTH.FLC`. They are catalogued and playable through `?cutscene=`, while the
+  // main story keeps the pair its own quest machine was wired against; a build that wants the
+  // revision can name either file at that beat without a second reader.
+  { file: 'NUKING.FLC', beat: 'ending', what: 'the revised Emperor shot' },
+  { file: 'WARHAFT.FLC', beat: 'intro', what: 'the cut Warhaft slide' },
   { file: 'WALK.FLC', beat: 'tour', what: 'the walking tour' },
 ]);
+
+/**
+ * The **start-up** cinematics, in Arena's own order (OpenTESArena's `IntroUiMVC.cpp`, MIT): a
+ * title card and a quote card of 5 seconds each, the opening scroll movie, then the story's
+ * three scroll pictures held for 13, 13 and 10 seconds. The pictures are shown in the palette of
+ * `SCROLL03.IMG`, which is how Arena shows all three.
+ *
+ * These belong **before the start menu**: they are the game greeting a player at launch, not
+ * part of a new game's first minutes. The old `OPENING_STEPS` played them after creation, which
+ * put a title card between the player and the cell and — worse — made the story's own opening
+ * movie share a skip with them.
+ */
+export const STARTUP_STEPS = Object.freeze([
+  Object.freeze({ kind: 'still', file: 'TITLE.IMG', paletteFile: 'TITLE.IMG', seconds: 5 }),
+  Object.freeze({ kind: 'still', file: 'QUOTE.IMG', paletteFile: 'QUOTE.IMG', seconds: 5 }),
+  Object.freeze({ kind: 'movie', file: 'SCROLL.FLC' }),
+  Object.freeze({ kind: 'still', file: 'SCROLL01.IMG', paletteFile: 'SCROLL03.IMG', seconds: 13 }),
+  Object.freeze({ kind: 'still', file: 'SCROLL02.IMG', paletteFile: 'SCROLL03.IMG', seconds: 13 }),
+  Object.freeze({ kind: 'still', file: 'SCROLL03.IMG', paletteFile: 'SCROLL03.IMG', seconds: 10 }),
+]);
+
+/**
+ * The **new game** movie, after creation and before the cell: `INTRO.FLC`, the Emperor's
+ * betrayal — the king murdered and Tharn wearing his face. It is Arena's own opening movie
+ * (the executable plays `intro` at `0x125c`, and OpenTESArena's new-game path is creation →
+ * cinematic → world), and the one movie a player must see to understand who imprisoned them.
+ *
+ * It is deliberately **not** part of `STARTUP_STEPS`: skipping a title card must never skip the
+ * story, and this movie plays on every new game (`scenes/newGame.js` and `main.js`).
+ */
+export const NEW_GAME_STEPS = Object.freeze([
+  Object.freeze({ kind: 'movie', file: 'INTRO.FLC' }),
+]);
+
+/**
+ * When each caption comes on screen, in milliseconds from the start of the narration.
+ *
+ * The narration's length is the speech's own (`arena/dreamSpeech.js`), and each caption takes a
+ * share of it in proportion to its length, so a long caption stays longer than a short one. The
+ * clips are not matched to captions one by one (there are fewer captions than clips), so this is
+ * an approximation of the speech's pacing, not a claim about where each line falls.
+ *
+ * @param {string[]} captions
+ * @param {number} totalMs the narration's whole length
+ * @returns {number[]} one start time per caption, ascending, the first at 0
+ */
+export function captionStarts(captions, totalMs) {
+  const weights = captions.map((c) => Math.max(1, c.length));
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const starts = [];
+  let at = 0;
+  for (const w of weights) {
+    starts.push(Math.round(at));
+    at += (w / sum) * totalMs;
+  }
+  return starts;
+}
+
+/**
+ * The narration of a text-over-movie scene, as the captions it is shown in.
+ *
+ * `strings` are a template entry's strings (`arena/templateDat.js`'s `templateStrings`). Each is
+ * filled with the player's own names (`%pcf` is the first name), split into sentences, and the
+ * sentences are grouped into captions no longer than `maxLength` characters, so one caption sits
+ * on screen at a time. A sentence longer than `maxLength` is kept whole rather than cut.
+ *
+ * @param {string[]} strings
+ * @param {Record<string, string>} [values] the placeholder values, e.g. `{pcf: 'Ulf'}`
+ * @param {number} [maxLength]
+ * @returns {string[]}
+ */
+export function dreamCaptions(strings, values = {}, maxLength = 140) {
+  const captions = [];
+  for (const template of strings) {
+    const { text } = fillSpeech(template, values);
+    const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 0);
+    let current = '';
+    for (const sentence of sentences) {
+      if (current && `${current} ${sentence}`.length > maxLength) {
+        captions.push(current);
+        current = sentence;
+      } else {
+        current = current ? `${current} ${sentence}` : sentence;
+      }
+    }
+    if (current) captions.push(current);
+  }
+  return captions;
+}
 
 /**
  * The install's loose-file index, fetched once per arena root.

@@ -29,10 +29,10 @@ import { DUNGEON_BLOCKS_MIF } from '../../src/game/dungeonPlan.js';
 import { decodeText, loadArenaText } from '../../src/arena/arenaText.js';
 import { loadWorldMap } from '../../src/game/worldMap.js';
 import {
-  ARTIFACTS, ITEMS, MONSTERS, OFFERS_PER_BOARD, RADIANT_EVENTS, RADIANT_KINDS,
+  ARTIFACTS, GATHERINGS, ITEMS, MONSTERS, OFFERS_PER_BOARD, RADIANT_EVENTS, RADIANT_KINDS,
   advanceDays, applyRadiantEvent, buildBoard, createRadiantState, deserializeRadiantState,
   discoverLooseMifs, enterableDungeons, enterableFromListing, generateQuest, offerReadsWhole,
-  personOffer, radiantLog, radiantObjective, serializeRadiantState, slayProgress,
+  personOffer, radiantLog, radiantObjective, repairWildTargets, serializeRadiantState, slayProgress,
 } from '../../src/game/radiantQuests.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
@@ -96,8 +96,37 @@ test('the trinkets and the reward tiers are coherent', () => {
       assert.ok(Number.isInteger(entry.tier) && entry.tier >= 1 && entry.tier <= 4, `${entry.name} has a tier`);
     }
   }
-  assert.equal(RADIANT_KINDS.length, 5);
+  assert.equal(RADIANT_KINDS.length, 8, 'a board can hire an artifact hunter, a lair-clearer, a hunter, a fetcher, a gatherer, a rescuer, a courier or a searcher');
+  assert.equal(new Set(RADIANT_KINDS.map((k) => k.id)).size, 8, 'every kind has its own id');
+  assert.ok(GATHERINGS.length >= 5, `${GATHERINGS.length} country finds`);
   assert.equal(OFFERS_PER_BOARD, 3);
+});
+
+test('a job that names a dungeon marks that dungeon, at its own pixel on the map', () => {
+  // The owner, 2026-10-17: *"RANDOM MISSIONS GIVEN BY NPCS HAVE QUESTMARKS OUTSIDE OF DUNGEONS
+  // AND IN THE PERSISTENT WORLD"*. The mark the world map draws for an active job is
+  // `world.byName(radiant.active.target)` (`scenes/worldmap.js`), so the name the generator hands
+  // out has to resolve to the **dungeon**, and its pixel has to be the dungeon's own — a job that
+  // names a dungeon but carries a settlement's pixel sends the player to the wrong country.
+  let checked = 0;
+  for (const giver of [world.byName('Daggerfall'), world.byName('Sentinel'), world.byName('Ebonheart')]) {
+    for (let seed = 1; seed <= 40; seed++) {
+      for (const kind of RADIANT_KINDS.filter((k) => k.where === 'dungeon')) {
+        const quest = generateQuest({ world, library, kind: kind.id, seed, giver, day: 1, dungeons });
+        const place = world.byName(quest.target);
+        assert.equal(place?.kind, 'dungeon', `${kind.id} seed ${seed}: "${quest.target}" is a dungeon`);
+        assert.equal(quest.targetKind, 'dungeon');
+        assert.deepEqual({ x: quest.targetGlobal.x, y: quest.targetGlobal.y },
+          { x: place.global.x, y: place.global.y },
+          `${kind.id} seed ${seed}: ${quest.target} is marked at its own pixel`);
+        // …and a job that names a dungeon has the map file to open, or the assembled level that
+        // stands in for one (`game/dungeonPlan.js`).
+        assert.ok(quest.targetMif, `${quest.target} has a map`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked >= 100, `${checked} dungeon jobs checked`);
 });
 
 test('an artifact speech is paid the price the speech itself names', () => {
@@ -219,8 +248,34 @@ test('a generated quest always points somewhere the game can actually go', () =>
       for (const kind of RADIANT_KINDS) {
         const quest = generateQuest({ world, library, kind: kind.id, seed, giver, day: seed, dungeons });
         assert.ok(quest.target.length > 2, `${kind.id}: "${quest.target}" names somewhere`);
-        assert.ok(names.has(quest.target.toLowerCase()), `${kind.id}: ${quest.target} is a real location`);
         assert.ok(quest.targetProvince, `${kind.id}: the target is in a province`);
+        if (quest.targetKind === 'wild') {
+          // A country job is a world cell with an anchor a page can boot from.
+          assert.ok(Number.isFinite(quest.targetCell?.row) && Number.isFinite(quest.targetCell?.col),
+            `${kind.id}: a wild target is a cell`);
+          assert.ok(quest.targetAnchor && names.has(quest.targetAnchor.toLowerCase()),
+            `${kind.id}: ${quest.targetAnchor} is a settlement the arrival can name`);
+          assert.equal(quest.targetMif, null);
+          assert.ok(Number.isFinite(quest.targetGlobal?.x) && Number.isFinite(quest.targetGlobal?.y));
+          assert.ok(world.landAt(quest.targetGlobal, world.provinces.find((p) => p.name === quest.targetProvince)?.id),
+            `${kind.id}: ${quest.target} is on land`);
+          assert.match(quest.target, /^the wilds near /);
+          // The owner's rule: you fast travel to the anchor and **walk** the last leg. The
+          // spot is a few hundred paces out of the gate, never a second journey (the old
+          // one-or-two-pixel ring was 256–512 cells, which the map itself called "too far
+          // from North Keep to reasonably walk to").
+          assert.ok(quest.targetWalk >= 100 && quest.targetWalk <= 200,
+            `${kind.id}: ${quest.targetWalk} paces out of ${quest.targetAnchor} is a short walk`);
+          const anchor = world.byName(quest.targetAnchor);
+          if (anchor?.tamriel) {
+            const dx = Math.abs((quest.targetGlobal?.x ?? 0) - anchor.tamriel.x);
+            const dy = Math.abs((quest.targetGlobal?.y ?? 0) - anchor.tamriel.y);
+            assert.ok(dx <= 1 && dy <= 1,
+              `${kind.id}: ${quest.target} is at most the next pixel over from ${anchor.name}`);
+          }
+        } else {
+          assert.ok(names.has(quest.target.toLowerCase()), `${kind.id}: ${quest.target} is a real location`);
+        }
         if (kind.needsDungeon) {
           assert.ok(dungeons.some((d) => d.name.toLowerCase() === quest.target.toLowerCase()),
             `${kind.id}: ${quest.target} is enterable`);
@@ -269,7 +324,9 @@ test('the offer board is the settlement it is posted in, and delivery names a re
   assert.ok(board.length >= 2, `${board.length} postings`);
   const towns = new Set(world.settlements().filter((s) => s.name).map((s) => s.name));
   for (const offer of board) {
-    if (offer.kind === 'deliver') assert.ok(towns.has(offer.target), `${offer.target} is a town`);
+    if (offer.kind === 'deliver' && offer.targetKind === 'settlement') {
+      assert.ok(towns.has(offer.target), `${offer.target} is a town`);
+    }
     assert.equal(offer.giver, 'Daggerfall');
     assert.ok(offer.reward > 0 && offer.days >= 4);
   }
@@ -318,7 +375,8 @@ test('the state machine refuses work done in the wrong place, or out of order', 
   const giver = world.byName('Daggerfall');
   const board = buildBoard({ world, library, seed: 4242, giver, day: 1, dungeons });
   const offer = board.find((o) => o.kind !== 'deliver') ?? board[0];
-  const finish = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[offer.kind];
+  const finish = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver' }[offer.kind];
 
   let state = createRadiantState();
   const logged = radiantLog(state);
@@ -344,7 +402,7 @@ test('the state machine refuses work done in the wrong place, or out of order', 
   assert.match(elsewhere.reason, new RegExp(offer.target));
   // …and the reward only at the giver.
   assert.equal(applyRadiantEvent(state, 'return', { where: offer.target }).ok, false);
-  if (offer.kind === 'slay') {
+  if (offer.kind === 'slay' || offer.kind === 'hunt') {
     const progress = slayProgress(state.active);
     for (const encounterId of progress.ids) {
       const result = applyRadiantEvent(state, 'killed', { where: offer.target, questId: offer.id, monster: progress.monster, encounterId });
@@ -408,6 +466,12 @@ test('a person in a town has work of their own, and the same work every time', (
   assert.ok(first, 'a person in a city-state has something to offer');
   const again = personOffer({ world, library, giver, person, day: 3, dungeons });
   assert.deepEqual(again, first, 'the same person offers the same job, byte for byte');
+  // **But not forever.** A round is one job they have already paid for; the next draw is
+  // a different piece of work, which is how a person keeps having something to offer.
+  const next = personOffer({ world, library, giver, person, day: 3, dungeons, round: 1 });
+  assert.ok(next, 'a person still has work after the first job');
+  assert.notEqual(next.id, first.id, 'the second job is a new draw, not the first one again');
+  assert.ok(next.target.length > 2 && next.reward > 0);
   // …and the offer is a real job: a place the install can open, a purse and a deadline.
   const kinds = new Set(RADIANT_KINDS.map((k) => k.id));
   assert.ok(kinds.has(first.kind), first.kind);
@@ -433,8 +497,10 @@ test('a person offers only what the install can honour, and nothing in a dungeon
   for (let i = 0; i < 40; i++) {
     const offer = personOffer({ world, library, giver, person: { place: { row: 5 + i, col: 9 } }, day: 1, dungeons: [] });
     if (!offer) continue;
-    assert.equal(offer.kind, 'deliver', `${offer.kind} needs no dungeon here`);
+    assert.ok(!RADIANT_KINDS.find((k) => k.id === offer.kind)?.needsDungeon,
+      `${offer.kind} needs no dungeon here`);
     assert.equal(offer.targetMif, null);
+    assert.ok(offer.targetKind === 'wild' || offer.targetKind === 'settlement', `${offer.kind} stays out of a dungeon`);
   }
   // Nowhere to stand and nowhere to send: the picker answers null rather than guessing.
   assert.equal(personOffer({ world, library, giver, person: null, day: 1, dungeons }), null);
@@ -463,8 +529,52 @@ test('an install with no dungeons cannot be offered a dungeon job', () => {
   const giver = world.byName('Daggerfall');
   assert.throws(() => generateQuest({ world, library, kind: 'slay', seed: 1, giver, day: 1, dungeons: [] }),
     /needs an enterable dungeon/);
-  // The board falls back to the kinds that do not need one, rather than failing.
+  // The board falls back to the kinds that do not need one, rather than failing: the country
+  // still has hunters, gatherers, search parties, rescuers and couriers.
   const board = buildBoard({ world, library, seed: 1, giver, day: 1, dungeons: [], count: 3 });
-  assert.equal(board.length, 1, 'only the delivery survives');
-  assert.equal(board[0].kind, 'deliver');
+  assert.equal(board.length, 3, 'three country jobs survive');
+  for (const offer of board) {
+    assert.ok(!RADIANT_KINDS.find((k) => k.id === offer.kind)?.needsDungeon, `${offer.kind} needs no dungeon`);
+    assert.equal(offer.targetKind, 'wild', `${offer.kind} goes to the country`);
+    assert.equal(offer.targetMif, null);
+  }
+});
+
+test('a country job saved far from its anchor is pulled back beside the gate', () => {
+  // The in-progress save from before the short-walk rule: a valid job whose cell is a whole
+  // pixel or two out. Opening the map or the street repairs it instead of stranding it —
+  // the owner: *"in the map it appears 'your job near North Keep' that is too far from North
+  // Keep to reasonably walk to it"*.
+  const giver = world.byName('Daggerfall');
+  let offer = null;
+  for (let seed = 1; seed <= 80 && !offer; seed++) {
+    for (const spec of RADIANT_KINDS) {
+      const quest = generateQuest({ world, library, kind: spec.id, seed, giver, day: seed, dungeons });
+      if (quest.targetKind === 'wild') { offer = quest; break; }
+    }
+  }
+  assert.ok(offer, 'some posting goes to the country');
+  const anchor = world.byName(offer.targetAnchor);
+  const anchorCell = {
+    row: anchor.tamriel.y * 256 + 128,
+    col: anchor.tamriel.x * 256 + 128,
+  };
+  const state = {
+    active: {
+      ...offer, completed: false,
+      targetWalk: 400,
+      targetCell: { row: anchorCell.row + 400, col: anchorCell.col },
+      targetGlobal: { x: anchor.tamriel.x + 2, y: anchor.tamriel.y },
+    },
+  };
+  assert.equal(repairWildTargets(state, world), true, 'the old job is moved');
+  const movedWalk = Math.hypot(state.active.targetCell.row - anchorCell.row,
+    state.active.targetCell.col - anchorCell.col);
+  assert.ok(movedWalk >= 120 && movedWalk <= 200, `${Math.round(movedWalk)} cells is a short walk`);
+  assert.equal(state.active.targetWalk, Math.round(movedWalk));
+  assert.ok(world.landAt(state.active.targetGlobal, world.byName(offer.targetAnchor).provinceID));
+  // A job already beside its gate is left exactly as it was.
+  const walk = state.active.targetWalk;
+  assert.equal(repairWildTargets(state, world), false);
+  assert.equal(state.active.targetWalk, walk);
 });

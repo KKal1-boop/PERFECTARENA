@@ -20,6 +20,7 @@
 // is the one place a real bag has to be added to.
 
 import { MATERIALS, WEAPONS, armourClass, attributeOf, materialById, weaponById } from './combat.js';
+import { carriedWeight, maxCarryWeight } from './items.js';
 
 /**
  * The weapon the player is swinging, and what it does.
@@ -32,15 +33,16 @@ export function weaponCarried(character) {
   // `items.js`'s `weaponHeld` does — not a longsword the character has never held.
   const weapon = weaponById(character?.weapon ?? 'fists') ?? WEAPONS.find((w) => w.id === 'fists');
   const material = materialById(character?.material ?? 'steel') ?? MATERIALS.find((m) => m.id === 'steel');
-  // The material's bonus is a flat modifier on the range, exactly as the fight applies it.
-  const bonus = material?.damage ?? 0;
+  // The material has its own two ends (UESP: iron is 0 / −2), exactly as the fight applies
+  // them — one flat bonus for both ends was the earlier misreading.
+  const min = Math.max(1, weapon.min + (material?.min ?? 0));
   return {
     id: weapon.id,
     name: weapon.name,
     material: material?.id ?? 'steel',
     materialName: material?.name ?? 'Steel',
-    min: Math.max(1, weapon.min + bonus),
-    max: Math.max(1, weapon.max + bonus),
+    min,
+    max: Math.max(min, weapon.max + (material?.max ?? 0)),
   };
 }
 
@@ -54,19 +56,29 @@ export function weaponCarried(character) {
 export function carried(character, world = {}) {
   const weapon = weaponCarried(character);
   const quest = world.quest ?? {};
+  // **One block for the body and the purse.** These were three headings — In hand, Purse,
+  // Burden — with a row or two under each, and a pack page whose top half is headings is the
+  // owner's *"the gui is shit"*. The same facts read in one list.
+  const bag = Array.isArray(world.bag) ? world.bag : (Array.isArray(character?.bag) ? character.bag : []);
+  const weight = carriedWeight(character, bag);
+  const max = maxCarryWeight(character);
   const sections = [
     {
-      section: 'In hand',
+      section: 'The adventurer',
       rows: [
-        { name: `${weapon.name} (${weapon.materialName})`, note: `${weapon.min}–${weapon.max} damage` },
+        { name: `${weapon.name} (${weapon.materialName})`, note: `${weapon.min}–${weapon.max} damage, in hand` },
         // Agility is attribute 3 (`character.js`'s `ATTRIBUTES` order) and one point of
         // armour class is five of it — `armourClass` takes the attribute, not the actor.
         { name: `${armourClass(attributeOf(character, 'agility', 3, 0))} armour class`, note: 'from Agility, the armour rule UESP states' },
+        { name: `${character?.gold ?? 0} gold`, note: world.side ? `side work: ${world.side}` : 'earned by the job board' },
+        // **The burden** — the owner's *"inventory should have max weight and armor should
+        // weight also"*. The bar is the character's Strength (`items.js`), and the bag plus
+        // everything worn counts, so a plate suit is a decision and not a cosmetic.
+        {
+          name: `${weight.toFixed(1)} / ${max.toFixed(0)} kg`,
+          note: weight > max ? 'overloaded — sell, store or drop something' : 'carried and worn',
+        },
       ],
-    },
-    {
-      section: 'Purse',
-      rows: [{ name: `${character?.gold ?? 0} gold`, note: world.side ? `side work: ${world.side}` : 'earned by the job board' }],
     },
   ];
   const items = [];
@@ -75,7 +87,7 @@ export function carried(character, world = {}) {
   if (quest.hasKeyItem) items.push({ name: 'Jewel of Fire', note: 'the Imperial Palace' });
   if (items.length) sections.push({ section: 'Quest items', rows: items });
   sections.push({
-    section: 'The road so far',
+    section: 'The record',
     rows: [
       { name: `${world.kills ?? 0} slain · ${world.xp ?? 0} experience`, note: 'what the fight counted' },
       { name: `${world.day ?? 0} days travelled`, note: 'fast travel and the calendar' },
@@ -107,6 +119,9 @@ export const BLOCK_NOTE = 'Holding B or the right mouse button raises your guard
  * @returns {{damage: number, blocked: number}}
  */
 export function guardDamage(damage, blocking) {
+  // **A blow a ward already ate is not a blow.** The old `Math.max(1, …)` below turned a
+  // fully absorbed hit into one point through the guard, which made a ward look broken.
+  if (!(Number(damage) > 0)) return { damage: 0, blocked: 0 };
   if (!blocking) return { damage, blocked: 0 };
   const taken = Math.max(1, Math.round(damage * (1 - BLOCK_REDUCTION)));
   return { damage: taken, blocked: damage - taken };

@@ -15,10 +15,12 @@ import { ArenaData } from '../../src/arena/arenaData.js';
 import { decodeType08 } from '../../src/arena/decompress.js';
 import { decryptInf, parseInfText } from '../../src/arena/infFile.js';
 import { parseImg } from '../../src/arena/image.js';
-import { decodeLevel, openSettlementGate } from '../../src/game/mifLevel.js';
-import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, CHASM_DEPTH, buildLevelMesh } from '../../src/game/mifMesh.js';
-import { STEP_OFFSET } from '../../src/engine/player/motor.js';
+import { cellTexture, decodeLevel, fillStairPair, openSettlementGate, wayOutCell } from '../../src/game/mifLevel.js';
+import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, CHASM_DEPTH, CHASM_DEPTHS, chasmDepthOf, buildLevelMesh } from '../../src/game/mifMesh.js';
+import { CLIMB_LEDGE_MAX, STEP_OFFSET } from '../../src/engine/player/motor.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
+import { Collider } from '../../src/engine/player/collider.js';
+import { identity } from '../../src/engine/world/mat4.js';
 
 const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 const data = new ArenaData(nodeSource(ARENA_PATH), { onWarn: () => {} });
@@ -222,6 +224,83 @@ test('buildLevelMesh emits correctly wound, collidable geometry', async () => {
   assert.ok(decor.model.indices.length > bare.model.indices.length, 'but it must still be drawn');
 });
 
+test('the Imperial Dungeons\u2019 way out is its own stair, and beside it \u2014 not the deepest cell', async () => {
+  // The owner, 2026-10-17: *"move the exit from the imperial prison target really where the exit
+  // is"*. `START.MIF` carries **one** stair, its `GATE.IMG` up-stair to the world, and the
+  // escape objective used the deepest reachable chamber like every other stage \u2014 which in a
+  // 50\u00d750 maze points away from the door. `wayOutCell` answers the cell a player stands in to
+  // take that stair: one of its four neighbours, the first that is walkable.
+  const mif = await data.mif('START.MIF');
+  const raw = mif.levels[0];
+  const inf = await data.inf(raw.info);
+  const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+  // The stair is found by its **array position**, which is this grid's world reading: `row` is
+  // world x and `col` world z (`mifMesh.js`), and a cell's own `x`/`z` fields are the reverse of
+  // that (`makeCell(col, row)`; `flats.js` writes the same swap down). Finding it by `cell.x`
+  // would transpose the level and test the wrong neighbours.
+  const stairs = [];
+  for (let i = 0; i < level.cells.length; i++) {
+    if (level.cells[i]?.stair === 'up') stairs.push({ x: Math.floor(i / level.width), z: i % level.width });
+  }
+  assert.equal(stairs.length, 1, `START.MIF carries ${stairs.length} up-stairs, not one`);
+  const out = wayOutCell(level);
+  assert.ok(out, 'the level marks a way out');
+  assert.deepEqual(out.stair, stairs[0], 'and it reports the stair it is the way out of');
+  // It is the stair's own neighbour \u2014 adjacent, and not the stair cell itself (a stair is solid).
+  assert.equal(Math.max(Math.abs(out.x - stairs[0].x), Math.abs(out.z - stairs[0].z)), 1,
+    `way out ${out.x},${out.z} is not beside the stair ${stairs[0].x},${stairs[0].z}`);
+  const cell = level.cells[out.x * level.width + out.z];
+  assert.ok(cell && !cell.solid && !cell.floor?.chasm, 'the player can stand at the way out');
+  // A level that marks no way out answers null rather than inventing one: the caller falls back
+  // to its own target, which is how a dungeon whose art this install lacks still gets an objective.
+  assert.equal(wayOutCell({ width: 1, depth: 1, cells: [level.cells[0]] }), null);
+  assert.equal(wayOutCell(null), null);
+});
+
+test('a sign on an edge is drawn from both sides, so it is never a one-way panel', async () => {
+  // The owner, 2026-10-17: *"all pngs that are fixed in place like signs or feces need to be
+  // visible from both sides"*. A `0xA` **edge** is the port's sign — a shop's board, a
+  // tavern's, a washing line, a city gate's grill — and it is one quad on one face of its
+  // cell. The mesher emitted that face alone, so with the world pass culling back faces (under
+  // a mirrored projection) the board disappeared the moment the player walked round it. Both
+  // windings are emitted now, on the same four corners, exactly as a door's panel is: each is
+  // seen from its own side, and two coplanar faces that are never visible together cannot
+  // z-fight.
+  // A city's own `.INF`, so the sign's texture index resolves to real art: the shop signs are
+  // index 6 and its pair (`T_TEQ.IMG`), as `game/shops.js` reads them.
+  const inf = await data.inf('CAS.INF');
+  const cell = {
+    x: 0, z: 0, floor: { texture: 0, flatIndex: -1, chasm: null }, kind: 'edge',
+    sideTexture: 6, capTexture: -1, bottomTexture: -1, yOffset: 0, ySize: 0, facing: 0,
+    doorKind: null, solid: false, entityFlatIndex: -1, ceiling: true, ceilingTexture: 0,
+    rawFlor: 0, rawMap1: 0, rawMap2: 0,
+  };
+  const base = {
+    width: 1, depth: 1, ceilingScale: 1, layerCount: 3, floorY: 1, ceilingY: 2,
+    outdoors: false, inf, startPoints: [], spawn: null, stats: {}, cells: [cell],
+  };
+  // Four vertices to a quad, three floats a vertex. The cell's own floor and ceiling are quads
+  // too (`buildLevelMesh` lays a floor under every cell), so the **panel** is the pair whose
+  // normal is horizontal: those are the two faces of the sign.
+  const panelsOf = (built) => {
+    const quads = built.model.positions.length / 12;
+    const out = [];
+    for (let q = 0; q < quads; q++) {
+      const n = [0, 1, 2].map((k) => built.model.normals[q * 12 + k]);
+      if (n[1] === 0) out.push({ n, corners: [0, 1, 2, 3].map((v) => [0, 1, 2].map((k) => built.model.positions[(q * 4 + v) * 3 + k]).join(',')).sort() });
+    }
+    return out;
+  };
+  for (const facing of [0, 1, 2, 3]) {
+    const panels = panelsOf(buildLevelMesh({ ...base, cells: [{ ...cell, facing }] }));
+    assert.equal(panels.length, 2, `facing ${facing}: the sign is ${panels.length} panel(s), not two`);
+    assert.deepEqual(panels[1].n, panels[0].n.map((v) => -v),
+      `facing ${facing}: normals ${JSON.stringify([panels[0].n, panels[1].n])} are not opposite`);
+    assert.deepEqual(panels[1].corners, panels[0].corners,
+      `facing ${facing}: the two faces are not the same panel`);
+  }
+});
+
 test('main-story vertical textures are upright and read left-to-right on every front face', async () => {
   for (const name of ['START.MIF', '39300577.MIF', '41649375.MIF', 'IMPPAL.MIF']) {
     const mif = await data.mif(name);
@@ -252,7 +331,7 @@ test('main-story vertical textures are upright and read left-to-right on every f
   }
 });
 
-test('a chasm is a pool below the surface, and shallow enough to walk out of', async () => {
+test('a chasm is a pit or a pool below the surface, deep enough to climb out of', async () => {
   // The original draws a chasm as a bed below the surface with a bank around it
   // (`ArenaChasmUtils`: a wet or lava chasm may be swum in). The Imperial Dungeons hold
   // 264 wet-chasm cells — the water the player reported as a flat black plane — and this
@@ -271,24 +350,58 @@ test('a chasm is a pool below the surface, and shallow enough to walk out of', a
   // A **door** is in this list of exceptions and not in the boxes': the cells that get no
   // surface floor are the boxes that hide their own, and a door hides nothing — the
   // threshold under a doorway is drawn, because the door swings off it (`mifMesh.js`).
+  // A **diagonal** is in neither list: it is a box over only half its cell, and the other
+  // half is air a body stands in, so its floor is drawn (see "a diagonal is an angle …").
+  // **A hedge keeps its ground** (see "a hedge is a box made of a picture with holes" below):
+  // its art is 2% palette index 0, so the floor under a hedge cell is drawn while every other
+  // solid box still hides its own.
+  const isHedge = (c) => c.kind === 'transparent'
+    && /NHEDGED?(?:\.IMG)?$/i.test(cellTexture(c, 'side', inf)?.filename ?? '');
   const surfaceFloorCells = decoded.cells.filter((c) => !c.floor.chasm
-    && !(c.solid && ['wall', 'transparent', 'diagonal'].includes(c.kind))).length;
+    && !(c.solid && ['wall', 'transparent'].includes(c.kind) && !isHedge(c))).length;
   assert.equal(built.stats.floorQuads, surfaceFloorCells, 'no chasm cell is given a surface floor');
 
-  // The depth is the motor's own step offset or less, so the pool can never trap a player.
-  assert.ok(CHASM_DEPTH <= STEP_OFFSET, `a chasm is ${CHASM_DEPTH} m deep, the motor steps ${STEP_OFFSET} m`);
+  // **Deeper than a step, within a body's reach — the law that replaced "shallow enough to walk
+  // out of".** This pin used to assert `CHASM_DEPTH <= STEP_OFFSET`: every chasm was shallower than
+  // the motor's own step-over, so a pool could never trap a player — and that is exactly what the
+  // owner asked to be rid of ("the water should be deep and you should climb out of it"). A chasm
+  // is now a thing you are *in*: the bed is deeper than the step, so walking cannot get you out,
+  // and the climb has to be able to. Both halves are pinned, because either one alone is a trap:
+  // a bed deeper than the reach strands a player, and a bed shallower than the step is a puddle.
+  for (const [kind, depth] of Object.entries(CHASM_DEPTHS)) {
+    assert.ok(depth > STEP_OFFSET,
+      `a ${kind} chasm is only ${depth} m deep, and the motor steps ${STEP_OFFSET} m — it is not a hole`);
+    assert.ok(depth <= CLIMB_LEDGE_MAX,
+      `and the body must be able to climb out of it: ${depth} m against a ${CLIMB_LEDGE_MAX} m reach`);
+  }
+  // The one-number export is the deepest bed, for a caller with no cell in hand, and the mesher
+  // reads the per-cell answer (`chasmDepthOf`) — so the two can never disagree about a wet chasm.
+  assert.equal(CHASM_DEPTH, Math.max(...Object.values(CHASM_DEPTHS)));
+  assert.equal(chasmDepthOf('wet'), CHASM_DEPTHS.wet);
+  assert.equal(chasmDepthOf(null), CHASM_DEPTHS.dry, 'a chasm of no named kind is the deep pit');
 
   // Every bed vertex sits exactly `CHASM_DEPTH` under the floor, every bank vertex climbs
   // from the bed to the surface, and both are in set collision: the geometry and the
   // collider are one triangle soup, so a pool cannot be drawn somewhere it cannot be felt.
   const surface = decoded.floorY * CELL_SIZE;
-  const bed = surface - CHASM_DEPTH;
+  // **One bed height per kind of chasm** (`mifMesh.js`'s `CHASM_DEPTHS`): a pit, a pool and the
+  // palace's lava lake are three different depths, and the mesh carries each cell's own.
+  const depths = [...new Set(chasms.map((c) => chasmDepthOf(c.floor.chasm)))].sort((a, b) => a - b);
+  const bedsOfDepth = (y) => depths.find((d) => Math.abs(y - (surface - d)) < 1e-6) ?? null;
+  /** @type {Map<number, number>} */
+  const expectedBeds = new Map();
+  for (const cell of chasms) {
+    const d = chasmDepthOf(cell.floor.chasm);
+    expectedBeds.set(d, (expectedBeds.get(d) ?? 0) + 1);
+  }
   const { positions, normals, indices } = built.model;
   // Every *quad* is two triangles over four vertices, so the sides can be read off the
   // index buffer: a bed quad has four vertices at the bed height and a normal that points
   // up, a bank quad has two at the bed and two at the surface with a level normal — and
   // that span is the depth exactly, which is the whole point of the constant.
-  let beds = 0, banks = 0;
+  /** @type {Map<number, number>} */
+  const bedsAt = new Map();
+  let banks = 0;
   const yOf = (vertex) => positions[vertex * 3 + 1];
   for (let t = 0; t < indices.length; t += 3) {
     const quad = [indices[t], indices[t + 1], indices[t + 2]];
@@ -296,13 +409,60 @@ test('a chasm is a pool below the surface, and shallow enough to walk out of', a
     const four = [...quad, indices[t + 3], indices[t + 4], indices[t + 5]];
     const ys = [...new Set(four.map(yOf))];
     const normal = [normals[quad[0] * 3], normals[quad[0] * 3 + 1], normals[quad[0] * 3 + 2]];
-    if (ys.length === 1 && Math.abs(ys[0] - bed) < 1e-6 && normal[1] > 0.99) beds++;
-    if (ys.length === 2 && Math.abs(Math.min(...ys) - bed) < 1e-6
+    const bedHere = ys.length === 1 ? bedsOfDepth(ys[0]) : null;
+    if (bedHere != null && normal[1] > 0.99) bedsAt.set(bedHere, (bedsAt.get(bedHere) ?? 0) + 1);
+    if (ys.length === 2 && bedsOfDepth(Math.min(...ys)) != null
       && Math.abs(Math.max(...ys) - surface) < 1e-6 && Math.abs(normal[1]) < 0.01) banks++;
   }
-  assert.equal(beds, chasms.length, 'every chasm cell has one upward-facing bed');
+  for (const [depth, count] of expectedBeds) {
+    assert.equal(bedsAt.get(depth) ?? 0, count,
+      `every chasm ${depth} m deep has one upward-facing bed (${count} of them)`);
+  }
+  assert.equal([...bedsAt.values()].reduce((a, b) => a + b, 0), chasms.length, 'every chasm cell has one upward-facing bed');
   assert.equal(banks, built.stats.chasmWalls, 'and the banks it needs, each spanning the depth');
   assert.ok(indices.length > 0 && built.collider.indices.length > 0, 'the pool is collidable');
+
+  // ── a wall standing in the pool is an ARCH, not a dam (the owner's "tubes") ────────────
+  //
+  // *"water pits and pits … are actually sometimes used as tubes to connect two rooms
+  // otherwise inaccessible without this … you can even see them in the minimap but are sealed
+  // off"*. Arena's wall voxel begins at the **floor plane**, and a chasm's bed is 1.2–1.55 m
+  // below it, so the band between bed and floor is open water. The mesher used to emit the
+  // chasm's own bank there — bed to surface — sealing every such passage: measured on
+  // `START.MIF`, the water run at row 40, column 8 stopped dead at the wall in (43,8) with the
+  // player's feet on the bed and `W` held, while the minimap painted all four cells as water.
+  //
+  // The law the test holds: **no bank is emitted toward a solid cell whose floor is a chasm**
+  // (the water continues under it), and the wall's underside is drawn at the floor plane so the
+  // tunnel has a ceiling (not collided — the swimmer's head passes beneath it).
+  const solidChasm = (c) => Boolean(c) && c.solid && Boolean(c.floor.chasm);
+  // The mesher skips a bank whose **neighbour** is a solid cell over a chasm: that is the side
+  // the water passes under, whether the cell asking is water or another wall in the same pool.
+  let expectedUnderpasses = 0;
+  for (let row = 0; row < decoded.depth; row++) {
+    for (let col = 0; col < decoded.width; col++) {
+      const cell = decoded.cells[row * decoded.width + col];
+      if (!cell?.floor.chasm) continue;
+      for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nr = row + dr;
+        const nc = col + dc;
+        if (nr < 0 || nc < 0 || nr >= decoded.depth || nc >= decoded.width) continue;
+        if (solidChasm(decoded.cells[nr * decoded.width + nc])) expectedUnderpasses++;
+      }
+    }
+  }
+  assert.ok(expectedUnderpasses > 0, 'START.MIF has water under a wall to try (it has 264 wet cells)');
+  assert.equal(built.stats.chasmUnderpasses, expectedUnderpasses,
+    'every bank toward a wall standing in the pool is left open');
+  // And the arch's underside: a **downward** quad at the floor plane inside a solid chasm cell
+  // — the tunnel's ceiling, drawn and not collided.
+  const solidChasmCells = decoded.cells.filter((c) => solidChasm(c)
+    && ['wall', 'transparent'].includes(c.kind) && c.yOffset <= 1e-6).length;
+  assert.ok(solidChasmCells > 0);
+  assert.equal(built.stats.chasmArches, solidChasmCells, 'every arch gets its underside');
+  // A bank still closes the pool against *dry ground*: the count above is the skipped ones, and
+  // every remaining bank is a real face (the geometric count already proved that).
+  assert.ok(built.stats.chasmWalls > 0);
 });
 
 test('no cell of a level is bottomless', async () => {
@@ -325,7 +485,7 @@ test('no cell of a level is bottomless', async () => {
     // slab under a wall (and its own triangles are the door's, `built.doors`, not the
     // level's: `mifMesh.js`'s door bundles).
     const boxes = decoded.cells.filter((c) => c.solid && !c.floor.chasm
-      && ['wall', 'transparent', 'diagonal'].includes(c.kind) && c.yOffset <= 1e-4).length;
+      && ['wall', 'transparent'].includes(c.kind) && c.yOffset <= 1e-4).length;
     assert.equal(built.stats.colliderOnlyQuads, boxes, `${mifName}: collision floors under solid boxes`);
 
     // And so every cell has something level to stand on at or below the floor plane: a
@@ -505,6 +665,17 @@ test("a settlement's gate is one opening in its wall, and nothing in it collides
       `${name}: the opening is in the settlement's outermost line`);
     assert.ok(opened.every((g) => ((level.cells[g.row * mif.width + g.col].rawMap1 & 0xf000) >> 12) === 0x9),
       `${name}: both cells are the file's own gateway voxel`);
+    // **The illustrated gate posts are part of the way through.** They stand behind the arch
+    // wearing `PGATE.IMG`; every one of them is marked `gateway` and therefore leaves the
+    // collision soup (the owner: all gate-art walls must be passable).
+    const gateArt = level.gateArtCells ?? [];
+    assert.ok(gateArt.length >= 2, `${name}: the gate's own posts are read off its art`);
+    for (const spot of gateArt) {
+      const cell = level.cells[spot.row * mif.width + spot.col];
+      assert.equal(cell.gateway, true, `${name}: gate-art wall ${spot.row},${spot.col} is a gate`);
+      assert.match(String(inf.voxelTextures[cell.sideTexture]?.filename ?? ''), /^[DMP]GATE\.IMG$/i,
+        `${name}: ${spot.row},${spot.col} really wears gate art`);
+    }
 
     const after = buildLevelMesh(level, { upperStoreys: true });
     assert.equal(after.model.indices.length, before.model.indices.length,
@@ -526,4 +697,527 @@ test("a settlement's gate is one opening in its wall, and nothing in it collides
     assert.deepEqual(openSettlementGate(level), [], `${name} (${why}) is not a settlement and gets no gate`);
     assert.equal(level.cells.filter((c) => c.gateway).length, 0, `${name}: and not one cell is marked`);
   }
+});
+
+test('the map has an edge again: a quest dungeon\'s whole outer ring is walled', async () => {
+  // The owner, 2026-10-17: *"main story dungeons walls at some angles instead of connecting two walls
+  // are vertical and lead off the map"*. The data is the reason: **Arena's levels simply stop.**
+  // Measured over the sixteen quest dungeons, the whole outer ring is walkable open air — 396 of a
+  // 100×100 level's ring cells on Dagoth-Ur, Black Gate and the Halls of Colossus, 476 on the 120×120
+  // Black Gate, 195 of the palace's 196 — so every wall at the edge stands in the air and a player can
+  // walk off the side of the world. `buildLevelMesh`'s boundary pass builds the wall the data never
+  // needed, out of the level's own art, and this pin holds it to the level's own ring: one quad per
+  // open ring cell's outward face, and a face in the collider a player cannot cross.
+  const mif = await data.mif('42026882.MIF');
+  const inf = await data.inf(mif.levels[0].info);
+  const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+  const { width, depth, cells } = level;
+  const at = (row, col) => cells[row * width + col];
+  const walled = (cell) => Boolean(cell) && cell.solid
+    && (cell.kind === 'wall' || cell.kind === 'door' || cell.kind === 'transparent' || cell.kind === 'diagonal')
+    && cell.yOffset <= 1e-4;
+  const openRing = [];
+  for (let row = 0; row < depth; row++) {
+    for (let col = 0; col < width; col++) {
+      if (!(row === 0 || col === 0 || row === depth - 1 || col === width - 1)) continue;
+      const cell = at(row, col);
+      if (!walled(cell) && !cell.gateway) openRing.push({ row, col });
+    }
+  }
+  assert.ok(openRing.length > 300, `Dagoth-Ur's ring is the whole edge: ${openRing.length} open cells`);
+
+  // Without the pass nothing is drawn there — the level's own mesh has no boundary quad at all.
+  const bare = buildLevelMesh(level);
+  assert.equal(bare.stats.boundaryQuads, 0, 'the pass is opt-in: a caller that asks for nothing gets nothing');
+
+  const built = buildLevelMesh(level, { boundaryWalls: true });
+  assert.ok(built.stats.boundaryQuads >= openRing.length,
+    `${openRing.length} open ring cells should be walled, got ${built.stats.boundaryQuads}`);
+  assert.ok(built.stats.boundaryQuads < openRing.length * 2,
+    'and a ring cell is walled on the faces that face off the map, not on all four');
+
+  // The wall is in the collider as well as the picture: a ray out of every open ring cell hits it.
+  const collider = new Collider();
+  collider.addMesh('level', built.collider.positions, built.collider.indices, identity());
+  const y = level.floorY * CELL_SIZE + 1;
+  for (const { row, col } of openRing) {
+    const x = (row + 0.5) * CELL_SIZE;
+    const z = (col + 0.5) * CELL_SIZE;
+    const outward = [];
+    if (row === 0) outward.push([-1, 0]);
+    if (row === depth - 1) outward.push([1, 0]);
+    if (col === 0) outward.push([0, -1]);
+    if (col === width - 1) outward.push([0, 1]);
+    for (const [dx, dz] of outward) {
+      assert.ok(Number.isFinite(collider.raycast([x, y, z], [dx, 0, dz], CELL_SIZE * 1.4)),
+        `the edge at ${row},${col} still leads off the map toward ${dx},${dz}`);
+    }
+  }
+});
+
+test('a pit is a hole you can climb out of — and a wall standing in it is a tube you swim under', async () => {
+  // The owner, 2026-10-17: *"i still fall off maps in pits and water pits … and you can go
+  // outside boundaries of the dungeon"*. The bank of a chasm was skipped wherever the cell
+  // beside it was a structure — "a structure already draws this face" — but a structure's own
+  // faces start at the FLOOR PLANE and the bank runs from the **bed** up to that plane, so the
+  // two never overlapped and the whole band between them was simply absent. Measured over the
+  // install's seventeen quest dungeons (`.scratch/pitprobe.mjs`): **25 990** sides of a pit had
+  // nothing in them — 4 009 on `39950681`'s second level, 2 416 on `40852494`'s — and a body
+  // standing on a bed walked straight into the rock. Inside the rock there is no floor at all,
+  // so the next step off the bed was off the map: both halves of the report, one gap.
+  //
+  // A wall standing in a flooded room carries the **same chasm floor** as the water beside it,
+  // and the first repair still asked only the floor ("the pool continues"), which left 11 940
+  // of them open. What continues is the pool *cell*: not solid, water floor.
+  for (const [mifName, levelIndex] of [['START.MIF', 0], ['39950681.MIF', 1], ['39300577.MIF', 0], ['42026882.MIF', 2]]) {
+    const mif = await data.mif(mifName);
+    const raw = mif.levels[levelIndex];
+    const inf = await data.inf(raw.info.toUpperCase());
+    const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+    const { width, depth, cells } = level;
+    const at = (row, col) => (row < 0 || col < 0 || row >= depth || col >= width ? null : cells[row * width + col]);
+    const built = buildLevelMesh(level, { boundaryWalls: true });
+    const collider = new Collider();
+    collider.addMesh('level', built.collider.positions, built.collider.indices, identity());
+    /**
+     * The pool continues into this cell: nothing is built on the boundary between them.
+     *
+     * **A wall standing in the water continues it too** (the owner's *"tubes"*): the wall's own
+     * box starts at the floor plane and the bed is 1.2–1.55 m below it, so the band under the
+     * wall is open water. The mesher therefore builds no bank toward a solid cell whose floor is
+     * a chasm — otherwise every flooded passage on the minimap was a dead end.
+     */
+    const continues = (nb) => Boolean(nb) && Boolean(nb.floor.chasm);
+
+    let chasmCells = 0;
+    let rims = 0;
+    for (let row = 0; row < depth; row++) {
+      for (let col = 0; col < width; col++) {
+        const cell = at(row, col);
+        if (!cell.floor.chasm) continue;
+        chasmCells++;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          if (!continues(at(row + dr, col + dc))) rims++;
+        }
+      }
+    }
+    assert.ok(chasmCells > 30, `${mifName} level ${levelIndex} has pits to stand in: ${chasmCells}`);
+    // One bank, both sides, on every side that is not a continuation of the pool — the count is
+    // exact, so a bank that stops being emitted anywhere shows up here and not only in the rays.
+    assert.equal(built.stats.chasmWalls, rims * 2,
+      `${mifName}: a bank on every side that is not open water`);
+
+    // **The bed is enclosed, and a wall standing in the pool is a way through.** At chest height
+    // on the bed the ray hits every bank but passes under a wall whose floor is a chasm; above
+    // the water line that same wall is solid. Both halves in one walk: without the first the
+    // player leaves the level through the rock (the old report), without the second every tube
+    // the minimap paints as water is a dead end (the owner's 2026-10-19 report).
+    const surface = level.floorY * CELL_SIZE;
+    let probes = 0;
+    let under = 0;
+    for (let row = 0; row < depth; row++) {
+      for (let col = 0; col < width; col++) {
+        const cell = at(row, col);
+        if (!cell.floor.chasm) continue;
+        const bedY = surface - chasmDepthOf(cell.floor.chasm);
+        const x = (row + 0.5) * CELL_SIZE;
+        const z = (col + 0.5) * CELL_SIZE;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const nb = at(row + dr, col + dc);
+          if (continues(nb)) continue;
+          probes++;
+          assert.ok(Number.isFinite(collider.raycast([x, bedY + 0.6, z], [dr, 0, dc], CELL_SIZE * 1.5)),
+            `${mifName}: the pit at ${row},${col} lets a body out toward ${dr},${dc} (${nb ? nb.kind + (nb.solid ? ', solid' : '') : 'off the map'})`);
+        }
+        // …and toward a solid chasm neighbour the tube is open at chest height, shut above the
+        // surface.
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const nb = at(row + dr, col + dc);
+          if (!nb || !nb.solid || !nb.floor.chasm) continue;
+          under++;
+          // **Short of the wall's far face**: the tube is a passage *through* the cell, so a ray
+          // that ran the whole 1.5 cells would leave it on the other side and hit the next wall.
+          assert.ok(!Number.isFinite(collider.raycast([x, bedY + 0.6, z], [dr, 0, dc], CELL_SIZE * 0.75)),
+            `${mifName}: the tube under the wall at ${row + dr},${col + dc} is sealed at the bed`);
+          // The wall above the water line is the mesh's own box and is not this test's to draw:
+          // the change below the surface removes only the bank, so what the player meets on dry
+          // land at floor height is exactly what it was.
+        }
+      }
+    }
+    assert.ok(probes > 200, `${mifName}: ${probes} sides of a pit were walked`);
+    assert.ok(under > 0, `${mifName}: ${under} water tubes under a wall were tried`);
+  }
+});
+
+test('a diagonal is an angle the walls meet, not a slab standing in the gap', async () => {
+  // A `0xD` voxel is Arena's chamfer: two wall runs joined by a 45° face, and every quest
+  // dungeon is full of them (Dagoth-Ur's first level has 113, `41649375`'s first 182). It is a
+  // **thin panel across the cell's diagonal** (`ArenaMeshUtils` `initDiagonalBoxValues`:
+  // `diagonalThickness = 0.050`, `boxWidth = Constants::Sqrt2 - diagonalThickness` — "fit the
+  // edges of the voxel exactly"), so it fills *half* its cell and its own mesh covers none of
+  // the four boundary planes in full. Two walls therefore may not skip the face between them
+  // and the diagonal, and one of them did: `hideAgainst` treated "both cells are full boxes"
+  // as "drawn twice", leaving a full-height slot at every angle — measured over the install's
+  // quest dungeons, **36 675** samples of those planes had no geometry at all beside a wall or
+  // an arch, and a body could look and walk through the angle into the void. The owner,
+  // 2026-10-17: *"there are walls at the angles that are used instead of making an angle like
+  // connecting two walls … its still broken"*.
+  //
+  // The same pass fills the corner those two walls enclose (the panel alone left the corner
+  // hollow, so the angle read as a slab hanging in the air) and finally draws the floor of the
+  // cell: hidden as "under a box", the air half of the cell had no floor in the picture —
+  // **22 272 of 22 288** samples, a black notch at the foot of every chamfer.
+  for (const [mifName, levelIndex] of [['42026882.MIF', 0], ['41649375.MIF', 0], ['42068779.MIF', 0]]) {
+    const mif = await data.mif(mifName);
+    const raw = mif.levels[levelIndex];
+    const inf = await data.inf(raw.info.toUpperCase());
+    const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+    const { width, depth, cells } = level;
+    const at = (row, col) => (row < 0 || col < 0 || row >= depth || col >= width ? null : cells[row * width + col]);
+    const built = buildLevelMesh(level, { boundaryWalls: true });
+    const collider = new Collider();
+    collider.addMesh('level', built.collider.positions, built.collider.indices, identity());
+    const drawn = new Collider();
+    drawn.addMesh('drawn', built.model.positions, built.model.indices, identity());
+    const S = CELL_SIZE;
+    const floorTop = level.floorY * S;
+    const roomTop = level.ceilingY * S;
+    /** A cell whose own mesh covers all of every side it shares: only a cube does. */
+    const wholeSides = (c) => Boolean(c) && c.solid && (c.kind === 'wall' || c.kind === 'transparent') && c.yOffset <= 1e-4;
+
+    const diagonals = [];
+    for (let row = 0; row < depth; row++) {
+      for (let col = 0; col < width; col++) if (at(row, col).kind === 'diagonal') diagonals.push({ row, col });
+    }
+    assert.ok(diagonals.length > 50, `${mifName} level ${levelIndex} has angles to check: ${diagonals.length}`);
+
+    // ── one pass over the drawn mesh, for two questions geometry alone can answer ──
+    //
+    // `planeFaces` — a vertical quad lying in a cell's own boundary plane, keyed by the cell
+    // and the direction it faces. A quad on the plane x = n·S is the +x face of row n−1 and
+    // the −x face of row n; both are recorded, and the caller asks about the one it means.
+    // `caps` — an upward triangle of a cell's own area at exactly the room's top, which is the
+    // corner lid. (A level's own ceiling is drawn one epsilon *below* that, so it is not one.)
+    const planeFaces = new Set();
+    const caps = new Set();
+    {
+      const { positions, normals, indices } = built.model;
+      const v = (i, k) => positions[i * 3 + k];
+      for (let t = 0; t < indices.length; t += 3) {
+        const [a, b, c] = [indices[t], indices[t + 1], indices[t + 2]];
+        const xs = [v(a, 0), v(b, 0), v(c, 0)];
+        const ys = [v(a, 1), v(b, 1), v(c, 1)];
+        const zs = [v(a, 2), v(b, 2), v(c, 2)];
+        const flat = (arr, plane) => arr.every((q) => Math.abs(q - plane) < 1e-4);
+        const vertical = Math.abs(normals[a * 3 + 1]) < 1e-3;
+        if (vertical && ys[0] >= floorTop - 1e-4 && ys.every((y) => y <= roomTop + 1e-4)) {
+          for (const [arr, plane] of [[xs, xs[0]], [zs, zs[0]]]) {
+            if (!flat(arr, plane)) continue;
+            const axis = arr === xs ? 'x' : 'z';
+            const along = arr === xs ? [zs, 'z'] : [xs, 'x'];
+            if (!along[0].every((q) => Math.abs(q - along[0][0]) < S * 1.5)) continue;
+            const cellIndex = Math.round(plane / S);
+            const across = Math.floor((along[0][0] + along[0][1] + along[0][2]) / 3 / S);
+            for (const boundary of [-1, 1]) {
+              // A face on the plane n·S is the +face of cell n−1 and the −face of cell n.
+              const line = cellIndex + (boundary > 0 ? -1 : 0);
+              if (line < 0 || line >= (axis === 'x' ? depth : width)) continue;
+              if (across < 0 || across >= (axis === 'x' ? width : depth)) continue;
+              planeFaces.add(axis === 'x'
+                ? `${line},${across},${boundary > 0 ? 1 : -1},0`
+                : `${across},${line},0,${boundary > 0 ? 1 : -1}`);
+            }
+          }
+        }
+        if (ys.every((y) => Math.abs(y - roomTop) < 1e-6) && normals[a * 3 + 1] > 0.99) {
+          const row = Math.floor((xs[0] + xs[1] + xs[2]) / 3 / S);
+          const col = Math.floor((zs[0] + zs[1] + zs[2]) / 3 / S);
+          if (row >= 0 && col >= 0 && row < depth && col < width
+            && Math.abs(xs[0] + xs[1] + xs[2] - 3 * ((row + 0.5) * S)) < S * 0.7
+            && Math.abs(zs[0] + zs[1] + zs[2] - 3 * ((col + 0.5) * S)) < S * 0.7) caps.add(`${row},${col}`);
+        }
+      }
+    }
+    const onPlane = (row, col, dr, dc) => planeFaces.has(`${row},${col},${dr},${dc}`);
+
+    let checked = 0;
+    let prismFaces = 0;
+    let wantedPrism = 0;
+    let wantedCaps = 0;
+    for (const { row, col } of diagonals) {
+      const cell = at(row, col);
+      const x0 = row * S, x1 = x0 + S, z0 = col * S, z1 = z0 + S;
+      // ── the seam: no boundary plane of the cell may be left with nothing on it ──
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const nb = at(row + dr, col + dc);
+        if (!wholeSides(nb)) continue;
+        const xPlane = dr !== 0;
+        const plane = xPlane ? (dr > 0 ? x1 : x0) : (dc > 0 ? z1 : z0);
+        for (let k = 1; k <= 5; k++) {
+          for (const y of [floorTop + 0.3, floorTop + 1.0, floorTop + 2.0]) {
+            if (y > roomTop) continue;
+            const along = (xPlane ? z0 : x0) + (k / 6) * S;
+            const back = plane - (dr + dc) * 0.15;
+            const origin = xPlane ? [back, y, along] : [along, y, back];
+            checked++;
+            assert.ok(Number.isFinite(collider.raycast(origin, xPlane ? [Math.sign(dr), 0, 0] : [0, 0, Math.sign(dc)], 0.4)),
+              `${mifName}: the angle at ${row},${col} leaves a slot on its ${dr},${dc} side`);
+          }
+        }
+      }
+      // ── the floor of the whole cell, in the mesh the player is looking at ──
+      for (let a = 1; a <= 4; a++) {
+        for (let b = 1; b <= 4; b++) {
+          assert.ok(Number.isFinite(drawn.raycast([x0 + (a / 5) * S, floorTop + 0.6, z0 + (b / 5) * S], [0, -1, 0], S)),
+            `${mifName}: the angle at ${row},${col} has no drawn floor at ${a}/5, ${b}/5`);
+        }
+      }
+      // ── the corner: the solid half is a mass. **The solid half is the one the map asks
+      //    for** — the side of the panel with a wall on both of its neighbours, and the
+      //    panel's own bit when the cell has no wall neighbour at all (`mifMesh.js` measured
+      //    the rule over six quest dungeons: 179 +x/+z against 165 −x/−z under the same bit,
+      //    so the bit alone cannot be the answer). ──
+      const boxAt = (r, c) => { const q = at(r, c); return Boolean(q) && q.solid
+        && ['wall', 'door', 'transparent', 'diagonal'].includes(q.kind) && q.yOffset <= 1e-4; };
+      const right = cell.facing === 0;
+      const runPlus = boxAt(row + 1, col) && boxAt(row, col + 1);
+      const runMinus = boxAt(row - 1, col) && boxAt(row, col - 1);
+      const solidPlus = runPlus ? true : runMinus ? false : !right;
+      // The panel's own end points and the corners it separates — the same construction the
+      // mesher makes, restated here so the pin fails if either side of it drifts.
+      const endA = right ? [x0, z1] : [x0, z0];
+      const endB = right ? [x1, z0] : [x1, z1];
+      const corner = solidPlus ? (right ? [x1, z1] : [x1, z0]) : (right ? [x0, z0] : [x0, z1]);
+      for (const from of [endA, endB]) {
+        // Each of the wedge's two boundary faces lies on the plane its end point shares with
+        // the corner, and faces the neighbour on that side.
+        const sharedZ = Math.abs(from[1] - corner[1]) < 1e-4;
+        const [dr, dc] = sharedZ
+          ? [0, from[1] > (z0 + z1) / 2 ? 1 : -1]
+          : [from[0] > (x0 + x1) / 2 ? 1 : -1, 0];
+        // A cube beside it draws the plane itself (`wholeSides`), and the prism keeps out of
+        // its way there — which is what keeps a chamfer from doubling every wall it touches.
+        if (wholeSides(at(row + dr, col + dc))) continue;
+        wantedPrism++;
+        if (onPlane(row, col, dr, dc)) prismFaces++;
+        else assert.fail(`${mifName}: the corner of the angle at ${row},${col} is open on its ${dr},${dc} side`);
+      }
+      if (!cell.ceiling) wantedCaps++;
+    }
+    assert.ok(checked > 500, `${mifName}: ${checked} seam samples were walked`);
+    assert.ok(wantedPrism > 20, `${mifName}: ${wantedPrism} corner faces were asked for`);
+    assert.equal(prismFaces, wantedPrism,
+      `${mifName}: every solid half is a closed mass, not a slab (${prismFaces} of ${wantedPrism})`);
+    // …and under open sky the corner is capped, or the mass is a well you can see into.
+    const capped = diagonals.filter(({ row, col }) => !at(row, col).ceiling && caps.has(`${row},${col}`)).length;
+    assert.equal(capped, wantedCaps, `${mifName}: every open-sky corner is capped (${capped} of ${wantedCaps})`);
+  }
+});
+
+test('a settlement keeps its gate open: the pass walls a city everywhere but its opening', async () => {
+  // Sealing the ring must not undo the owner's earlier request (*"CITY GATES SHOULD HAVE NO COLLISION
+  // SO I CAN ACTUALLY GO INTO THE WILDERNESS"*): the two cells `openSettlementGate` marks are
+  // **skipped** by the boundary pass, so the way out of a city is still a way out.
+  // A settlement skeleton names no `.INF` of its own (the city builder hands it one), so the
+  // architecture is read by name, exactly as the gate test above does.
+  const mif = await data.mif('CITY1.MIF');
+  const inf = await data.inf('TCN.INF');
+  const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'city' });
+  const gates = openSettlementGate(level);
+  assert.equal(gates.length, 2, 'CITY1 cuts one two-cell opening');
+  const built = buildLevelMesh(level, { boundaryWalls: true });
+  const collider = new Collider();
+  collider.addMesh('level', built.collider.positions, built.collider.indices, identity());
+  for (const gate of gates) {
+    const x = (gate.row + 0.5) * CELL_SIZE;
+    const z = (gate.col + 0.5) * CELL_SIZE;
+    const dir = gate.axis === 'north' ? [-1, 0] : gate.axis === 'south' ? [1, 0] : gate.axis === 'west' ? [0, -1] : [0, 1];
+    const hit = collider.raycast([x, (level.floorY + 0.5) * CELL_SIZE, z], [dir[0], 0, dir[1]], CELL_SIZE * 1.4);
+    assert.ok(!Number.isFinite(hit), `the ${gate.axis} gate at ${gate.row},${gate.col} is walled shut by the boundary pass`);
+  }
+});
+
+// ------------------------------------------------------- the stair's other half ----
+// D-53: a crypt's deeper storey is drawn with its own `*LEVELUP` stair and its own roster, but
+// the floor above carries **no down stair**, so nothing a player can do reaches it. The pair is
+// completed from the data's own half (`mifLevel.fillStairPair`): the lower level's stair cell,
+// this level's own `*LEVELDOWN` art, and a wall of this level beside it.
+test('the stairway a crypt never draws above is completed from the floor below', async () => {
+  const inf4 = await data.inf('WCRYPT.INF');
+  const below4 = await data.inf('CRYPT2.INF');
+  const crypt = await data.mif('WCRYPT4.MIF');
+  const filled = fillStairPair({
+    map1: crypt.levels[0].map1, inf: inf4,
+    belowMap1: crypt.levels[1].map1, belowInf: below4, width: crypt.width,
+  });
+  assert.ok(filled, 'WCRYPT4 level 0 has no down stair of its own, so one is filled');
+  assert.deepEqual(filled.at.map((cell) => `${cell.row},${cell.col}`), ['17,4'],
+    'the cell is the lower stair\'s own neighbourhood, and the same answer every time');
+  assert.deepEqual(filled.at[0].from, { row: 18, col: 3 }, 'the lower level names where the pair starts');
+  // What was written is this level's own art, in the wall voxel's two-byte form — and it decodes
+  // as a `down` stair, which is what `stairKindOf` (and therefore `E`) reads.
+  const stamped = filled.map1[17 * crypt.width + 4];
+  assert.equal(stamped >> 8, inf4.levelDownIndex + 1);
+  const level = decodeLevel({ ...crypt.levels[0], map1: filled.map1 }, inf4,
+    { width: crypt.width, depth: crypt.height, mapType: 'interior' });
+  assert.equal(level.cells[17 * crypt.width + 4].stair, 'down');
+  assert.equal(level.cells.filter((cell) => cell.stair === 'down').length, 1);
+  // The board is not mutated: the archive's own bytes stay the archive's.
+  assert.notEqual(crypt.levels[0].map1[17 * crypt.width + 4], stamped);
+});
+
+test('a stairway that is already whole is left exactly as the file drew it', async () => {
+  const tower = await data.mif('TOWER1.MIF');
+  const towerInf = await data.inf('TOWER1.INF');
+  assert.equal(fillStairPair({
+    map1: tower.levels[0].map1, inf: towerInf,
+    belowMap1: tower.levels[1].map1, belowInf: await data.inf('TOWER1.INF'), width: tower.width,
+  }), null, 'a tower descends on its own, and must not gain a second stair into the same floor');
+  const noble = await data.mif('NOBLE1.MIF');
+  assert.equal(fillStairPair({
+    map1: noble.levels[1].map1, inf: await data.inf('BS1.INF'),
+    belowMap1: noble.levels[2].map1, belowInf: await data.inf('BS1.INF'), width: noble.width,
+  }), null, 'a noble house\'s pair is complete');
+  // …and a single-storey room in a two-level file is not given a stair it never had.
+  const tavern = await data.mif('TAVERN2.MIF');
+  assert.equal(fillStairPair({
+    map1: tavern.levels[0].map1, inf: await data.inf('TAVERN.INF'),
+    belowMap1: tavern.levels[1].map1, belowInf: await data.inf('TAVERN.INF'), width: tavern.width,
+  }), null);
+});
+
+test('every crypt in the archive can be walked down from its own entrance', async () => {
+  const rows = [];
+  for (let i = 1; i <= 8; i++) {
+    const mif = await data.mif(`WCRYPT${i}.MIF`);
+    const filled = fillStairPair({
+      map1: mif.levels[0].map1, inf: await data.inf(mif.levels[0].info),
+      belowMap1: mif.levels[1].map1, belowInf: await data.inf(mif.levels[1].info), width: mif.width,
+    });
+    assert.ok(filled, `WCRYPT${i} level 0 must reach level 1`);
+    const distance = Math.hypot(filled.at[0].row - filled.at[0].from.row, filled.at[0].col - filled.at[0].from.col);
+    assert.ok(distance <= 3, `WCRYPT${i}: the stair lands within three cells of the floor below's (${distance})`);
+    rows.push(`WCRYPT${i}:${filled.at[0].row},${filled.at[0].col}`);
+  }
+  assert.equal(rows.length, 8);
+});
+
+test('a raised platform\u2019s sides are cut out \u2014 the 3D tables and beds \u2014 while a wall keeps its own law', async () => {
+  // The owner, 2026-10-18: *"not the small 2d tables the 3d tables … this tables and beds have
+  // black in their textures that should be invisible so i can see under them"*. A house's
+  // furniture is a **raised box**: a table is the box whose `*BOXSIDE` art is `TABLE.IMG` and a
+  // bed the one whose art is `BED.IMG`, and those records are pictures with the room showing
+  // through them (`TABLE.IMG` 37.1% palette index 0, `BED.IMG` 84.9%, measured). OpenTESArena's
+  // own renderer alpha-tests exactly those faces (`MapGeneration.cpp`, `writeVoxelInfoForMAP1`:
+  // a raised platform's sides are `FragmentShaderType::AlphaTested` and its top and bottom
+  // `Opaque`, while a solid wall's three faces are all `Opaque`). So the treatment is the
+  // kind's, not the file's — and the sharpest way to hold that is **the same art on both
+  // kinds**: one bucket must come out cut, the other must not.
+  const inf = await data.inf('TAVERN.INF');
+  const art = inf.voxelTextures.findIndex((t) => t.filename === 'TABLE.IMG' && t.setIndex < 0);
+  const cap = inf.voxelTextures.findIndex((t) => t.filename === 'IFLOOR4.IMG' && t.setIndex < 0);
+  assert.ok(art >= 0 && cap >= 0, 'TAVERN.INF binds TABLE.IMG as a box side and IFLOOR4.IMG as a cap');
+  const cell = (kind) => ({
+    x: 0, z: 0, floor: { texture: 0, flatIndex: -1, chasm: null }, kind,
+    sideTexture: art, capTexture: cap, bottomTexture: -1,
+    yOffset: 0, ySize: 0.25, facing: -1, doorKind: null, solid: true,
+    entityFlatIndex: -1, ceiling: true, ceilingTexture: 0, rawFlor: 0, rawMap1: 0, rawMap2: 0,
+  });
+  const built = buildLevelMesh({
+    width: 2, depth: 1, ceilingScale: 1, layerCount: 3, floorY: 1, ceilingY: 2,
+    outdoors: false, inf, startPoints: [], spawn: null, stats: {},
+    cells: [cell('raised'), cell('wall')],
+  });
+  const buckets = new Map(built.model.subMeshes.map((s) => [s.key, s.cutout]));
+  assert.equal(buckets.get('TABLE.IMG#-1#cut'), true, 'the raised platform\u2019s sides are cut out');
+  assert.equal(buckets.get('TABLE.IMG#-1'), false, 'the wall draws the same art opaque');
+  assert.equal(buckets.get('IFLOOR4.IMG#-1'), false, 'and the platform\u2019s top stays opaque');
+
+  // **Measured against the install**: TAVERN1's main hall is 19 such tables and BS1's upper floor
+  // is the house's two beds, and each one's sides are the *cut* bucket \u2014 the bucket that used to
+  // be an opaque black slab standing in the room.
+  const tavern = await data.mif('TAVERN1.MIF');
+  const hall = decodeLevel(tavern.levels[1], await data.inf(tavern.levels[1].info),
+    { width: tavern.width, depth: tavern.height, mapType: 'interior' });
+  const tables = hall.cells.filter((c) => c.kind === 'raised' && c.sideTexture === art);
+  assert.equal(tables.length, 19, `TAVERN1\u2019s hall carries ${tables.length} 3D tables, not 19`);
+  const hallMesh = buildLevelMesh(hall);
+  assert.ok(hallMesh.model.subMeshes.some((s) => s.key === 'TABLE.IMG#-1#cut' && s.cutout));
+  assert.ok(!hallMesh.model.subMeshes.some((s) => s.key === 'TABLE.IMG#-1'),
+    'no face of the hall draws the table art opaque');
+
+  const house = await data.mif('BS1.MIF');
+  const upstairs = decodeLevel(house.levels[1], await data.inf(house.levels[1].info),
+    { width: house.width, depth: house.height, mapType: 'interior' });
+  const bedArt = upstairs.inf.voxelTextures.findIndex((t) => t.filename === 'BED.IMG' && t.setIndex < 0);
+  assert.equal(upstairs.cells.filter((c) => c.kind === 'raised' && c.sideTexture === bedArt).length, 2,
+    'the house\u2019s bedroom has its two beds');
+  const houseMesh = buildLevelMesh(upstairs);
+  assert.ok(houseMesh.model.subMeshes.some((s) => s.key === 'BED.IMG#-1#cut' && s.cutout));
+  assert.ok(!houseMesh.model.subMeshes.some((s) => s.key === 'BED.IMG#-1'),
+    'a bed\u2019s frame is a picture with a hole, never an opaque slab');
+});
+
+test('a hedge is a box made of a picture with holes: ground under it, and no lid over it', async () => {
+  // The owner, 2026-10-21: *"every time there is a wall that uses the texture AR-sprite-NHEDGE
+  // and AR-sprite-NHEDGED … i see a hole in the world you should allow ground below them"*. He is
+  // right about the geometry: a hedge is a `0x9` **transparent** voxel drawn as four cut-out
+  // sides and nothing else — no floor (the mesher skipped it under a "box") and no lid
+  // (OpenTESArena's `TransparentWall` has neither a top nor a bottom face). First person never
+  // sees either hole; a third-person camera looks over the hedge into an open-ended box whose
+  // inner faces are culled, and down through its 2%-transparent art onto nothing.
+  //
+  // The fix is the ground the original's own `FLOR` layer keeps under every cell — **and only
+  // that**. This test first demanded a lid, and the owner rejected the lid on sight (2026-10-21):
+  // *"REMOVE THE WALL ABOVE THEM THAT YOU CREATED IT LOOKS UGLY AND IT SHOULDNT BE THERE"*. So
+  // the check now holds both halves of the corrected law: every hedge has a floor, and **no**
+  // open-topped hedge has a cap in the hedge's own art. `TOWN3.MIF` under `TCN.INF` is a
+  // settlement with a hedge maze in it.
+  const mif = await data.mif('TOWN3.MIF');
+  const raw = mif.levels[0];
+  const inf = await data.inf('TCN.INF');
+  const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'city' });
+  const isHedge = (c) => c.kind === 'transparent'
+    && /NHEDGED?(?:\.IMG)?$/i.test(cellTexture(c, 'side', inf)?.filename ?? '');
+  const hedges = level.cells.filter(isHedge);
+  assert.ok(hedges.length > 100, `${hedges.length} hedge cells in TOWN3.MIF`);
+  const openTopped = hedges.filter((c) => !c.ceiling);
+
+  const built = buildLevelMesh(level, { upperStoreys: true });
+  assert.equal(built.stats.hedgeCaps, undefined,
+    'the mesher no longer reports a hedge lid: there is none to report');
+  // Every hedge's **own** floor and cap, read out of the mesh: an up-facing quad whose four
+  // corners are the cell's own square, at the floor plane and at the wall's top.
+  const S = CELL_SIZE;
+  const floorY = level.floorY * S;
+  const topY = level.ceilingY * S;
+  const { positions: p, normals: n, indices } = built.model;
+  const quadsAt = (y) => {
+    const out = new Map();
+    for (let t = 0; t + 5 < indices.length; t += 6) {
+      const v = [indices[t], indices[t + 1], indices[t + 2], indices[t + 3], indices[t + 4], indices[t + 5]];
+      if (!v.every((i) => Math.abs(n[i * 3 + 1] - 1) < 1e-3 && Math.abs(p[i * 3 + 1] - y) < 1e-3)) continue;
+      const xs = v.map((i) => p[i * 3]);
+      const zs = v.map((i) => p[i * 3 + 2]);
+      out.set(`${Math.min(...xs) / S},${Math.min(...zs) / S}`, (out.get(`${Math.min(...xs) / S},${Math.min(...zs) / S}`) ?? 0) + 1);
+    }
+    return out;
+  };
+  const floors = quadsAt(floorY);
+  const lids = quadsAt(topY);
+  let missingFloor = 0;
+  let missingLid = 0;
+  for (let i = 0; i < level.cells.length; i++) {
+    if (!isHedge(level.cells[i])) continue;
+    const row = Math.floor(i / level.width);
+    const col = i % level.width;
+    if (!floors.has(`${row},${col}`)) missingFloor++;
+    if (!level.cells[i].ceiling && !lids.has(`${row},${col}`)) missingLid++;
+  }
+  assert.equal(missingFloor, 0, `${missingFloor} hedge cells have no floor under them`);
+  assert.equal(openTopped.filter((cell) => {
+    const index = level.cells.indexOf(cell);
+    return lids.has(`${Math.floor(index / level.width)},${index % level.width}`);
+  }).length, 0, `${openTopped.length} open-topped hedges, none with a lid`);
 });

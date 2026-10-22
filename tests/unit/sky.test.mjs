@@ -16,8 +16,8 @@ import test from 'node:test';
 
 import { ArenaData } from '../../src/arena/arenaData.js';
 import {
-  CLIMATE_GRADIENTS, PANO_HEIGHT, PANO_WIDTH, WEATHER_TWEAKS,
-  buildArenaSky, collectSkyArt, composeArenaSky, precipitationMode, skyClimateOf,
+  CLIMATE_GRADIENTS, PANO_HEIGHT, PANO_WIDTH, RED_MOUNTAIN_PIXEL, WEATHER_TWEAKS,
+  buildArenaSky, collectSkyArt, composeArenaSky, precipitationMode, skyClimateOf, volcanoAzimuthFrom,
 } from '../../src/game/arenaSky.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 
@@ -114,6 +114,45 @@ test('the mountains stand on the horizon and the clouds float above it', () => {
   assert.deepEqual(bottom, expected, 'hazed 30% toward the horizon');
   // The mountain's own height is 4 rows; the row above it is the gradient again there.
   assert.deepEqual(at(withArt, 0, 4), at(bare, 0, 4), 'nothing above the mountain top');
+});
+
+test('Morrowind\u2019s volcano is a world point: its bearing follows the player, and it is drawn only there', async () => {
+  // The owner, 2026-10-19: the illustrated `VOLCANO3.IMG` is Red Mountain, at the **centre
+  // north** of Morrowind, and its place on the horizon is *dynamic* — a page's bearing to it,
+  // not a fixed decoration. The panorama's azimuth 0 is north and 0.25 is east
+  // (`skyRenderer.js`), so `volcanoAzimuthFrom` has to answer those four quarters.
+  assert.deepEqual({ ...RED_MOUNTAIN_PIXEL }, { x: 240, y: 46 }, 'the map pixel for Red Mountain');
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  assert.ok(near(volcanoAzimuthFrom({ x: 240, y: 100 }), 0), 'a page south of it sees it north');
+  assert.ok(near(volcanoAzimuthFrom({ x: 200, y: 46 }), 0.25), 'a page west of it sees it east');
+  assert.ok(near(volcanoAzimuthFrom({ x: 240, y: 10 }), 0.5), 'a page north of it sees it south');
+  assert.ok(near(volcanoAzimuthFrom({ x: 280, y: 46 }), 0.75), 'a page east of it sees it west');
+  // Two different Morrowind pages are two different horizons, and the cache key has to know
+  // it: the composition moves with the bearing, not with the place's name.
+  const palette0 = { rgb: new Uint8Array(768) };
+  palette0.rgb[16 * 3] = 255;
+  const art0 = { width: 16, height: 4, indices: new Uint8Array(16 * 4).fill(16) };
+  const north = composeArenaSky({ palette: palette0, climate: 'M', volcano: art0, volcanoAzimuth: 0 });
+  const east = composeArenaSky({ palette: palette0, climate: 'M', volcano: art0, volcanoAzimuth: 0.25 });
+  assert.notDeepEqual(at(north, 0, 0), at(east, 0, 0), 'north and east are not the same horizon');
+  assert.notDeepEqual(at(north, 256, 0), at(east, 256, 0), 'the cone stands where its bearing says');
+  assert.deepEqual(at(north, 256, 0), at(east, 0, 0), 'and the same art is drawn at either bearing');
+  const palette = { rgb: new Uint8Array(768) };
+  palette.rgb[16 * 3] = 255;   // ordinary art index, not one of the dynamic sky slots
+  const art = { width: 8, height: 4, indices: new Uint8Array(8 * 4).fill(16) };
+  const bare = composeArenaSky({ palette, climate: 'M', weather: 'N', seed: 5 });
+  const withVolcano = composeArenaSky({ palette, climate: 'M', weather: 'N', seed: 5, volcano: art });
+  assert.notDeepEqual(at(withVolcano, 128, 0), at(bare, 128, 0), 'the volcano is on the north-east horizon');
+  assert.deepEqual(at(withVolcano, 128 + 4, 3), at(bare, 128 + 4, 3), 'nothing beyond its own eight pixels');
+  assert.equal(withVolcano.art.volcano, true);
+  assert.equal(bare.art.volcano, false);
+  // The install really ships the art, and `buildArenaSky` decodes it only for a Morrowind page.
+  const archive = await data.bsa();
+  assert.ok(archive.names().includes('VOLCANO3.IMG'), 'the install carries AR-sprite-VOLCANO3');
+  const morrowind = await buildArenaSky(data, { infName: 'MWN.INF', seed: 5, volcano: true });
+  const elsewhere = await buildArenaSky(data, { infName: 'TWN.INF', seed: 5, volcano: false });
+  assert.equal(morrowind.art.volcano, true);
+  assert.equal(elsewhere.art.volcano, false);
 });
 
 test('a sky is the same sky every time, and the weather changes it', async () => {

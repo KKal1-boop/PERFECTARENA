@@ -167,7 +167,8 @@ export function drawCategory(draw) {
 }
 
 /**
- * The wilderness's own `.INF`, from the settlement's climate and weather.
+ * The wilderness `.INF` for a climate and weather. The climate may describe the ground or the
+ * scenery; `wildernessInfNames` combines the two when a province needs them to differ.
  *
  * `<climate><W><weather>.INF`: `T`emperate / `D`esert / `M`ountain, `W` for
  * wilderness, `N` clear / `R` overcast or rain / `S` snow — and a desert has no
@@ -184,6 +185,23 @@ export function wildernessInfName(opts = {}) {
   if (weather !== 'R' && weather !== 'S') weather = 'N';
   if (letter === 'D' && weather === 'S') weather = 'N';
   return `${letter}W${weather}.INF`;
+}
+
+/**
+ * The scenery INF and, when needed, the separate ground INF for a wilderness window.
+ *
+ * Arena uses one wilderness `.INF` for both floors and scenery. To keep a country's ground while
+ * borrowing another climate's trees, build the level with the scenery INF and merge the ground
+ * INF's `@FLOORS` table into it with `withGroundFloors`.
+ *
+ * @param {{ground?: string, scenery?: string, weather?: string}} opts
+ * @returns {{infName: string, groundInfName: string|null}}
+ */
+export function wildernessInfNames(opts = {}) {
+  const { ground = 'temperate', scenery = ground, weather = 'clear' } = opts;
+  const infName = wildernessInfName({ climate: scenery, weather });
+  if (scenery === ground) return { infName, groundInfName: null };
+  return { infName, groundInfName: wildernessInfName({ climate: ground, weather }) };
 }
 
 /**
@@ -280,7 +298,36 @@ export function wildernessBlockLists(blocks) {
 }
 
 /**
- * Copy the settlement's own quarter into wilderness voxels, the way the original does.
+ * The block id that means **the sea** — a block this project makes rather than reads.
+ *
+ * `TERRAIN.IMG`'s own coastline is the country's coastline (see `game/tamrielGrid.js`), and no
+ * shipped `.RMD` is open water, so a pixel the map paints as sea is built from
+ * `seaBlockPlanes` instead of from an archive record.
+ */
+export const SEA_BLOCK_ID = -1;
+
+/**
+ * **The sea, as a block of country.**
+ *
+ * Every cell is a **wet chasm** — `mifLevel.js`'s own `CHASM_WET` (the flor word's high byte),
+ * which the decoder turns into `floor.chasm = 'wet'`, which is exactly the state Arena's water is
+ * in: not walkable ground, drawn by the engine's own water pass with the install's own
+ * `WATERANI.RCI` field (`game/chasmSurface.js`), and crossable only at the engine's swim speed.
+ * Nothing is invented: the sea is the one thing in this world that has no `MAP1` at all.
+ *
+ * @returns {{flor: Uint16Array, map1: Uint16Array, map2: Uint16Array}}
+ */
+export function seaBlockPlanes() {
+  const flor = new Uint16Array(WILD_CHUNK * WILD_CHUNK).fill(SEA_FLOR);
+  return { flor, map1: new Uint16Array(WILD_CHUNK * WILD_CHUNK), map2: new Uint16Array(WILD_CHUNK * WILD_CHUNK) };
+}
+
+/** A flor word that is wet water and nothing on it: `CHASM_WET << 8`, flat 0. */
+const SEA_FLOR = 0x0d00;
+
+/**
+ * Copy a settlement's own level into a block of the world's country — **wherever the settlement
+ * stands**.
  *
  * `ArenaWildUtils::reviseWildCityBlock`, exactly: the city's cells are cleared
  * except its three wall ids, `0x2F2F → 0x3030`, `0x2D2D → 0x2F2F`, `0x2E2E` kept,
@@ -289,23 +336,34 @@ export function wildernessBlockLists(blocks) {
  * (an entity, an arch, a door) is cleared first, which is why a city seen from
  * outside is its wall ring and nothing else.
  *
+ * **The original cuts the city into four `WILD_CHUNK` quarters because its own grid is built
+ * around the city**; the world grid (`game/tamrielGrid.js`) cannot, because a town is 106 cells
+ * and a city is 127 and neither is a multiple of the block. So this takes the block's own place in
+ * the world (`blockRow`,`blockCol`) and the settlement's own corner in it (`cityRow0`,`cityCol0`)
+ * and copies the **intersection**: cells of the block the city does not reach are left as open
+ * country, which is the clearing every settlement stands in.
+ *
  * @param {{map1: Uint16Array, map2: Uint16Array, flor: Uint16Array, width: number, depth: number}} city
- * @param {number} blockId  1…4
+ * @param {object} opts
+ * @param {number} opts.blockRow @param {number} opts.blockCol  the block's own place, in blocks
+ * @param {number} opts.cityRow0 @param {number} opts.cityCol0  the city's own corner, in world cells
  * @returns {{flor: Uint16Array, map1: Uint16Array, map2: Uint16Array}}
  */
-export function reviseCityQuarter(city, blockId) {
+export function reviseCityInto(city, opts) {
+  const { blockRow = 0, blockCol = 0, cityRow0 = 0, cityCol0 = 0 } = opts ?? {};
   const flor = new Uint16Array(WILD_CHUNK * WILD_CHUNK);
   const map1 = new Uint16Array(WILD_CHUNK * WILD_CHUNK);
   const map2 = new Uint16Array(WILD_CHUNK * WILD_CHUNK);
-  const startX = (blockId === 1 || blockId === 3) ? 0 : WILD_CHUNK;
-  const startZ = (blockId === 1 || blockId === 2) ? 0 : WILD_CHUNK;
+  const worldRow0 = blockRow * WILD_CHUNK;
+  const worldCol0 = blockCol * WILD_CHUNK;
 
   for (let z = 0; z < WILD_CHUNK; z++) {
-    const cityZ = startZ + z;
+    const cityZ = worldRow0 + z - cityRow0;
+    if (cityZ < 0 || cityZ >= city.depth) continue;
     for (let x = 0; x < WILD_CHUNK; x++) {
-      const cityX = startX + x;
+      const cityX = worldCol0 + x - cityCol0;
+      if (cityX < 0 || cityX >= city.width) continue;
       const out = z * WILD_CHUNK + x;
-      if (cityX >= city.width || cityZ >= city.depth) continue;   // a city smaller than 2×64
       const src = cityZ * city.width + cityX;
       const cityFlor = city.flor[src] ?? 0;
       let wall = city.map1[src] ?? 0;
@@ -333,6 +391,24 @@ export function reviseCityQuarter(city, blockId) {
     }
   }
   return { flor, map1, map2 };
+}
+
+/**
+ * The original's aligned quarter copy, kept for the one case it can serve.
+ *
+ * It is `reviseCityInto` for a block that lines up with the city exactly (the *original's* own
+ * arrangement: a 128-cell city cut into four blocks with no offset), and it is kept because the
+ * tests and the docs name it, and because "the original's arithmetic" deserves to be readable on
+ * its own. The world grid does not use it — `reviseCityInto` does, with the offsets.
+ *
+ * @param {{map1: Uint16Array, map2: Uint16Array, flor: Uint16Array, width: number, depth: number}} city
+ * @param {number} blockId  1…4
+ * @returns {{flor: Uint16Array, map1: Uint16Array, map2: Uint16Array}}
+ */
+export function reviseCityQuarter(city, blockId) {
+  const startX = (blockId === 1 || blockId === 3) ? 0 : WILD_CHUNK;
+  const startZ = (blockId === 1 || blockId === 2) ? 0 : WILD_CHUNK;
+  return reviseCityInto(city, { blockRow: startZ / WILD_CHUNK, blockCol: startX / WILD_CHUNK, cityRow0: 0, cityCol0: 0 });
 }
 
 /**
@@ -390,60 +466,71 @@ export function isCityRingCell(row, col) {
 }
 
 /**
- * Assemble a window of the wilderness into a level shaped like a `.MIF` level.
+ * Assemble a window of the country into a level shaped like a `.MIF` level.
  *
- * The window is always four whole blocks (`wildernessWindowOrigin` snaps to 64),
- * so this is a copy of four 64×64 planes into one 128×128 triple — with the
- * settlement's own quarters revised in place of blocks 1…4.
+ * The window is always four whole blocks (`wildernessWindowOrigin` snaps to 64), so this is a copy
+ * of four 64×64 planes into one 128×128 triple. **What each block is, the caller decides** — and
+ * that is the whole difference between the original's country and the world grid
+ * (`game/tamrielGrid.js`): the original's window *was* one settlement's own grid, so a block id was
+ * enough; the world's window is wherever the player is standing, so a block is open country, or a
+ * city's own ground, or the sea, and only the caller knows which.
  *
  * @param {object} opts
- * @param {import('../arena/arenaData.js').ArenaData} opts.data
- * @param {Uint8Array} opts.indices          the block grid
- * @param {number} opts.originRow @param {number} opts.originCol   wilderness cells
- * @param {{map1: Uint16Array, map2: Uint16Array, flor: Uint16Array, width: number, depth: number}|null} [opts.city]
- *   the assembled settlement, for the quarter blocks
+ * @param {number} opts.originRow @param {number} opts.originCol   world cells
+ * @param {(blockRow: number, blockCol: number) => {kind: 'city', city: object, footprint: object}
+ *   | {kind: 'sea'} | {kind: 'rmd', id: number} | {kind: 'empty'}} opts.blockFor
+ *   the resolver, called for each of the window's four blocks in row-major order
+ * @param {import('../arena/arenaData.js').ArenaData} [opts.data]  for the `.RMD` blocks, when the
+ *   resolver asks for one; a window of cities and sea needs no archive at all
  * @param {(msg: string) => void} [opts.onWarn]
- * @returns {Promise<{level: object, blocks: number[], missing: number[], cityBlocks: number[], originRow: number, originCol: number}>}
+ * @returns {Promise<{level: object, blocks: number[], missing: number[], cityBlocks: number[], seaBlocks: number, originRow: number, originCol: number}>}
  */
 export async function buildWildernessWindow(opts) {
-  const { data, indices, originRow, originCol, city = null, onWarn = () => {} } = opts;
+  const { data = null, blockFor, originRow, originCol, onWarn = () => {} } = opts;
+  if (typeof blockFor !== 'function') throw new Error('buildWildernessWindow needs a blockFor resolver');
   const width = WILD_WINDOW;
   const depth = WILD_WINDOW;
   const flor = new Uint16Array(width * depth);
   const map1 = new Uint16Array(width * depth);
   const map2 = new Uint16Array(width * depth);
 
-  const blockRow = Math.floor(originRow / WILD_CHUNK);
-  const blockCol = Math.floor(originCol / WILD_CHUNK);
+  const blockRow0 = Math.floor(originRow / WILD_CHUNK);
+  const blockCol0 = Math.floor(originCol / WILD_CHUNK);
   /** @type {number[]} */
   const blocks = [];
   /** @type {number[]} */
   const missing = [];
   /** @type {number[]} */
   const cityBlocks = [];
+  let seaBlocks = 0;
 
   for (let dr = 0; dr < 2; dr++) {
     for (let dc = 0; dc < 2; dc++) {
-      // The grid is row-major over blocks: `indices[blockRow * 64 + blockCol]`.
-      const id = blockAt(indices, blockCol + dc, blockRow + dr);
-      blocks.push(id);
-      const row0 = dr * WILD_CHUNK;
-      const col0 = dc * WILD_CHUNK;
+      const blockRow = blockRow0 + dr;
+      const blockCol = blockCol0 + dc;
+      const answer = blockFor(blockRow, blockCol) ?? { kind: 'empty' };
       /** @type {{flor: Uint16Array, map1: Uint16Array, map2: Uint16Array}|null} */
       let block = null;
 
-      if (isWildCityBlock(id)) {
-        cityBlocks.push(id);
-        // The settlement's own quarter, revised from the live city. Without one
-        // (a page that names a wilderness but no location), the shipped record is
-        // used instead: `WILD001`…`WILD004` *are* the revised quarters of some
-        // city, so a window that falls back to them is still a walled settlement.
-        block = city ? reviseCityQuarter(city, id) : await loadBlock(data, id, missing, onWarn);
-      } else if (id > 0) {
-        block = await loadBlock(data, id, missing, onWarn);
+      if (answer.kind === 'city') {
+        cityBlocks.push(1);
+        block = reviseCityInto(answer.city, {
+          blockRow, blockCol,
+          cityRow0: answer.footprint.row0,
+          cityCol0: answer.footprint.col0,
+        });
+      } else if (answer.kind === 'sea') {
+        blocks.push(SEA_BLOCK_ID);
+        seaBlocks++;
+        block = seaBlockPlanes();
+      } else if (answer.kind === 'rmd' && data) {
+        blocks.push(answer.id);
+        block = await loadBlock(data, answer.id, missing, onWarn);
       }
 
       if (!block) continue;
+      const row0 = dr * WILD_CHUNK;
+      const col0 = dc * WILD_CHUNK;
       for (let r = 0; r < WILD_CHUNK; r++) {
         for (let c = 0; c < WILD_CHUNK; c++) {
           const src = r * WILD_CHUNK + c;
@@ -470,6 +557,7 @@ export async function buildWildernessWindow(opts) {
     blocks,
     missing,
     cityBlocks,
+    seaBlocks,
     originRow,
     originCol,
   };

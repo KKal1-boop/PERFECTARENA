@@ -33,6 +33,7 @@
 // project's rule rather than presented as the original's.
 
 import { ArenaRandom } from './arenaRandom.js';
+import { BLOCKS_PER_PIXEL } from './tamrielGrid.js';
 import { WILD_CHUNK, WILD_GRID_HEIGHT, WILD_GRID_WIDTH } from './wilderness.js';
 
 /**
@@ -59,6 +60,131 @@ export function ruinBlocks(categories) {
     for (let blockCol = 0; blockCol < WILD_GRID_WIDTH; blockCol++) {
       if (categories[blockRow * WILD_GRID_WIDTH + blockCol] === 'dungeon') out.push({ blockRow, blockCol });
     }
+  }
+  return out;
+}
+
+/**
+ * **The ruin a dungeon's door is in, in the world grid** — the nearest ruin block to the dungeon's
+ * own place on the map.
+ *
+ * The country used to be per settlement, so "which ruin" could be one draw over that settlement's
+ * own 64×64 grid (`ruinBlockFor`, kept below for the tests and the reading). The world grid
+ * (`game/tamrielGrid.js`) has no such little grid: its blocks are the whole continent, drawn by
+ * position. So the country a dungeon stands in is asked the honest question instead — **walk out
+ * from where the dungeon is and take the first ruin you meet** — which has the two properties the
+ * old rule was built for and one it did not have:
+ *
+ *   * the same dungeon always comes out in the same ruin (`isRuin` is a function of the block's
+ *     own address, and the walk is deterministic);
+ *   * the ruin is one the player really walks past, so walking back to it is walking;
+ *   * and it is *near the dungeon*, not somewhere in a country the size of a city-state — the
+ *     owner's own complaint about standing in a field with no idea where the door was.
+ *
+ * The walk is a square spiral out from the dungeon's own block, so "nearest" is by block distance,
+ * and ties go to the earlier block in the spiral (up, right, down, left — a fixed habit, and the
+ * one place this is a choice rather than a reading).
+ *
+ * @param {object} opts
+ * @param {number} opts.blockRow @param {number} opts.blockCol  the dungeon's own block
+ * @param {(blockRow: number, blockCol: number) => boolean} opts.isRuin
+ * @param {number} [opts.reach]  how many blocks out to look, default `RUIN_REACH`
+ * @returns {{blockRow: number, blockCol: number, row: number, col: number, ruins: number, reach: number}|null}
+ */
+export function ruinBlockNear(opts) {
+  const { blockRow, blockCol, isRuin, reach = RUIN_REACH } = opts ?? {};
+  if (typeof isRuin !== 'function') return null;
+  let ruins = 0;
+  for (let distance = 0; distance <= reach; distance++) {
+    for (const [dr, dc] of spiralRing(distance)) {
+      const at = { blockRow: blockRow + dr, blockCol: blockCol + dc };
+      if (!isRuin(at.blockRow, at.blockCol)) continue;
+      ruins++;
+      return {
+        ...at,
+        // The door is the ruin's own centre cell, as it always was: a block is 64×64 cells and the
+        // centre is `+32` on both axes. A centre cell that is a wall is repaired by the page that
+        // builds the window (`interior.js`'s `standNear`).
+        row: at.blockRow * WILD_CHUNK + WILD_CHUNK / 2,
+        col: at.blockCol * WILD_CHUNK + WILD_CHUNK / 2,
+        ruins,
+        reach: distance,
+      };
+    }
+  }
+  return null;
+}
+
+/** How many blocks out a dungeon's own ruin is looked for. Twice a city, and the same walk. */
+export const RUIN_REACH = 8;
+
+/**
+ * **The block a dungeon's own door stands in: its own map pixel, and nothing else.**
+ *
+ * The owner, 2026-10-17: *"DUNGEONS ARE NOT WHERE THEY ARE SUPPOSED TO BE ON THE MAP WHEN YOU
+ * EXIT A DUNGEON YOURE FAR FROM WHERE YOU SHOULD BE"*. Until this pass the door was
+ * `ruinBlockNear` — *"walk out from the dungeon's block and take the first ruin you meet"*, up to
+ * `RUIN_REACH` (8 blocks = 512 cells = 1.28 km) away. That is a defensible answer to "where does
+ * this dungeon come out" and a wrong one to "where is this dungeon": the world map marks a
+ * dungeon at its `CITYDATA` pixel, a dot at the same pixel says where the player is, and the two
+ * disagreed by up to a kilometre of country — so a player who climbed out stood nowhere near the
+ * icon they had walked to, and the country page they arrived on was not the country the map sold
+ * them.
+ *
+ * The answer is the dungeon's own pixel. A pixel is `BLOCKS_PER_PIXEL`² blocks (4×4), which is the
+ * finest thing `TERRAIN.IMG` can say and the widest the map can point; the block inside it is
+ * drawn from the dungeon's own seed so that **two dungeons on one pixel are two ruins** rather
+ * than one shared door. A slot whose pixel is sea is skipped (a dungeon is on land in Arena's own
+ * data, and a door in the water is no door), and the walk around the pixel's 16 slots is
+ * deterministic, so the same dungeon comes out at the same door on every visit and on every
+ * machine.
+ *
+ * @param {object} opts
+ * @param {{global?: {x: number, y: number}, dungeonSeed?: number, citySeed?: number}} opts.place
+ * @param {(blockRow: number, blockCol: number) => boolean} [opts.accept]  can this block hold a ruin?
+ * @param {number} [opts.span]  blocks per pixel, default `BLOCKS_PER_PIXEL`
+ * @returns {{blockRow: number, blockCol: number, row: number, col: number, slot: number}|null}
+ *   the block and its centre **world cell** (the door's own cell is refined from the block's own
+ *   cells by `ruinDoorStand`), or null when no slot of the pixel is acceptable
+ */
+export function dungeonDoorBlock({ place, accept = null, span = BLOCKS_PER_PIXEL } = {}) {
+  const point = place?.tamriel ?? place?.global;
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  const slots = Math.max(1, Math.trunc(span) || 1) ** 2;
+  // The dungeon's own pixel, in blocks. `Math.round` rather than `floor`: `global` is a pixel
+  // centre in the map's reading (`locationGlobalPoint`), and the four blocks of a pixel start at
+  // `pixel * BLOCKS_PER_PIXEL`.
+  const row0 = Math.round(point.y * span);
+  const col0 = Math.round(point.x * span);
+  const random = new ArenaRandom(((Number(place.dungeonSeed ?? place.citySeed) || 1) >>> 0));
+  const first = random.next() % slots;
+  const ok = typeof accept === 'function' ? accept : () => true;
+  for (let i = 0; i < slots; i++) {
+    const slot = (first + i) % slots;
+    const blockRow = row0 + Math.floor(slot / span);
+    const blockCol = col0 + (slot % span);
+    if (!ok(blockRow, blockCol)) continue;
+    return {
+      blockRow,
+      blockCol,
+      row: blockRow * WILD_CHUNK + WILD_CHUNK / 2,
+      col: blockCol * WILD_CHUNK + WILD_CHUNK / 2,
+      slot,
+    };
+  }
+  return null;
+}
+
+/**
+ * The blocks on ring `distance` of a square spiral, up/right/down/left.
+ * @param {number} distance
+ * @returns {[number, number][]}
+ */
+function spiralRing(distance) {
+  if (distance === 0) return [[0, 0]];
+  const out = [];
+  for (let i = -distance; i <= distance; i++) {
+    out.push([-distance, i], [i, distance], [distance, -i], [-i, -distance]);
   }
   return out;
 }
@@ -220,7 +346,8 @@ export function nearestCountry(world, point) {
   let best = null;
   for (const settlement of world.settlements()) {
     if (settlement.wildernessSeed == null) continue;
-    const distance = Math.hypot(settlement.global.x - point.x, settlement.global.y - point.y);
+    const pixel = settlement.tamriel ?? settlement.global;
+    const distance = Math.hypot(pixel.x - point.x, pixel.y - point.y);
     if (!best || distance < best.distance) best = { settlement, distance };
   }
   return best?.settlement ?? null;
@@ -239,7 +366,7 @@ export function nearestCountry(world, point) {
 export function dungeonSurface(opts) {
   const { world, place, categories } = opts;
   if (!place?.global) return null;
-  const settlement = nearestCountry(world, place.global);
+  const settlement = nearestCountry(world, place.tamriel ?? place.global);
   if (!settlement) return null;
   const ruin = ruinBlockFor(categories, place.dungeonSeed ?? 0);
   if (!ruin) return null;

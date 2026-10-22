@@ -3,11 +3,16 @@
 // What the sources actually say, and where each number here comes from:
 //
 //   **Weapon damage.** UESP's weapon reference gives each weapon base a damage *range*
-//     (Fists 1–2, Daggers 1–6, Broadswords 1–10, Maces 1–12, Longswords 2–16,
+//     (Fists 1–2, Daggers 1–6, Broadswords 1–12, Maces 1–12, Longswords 2–16,
 //     Claymores 2–18, Dai-Katanas 3–21, …). `WEAPONS` is that table, transcribed.
-//   **Weapon material.** The same reference: iron is "−1 to hit and damage", steel and
-//     silver are 0, and elven, dwarven, mithril, adamantium and ebony go +1…+5. `MATERIALS`
-//     is that table.
+//   **Weapon material.** The same reference's material table, read exactly: iron is 0 on
+//     the low end and −2 on the high end, steel and silver are 0, and elven, dwarven,
+//     mithril, adamantium and ebony add +1…+5 to *both* ends. `MATERIALS` is that table,
+//     with `hit` separate from `min`/`max` because the source separates them. Silver has
+//     its own law — double damage against vampires (`game/bestiary.js`).
+//   **Immunity.** UESP's bestiary names the floor each mundane-immune creature needs
+//     (ice golem elven, medusa and stone golem dwarven, iron golem, fire daemon and lich
+//     mithril), and `game/bestiary.js` is that law. A blow under the floor does nothing.
 //   **Agility and armour class.** UESP, *Attributes*: "Every 5 points in agility grants
 //     -1 to AC across your whole body", and Agility also "affects your chances of hitting
 //     an enemy with a melee weapon". `armourClass()` is that rule, exactly.
@@ -33,6 +38,8 @@
 // PROGRESS.md.
 
 import { ArenaRandom } from './arenaRandom.js';
+import { rolledArea } from './armour.js';
+import { canHurt, damageMultiplier, elementOf } from './bestiary.js';
 
 /**
  * One attribute, from either of the two shapes a character is carried in.
@@ -53,10 +60,10 @@ export function attributeOf(actor, key, index, fallback = 50) {
   const bag = actor?.attributes;
   if (Array.isArray(bag)) {
     const value = bag[index];
-    return Number.isFinite(value) ? value : fallback;
+    return (Number.isFinite(value) ? value : fallback) + (Number(actor?.attributeBuffs?.[key]) || 0);
   }
   const direct = bag?.[key] ?? actor?.[key];
-  return Number.isFinite(direct) ? direct : fallback;
+  return (Number.isFinite(direct) ? direct : fallback) + (Number(actor?.attributeBuffs?.[key]) || 0);
 }
 
 /**
@@ -65,6 +72,10 @@ export function attributeOf(actor, key, index, fallback = 50) {
  */
 export const WEAPONS = Object.freeze([
   { id: 'fists', name: 'Fists', min: 1, max: 2 },
+  // UESP's base-weapon table lists **three** gauntlet rows beside the punch — leather,
+  // chain and plate, each 2–3, 2–3, 3–4 — and the port carried only the last two. The
+  // catalogue's armour half already has a leather gauntlet; this is the weapon half.
+  { id: 'leather-gauntlets', name: 'Leather Gauntlets', min: 2, max: 3 },
   { id: 'chain-gauntlets', name: 'Chain Gauntlets', min: 2, max: 3 },
   { id: 'plate-gauntlets', name: 'Plate Gauntlets', min: 3, max: 4 },
   { id: 'dagger', name: 'Dagger', min: 1, max: 6 },
@@ -73,9 +84,9 @@ export const WEAPONS = Object.freeze([
   { id: 'staff', name: 'Staff', min: 1, max: 8 },
   { id: 'short-bow', name: 'Short Bow', min: 2, max: 8 },
   { id: 'wakizashi', name: 'Wakizashi', min: 1, max: 10 },
-  { id: 'broadsword', name: 'Broadsword', min: 1, max: 10 },
+  { id: 'broadsword', name: 'Broadsword', min: 1, max: 12 },
   { id: 'mace', name: 'Mace', min: 1, max: 12 },
-  { id: 'long-bow', name: 'Long Bow', min: 1, max: 12 },
+  { id: 'long-bow', name: 'Long Bow', min: 2, max: 12 },
   { id: 'war-axe', name: 'War Axe', min: 2, max: 12 },
   { id: 'saber', name: 'Saber', min: 3, max: 12 },
   { id: 'flail', name: 'Flail', min: 2, max: 14 },
@@ -88,18 +99,25 @@ export const WEAPONS = Object.freeze([
 ]);
 
 /**
- * Weapon materials: their to-hit and damage modifiers, from UESP's/Fandom's table.
- * @type {ReadonlyArray<{id: string, name: string, hit: number, damage: number}>}
+ * Weapon materials: UESP's own table, kept in its own columns.
+ *
+ * `hit` is the chance-to-hit modifier, `min` and `max` the two ends of the damage range
+ * (iron is `0` and `−2` — a material can lower the ceiling without lowering the floor, and
+ * writing both as one number was this project's earlier misreading). `damage` stays as the
+ * `max` modifier for the callers that only need a single "how good is this metal" number;
+ * the fight itself rolls between `min` and `max`.
+ *
+ * @type {ReadonlyArray<{id: string, name: string, hit: number, min: number, max: number, damage: number}>}
  */
 export const MATERIALS = Object.freeze([
-  { id: 'iron', name: 'Iron', hit: -1, damage: -1 },
-  { id: 'steel', name: 'Steel', hit: 0, damage: 0 },
-  { id: 'silver', name: 'Silver', hit: 0, damage: 0 },
-  { id: 'elven', name: 'Elven', hit: 1, damage: 1 },
-  { id: 'dwarven', name: 'Dwarven', hit: 2, damage: 2 },
-  { id: 'mithril', name: 'Mithril', hit: 3, damage: 3 },
-  { id: 'adamantium', name: 'Adamantium', hit: 4, damage: 4 },
-  { id: 'ebony', name: 'Ebony', hit: 5, damage: 5 },
+  { id: 'iron', name: 'Iron', hit: -1, min: 0, max: -2, damage: -2 },
+  { id: 'steel', name: 'Steel', hit: 0, min: 0, max: 0, damage: 0 },
+  { id: 'silver', name: 'Silver', hit: 0, min: 0, max: 0, damage: 0, vsVampire: 2 },
+  { id: 'elven', name: 'Elven', hit: 1, min: 1, max: 1, damage: 1 },
+  { id: 'dwarven', name: 'Dwarven', hit: 2, min: 2, max: 2, damage: 2 },
+  { id: 'mithril', name: 'Mithril', hit: 3, min: 3, max: 3, damage: 3 },
+  { id: 'adamantium', name: 'Adamantium', hit: 4, min: 4, max: 4, damage: 4 },
+  { id: 'ebony', name: 'Ebony', hit: 5, min: 5, max: 5, damage: 5 },
 ]);
 
 /** The sentence the game prints about its own combat numbers. See this file's header. */
@@ -144,7 +162,9 @@ export function strengthBonus(strength) {
  *
  * @param {object} attacker  `{level, attributes?, luck?, material?}`
  * @param {object} defender  `{level, agility?}`
- * @param {{hit?: number}} [mods]
+ * @param {{hit?: number, armour?: number}} [mods]  `armour` is the protection over the body
+ *   area the blow struck (`game/armour.js`), subtracted exactly as UESP's armour rating is:
+ *   "reduction of enemy attack rolls"
  * @returns {number} 5…95, so neither side is ever untouchable
  */
 export function hitChance(attacker, defender, mods = {}) {
@@ -154,7 +174,8 @@ export function hitChance(attacker, defender, mods = {}) {
   const luck = attributeOf(attacker, 'luck', 7, 50);
   const luckTerm = Math.floor((luck - 50) / 10);
   const material = mods.hit ?? 0;
-  return Math.max(5, Math.min(95, base + levelSwing - agility + luckTerm + material));
+  const armour = Math.max(0, Number(mods.armour) || 0);
+  return Math.max(5, Math.min(95, base + levelSwing - agility + luckTerm + material - armour));
 }
 
 /**
@@ -173,14 +194,31 @@ export function resolveAttack(opts) {
   const random = opts.random ?? new ArenaRandom(1);
   const weapon = weaponById(opts.weapon ?? 'fists');
   const material = materialById(opts.material ?? 'steel');
-  const chance = hitChance(opts.attacker, opts.defender, { hit: material.hit });
+  const defender = opts.defender ?? {};
+  // **A metal under the creature's floor is not a weak blow, it is no blow** (UESP's
+  // bestiary, `game/bestiary.js`). The check comes before the roll: a hit that cannot
+  // wound is not a hit, and the caller prints the refusal rather than a wound of zero.
+  const hurt = canHurt(defender, { weapon: weapon.id, material: material.id });
+  if (!hurt.ok) {
+    return { hit: false, immune: true, reason: hurt.reason, chance: 0, roll: 0, damage: 0, raw: 0, critical: false, backstab: false };
+  }
+  // **A classed human wears armour, and UESP's rating is a reduction of the attacker's roll**
+  // ("reduction of enemy attack rolls"), so it is subtracted from the chance exactly the way
+  // `monsterAttack` spends the player's suit over the area it struck. The page's rating is per
+  // *body area* (`game/armour.js`); a human carries one rolled grade rather than seven worn
+  // pieces, so it is read as one guard — RECONSTRUCTED, and marked in `humans.js`. A creature
+  // carries no `armourFlat`, so nothing about `monsters.js` changes.
+  const guard = Math.max(0, Number(defender?.armourFlat) || 0);
+  const chance = hitChance(opts.attacker, defender, { hit: material.hit, armour: guard });
   const roll = 1 + random.nextBelow(100);
   const hit = Boolean(opts.guaranteedHit) || roll <= chance;
-  // Damage: the weapon's own range, the material's modifier, then Strength.
+  // Damage: the weapon's own range, the material's own two ends, then Strength.
   const strength = attributeOf(opts.attacker, 'strength', 0, 50);
-  const span = Math.max(0, weapon.max - weapon.min);
-  const roll2 = weapon.min + (span ? random.nextBelow(span + 1) : 0);
-  const raw = roll2 + material.damage + strengthBonus(strength);
+  const low = Math.max(1, weapon.min + material.min);
+  const high = Math.max(low, weapon.max + material.max);
+  const span = Math.max(0, high - low);
+  const roll2 = low + (span ? random.nextBelow(span + 1) : 0);
+  const raw = roll2 + strengthBonus(strength);
   // Arena's classes carry a critical chance per level (`character.js`): a critical blow
   // is doubled. The doubling is this project's reading of "critical strike"; the chance
   // per level is UESP's.
@@ -190,8 +228,12 @@ export function resolveAttack(opts) {
   // behind lands half again as hard — `opts.fromBehind` is the *position*, which the caller
   // computes from the defender's own facing, not a roll.
   const backstab = hit && Boolean(opts.fromBehind);
-  const damage = hit ? Math.max(1, Math.ceil(raw * (critical ? 2 : 1) * (backstab ? 1.5 : 1))) : 0;
-  return { hit, chance, roll, damage, raw, critical, backstab };
+  // **What the creature is** (silver at a vampire, a skeleton's edged half, a golem's
+  // resistances) multiplies the raw blow, and a physical blow is the only kind that asks
+  // the immunity question — already asked above.
+  const multiplier = damageMultiplier(defender, { weapon: weapon.id, material: material.id });
+  const damage = hit ? Math.max(1, Math.ceil(raw * (critical ? 2 : 1) * (backstab ? 1.5 : 1) * multiplier)) : 0;
+  return { hit, chance, roll, damage, raw, critical, backstab, multiplier, guard };
 }
 
 /**
@@ -200,22 +242,55 @@ export function resolveAttack(opts) {
  * UESP gives no attack cadence, so `attackInterval()` returns this project's own figure
  * and says so; the *damage* of each blow is Arena's.
  *
+ * **Armour is worn where the blow lands.** A blow rolls a body area first
+ * (`armour.js`'s `rolledArea`) and the *armour over that area* is subtracted from the chance
+ * to hit — UESP's own reading of its armour rating ("reduction of enemy attack rolls"), and
+ * the reason a cuirass does not protect the head and a tower shield's head coverage does.
+ * The caller hands in `armour`, a function from area to protection, because only the scene
+ * holds the player's character and the item catalogue; a caller with no armour passes nothing
+ * and every area answers nothing.
+ *
+ * **A creature's blow is not a to-hit roll any more** — the owner, 2026-10-19: *"given this
+ * perfectarena game has a manual dodge feature enemies need to ignore the main game dodge chance
+ * and always hit you if youre not outside their circle or if you didnt manually dodge"*. The scene
+ * decides the three things that make a blow miss: the player was outside the attack's own footprint
+ * (`insideAttack`), out of its sight, or **rolling** (`liveDefence`'s i-frames). Once a blow is
+ * inside the circle and nobody rolled, it lands — `opts.guaranteed` is that law, passed by the
+ * scene, and the passive Agility/armour to-hit roll above is kept only for the player's own blade
+ * (`resolveAttack`), so the player's chance to wound is still the game's own numbers while the
+ * creature's answer is the circle and the roll of the feet.
+ *
+ * `chance` and `roll` are still reported — the fight panel prints them, and a guaranteed blow says
+ * `chance 100`, `roll 1` so the arithmetic is not silently different from what it claims.
+ *
  * @param {object} opts
  * @param {object} opts.monster   a rolled monster (`rollMonster` below)
  * @param {object} opts.target    the player character
+ * @param {(area: string) => number} [opts.armour]  protection over an area
+ * @param {boolean} [opts.guaranteed]  inside the circle, no dodge: the blow lands
  * @param {ArenaRandom} [opts.random]
  */
 export function monsterAttack(opts) {
   const random = opts.random ?? new ArenaRandom(1);
   const monster = opts.monster;
   const target = opts.target;
-  const chance = hitChance({ level: monster.level, attributes: { luck: 50 } }, { level: target?.level ?? 1, attributes: target?.attributes });
-  const roll = 1 + random.nextBelow(100);
+  const area = rolledArea(random);
+  const worn = Math.max(0, Number(opts.armour?.(area)) || 0);
+  const rolled = hitChance(
+    { level: monster.level, attributes: { luck: 50 } },
+    { level: target?.level ?? 1, attributes: target?.attributes },
+    { armour: worn },
+  );
+  const guarantee = Boolean(opts.guaranteed);
+  const chance = guarantee ? 100 : rolled;
+  const roll = guarantee ? 1 : 1 + random.nextBelow(100);
   const hit = roll <= chance;
   const [min, max] = monster.damage;
   const span = Math.max(0, max - min);
   const damage = hit ? min + (span ? random.nextBelow(span + 1) : 0) : 0;
-  return { hit, chance, roll, damage };
+  // The element the creature's own blow carries (`bestiary.js`): a fire daemon burns, a
+  // spider poisons. A plain claw is `magic`, which no resistance covers.
+  return { hit, chance, roll, guaranteed: guarantee, damage, element: elementOf(monster), area, armour: worn };
 }
 
 /**

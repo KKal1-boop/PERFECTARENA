@@ -211,6 +211,7 @@ async function attach(wsUrl, { width, height } = {}) {
       Digit5: ['5', 53], Digit6: ['6', 54], Digit7: ['7', 55], Digit8: ['8', 56],
       BracketLeft: ['[', 219], BracketRight: [']', 221],
       Space: [' ', 32], ShiftLeft: ['Shift', 16], Escape: ['Escape', 27], Enter: ['Enter', 13],
+      Tab: ['Tab', 9],
     };
     const [key, vk] = map[code] ?? [code, 0];
     await page.send('Input.dispatchKeyEvent', {

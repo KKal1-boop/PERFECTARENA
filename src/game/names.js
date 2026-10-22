@@ -158,3 +158,134 @@ export function personName({ banks, rng }, bankKey, female = false, titled = fal
     : '';
   return second ? `${first} ${second}` : first;
 }
+
+// ── THE NAMES THAT DO NOT NEED THE SIBLING INSTALL ────────────────────────────────────────
+//
+// The corpus above is the sibling's, and it is the best source there is: it *is* the generator
+// Arena's own era used. But it is a second install's file, and two holes were visible to the
+// owner (2026-10-18): *"make the name of npcs differenciate between male and female and by race
+// … and make them have random names"*. The corpus is only as good as the caller:
+//
+//   * a woman of the town was named with a coin toss (`nextBelow(100) < 50`) rather than from
+//     her own art, so the street's women carried men's names half the time;
+//   * the bank was drawn from the *province's* pool rather than from the **person's race**, so a
+//     Nord in Elsweyr could be called Moj'Dar;
+//   * the corpus ships **no Argonian bank at all**, so Black Marsh's folk were named `imperial`;
+//   * and with no sibling install there were no names whatsoever.
+//
+// The table below closes all four. It holds a **given-name list for each race and each sex** and
+// a family-name list where that race uses one, taken from the names the later games actually give
+// those peoples (UESP's per-race name lists): a Breton's Delphine and a Dunmer's Barenziah, a
+// Khajiit's J'zargo (no family name), a Redguard's single long name, an Argonian's "Basks-In-The-
+// Sun" beside its Jel forms. `names.test.mjs` holds every key to the races this project draws.
+//
+// The corpus still wins when it is there — it composes a name the way Arena's own generator did —
+// and this table is the answer when it is absent, or for a race it has no bank for.
+
+/**
+ * @typedef {{given: readonly string[], family?: readonly string[]}} LoreNameList
+ * @type {Readonly<Record<string, {male: LoreNameList, female: LoreNameList}>>}
+ */
+export const LORE_NAMES = Object.freeze({
+  breton: {
+    male: { given: ['Amaund', 'Arnand', 'Edouard', 'Gaston', 'Jauffre', 'Lucien', 'Mathieu', 'Riel', 'Vincent', 'Wayn'], family: ['Bienne', 'Cienne', 'Dufort', 'Gautier', 'Labouche', 'Meric', 'Montfort', 'Rielle', 'Valmont', 'Valen'] },
+    female: { given: ['Adeline', 'Angeline', 'Bernadette', 'Celeste', 'Delphine', 'Elisa', 'Genevieve', 'Jeanne', 'Marguerite', 'Vivienne'], family: ['Bienne', 'Cienne', 'Dufort', 'Gautier', 'Labouche', 'Meric', 'Montfort', 'Rielle', 'Valmont', 'Valen'] },
+  },
+  redguard: {
+    male: { given: ['Ahtar', 'Amren', 'Avik', 'Azzan', 'Dalan', 'Endon', 'Isran', 'Nazir', 'Ralis', 'Sadeer'] },
+    female: { given: ['Aduri', 'Idesa', 'Nazneen', 'Nuria', 'Saadia', 'Saffir', 'Samira', 'Shavari', 'Zahra', 'Farah'] },
+  },
+  nord: {
+    male: { given: ['Arnbjorn', 'Balgruuf', 'Bjorn', 'Froki', 'Galmar', 'Hadvar', 'Heimskr', 'Kodlak', 'Ralof', 'Tolfdir'], family: ['Bearclaw', 'Fire-Hand', 'Frostmoon', 'Iron-Helm', 'Stone-Fist', 'Stormblade', 'Winter-Song', 'Wolfheart'] },
+    female: { given: ['Aela', 'Astrid', 'Bryling', 'Freya', 'Gerdur', 'Idgrod', 'Ingjard', 'Lydia', 'Njada', 'Sigrid'], family: ['Bearclaw', 'Fire-Hand', 'Frostmoon', 'Iron-Helm', 'Stone-Fist', 'Stormblade', 'Winter-Song', 'Wolfheart'] },
+  },
+  darkElf: {
+    male: { given: ['Aryon', 'Baladas', 'Drevas', 'Fargoth', 'Galthis', 'Hleras', 'Neloth', 'Savos', 'Tarhiel', 'Voryn'], family: ['Andrano', 'Dralor', 'Falenas', 'Hlaalu', 'Indoril', 'Redoran', 'Sadras', 'Telvanni', 'Uveran', 'Vendu'] },
+    female: { given: ['Ahnassi', 'Almalexia', 'Barenziah', 'Dratha', 'Ilmeni', 'Llavam', 'Mehra', 'Naryu', 'Seryna', 'Velsa'], family: ['Andrano', 'Dralor', 'Falenas', 'Hlaalu', 'Indoril', 'Redoran', 'Sadras', 'Telvanni', 'Uveran', 'Vendu'] },
+  },
+  highElf: {
+    male: { given: ['Ancano', 'Estormo', 'Fasendil', 'Nelacar', 'Ondolemar', 'Quaranir', 'Rulindil', 'Savos', 'Tandil', 'Vingalmo'], family: ['Amberfell', 'Direnni', 'Ilessan', 'Lareth', 'Mothil', 'Nivine', 'Silver-Song', 'Telas', 'Varian', 'Wyrd'] },
+    female: { given: ['Arannelya', 'Calianwe', 'Elenwen', 'Ilinwe', 'Laranalda', 'Mirulda', 'Niralen', 'Seryn', 'Talmana', 'Vindrel'], family: ['Amberfell', 'Direnni', 'Ilessan', 'Lareth', 'Mothil', 'Nivine', 'Silver-Song', 'Telas', 'Varian', 'Wyrd'] },
+  },
+  woodElf: {
+    male: { given: ['Anoriath', 'Brelin', 'Faendal', 'Gathwen', 'Malborn', 'Nivenor', 'Raleth', 'Sinderion', 'Tindor', 'Varnor'], family: ['Ashwood', 'Greenleaf', 'Mossfoot', 'Oakvale', 'Riverwood', 'Silverbough', 'Thornwood', 'Willowbark'] },
+    female: { given: ['Anwen', 'Camenwen', 'Faelin', 'Gilenya', 'Llanela', 'Nimriel', 'Orwen', 'Silvena', 'Tilda', 'Yavni'], family: ['Ashwood', 'Greenleaf', 'Mossfoot', 'Oakvale', 'Riverwood', 'Silverbough', 'Thornwood', 'Willowbark'] },
+  },
+  khajiit: {
+    male: { given: ['Dro\'bar', 'Ji\'dar', 'Jo\'ban', 'Jo\'zah', 'J\'zargo', 'Kharjo', 'Ma\'jhad', 'Ma\'dran', 'M\'aiq', 'Ra\'jirr', 'Ri\'saad', 'S\'razo'] },
+    female: { given: ['Ahkari', 'J\'zara', 'Kesh', 'Ma\'isha', 'Nahz', 'Ra\'sina', 'Sari', 'Shaba', 'Tsavani', 'Za\'hedra', 'Zhanbi'] },
+  },
+  imperial: {
+    male: { given: ['Baurus', 'Claudius', 'Demetrius', 'Hieronymus', 'Lucan', 'Maro', 'Ocato', 'Tertius', 'Uriel', 'Valerius'], family: ['Bellamont', 'Caro', 'Mede', 'Motierre', 'Othran', 'Rilis', 'Sestius', 'Vantus', 'Vitellius', 'Wodan'] },
+    female: { given: ['Alessia', 'Erina', 'Gwendolyn', 'Hestra', 'Ione', 'Lucia', 'Mirabelle', 'Selene', 'Valeria', 'Vittoria'], family: ['Bellamont', 'Caro', 'Mede', 'Motierre', 'Othran', 'Rilis', 'Sestius', 'Vantus', 'Vitellius', 'Wodan'] },
+  },
+  argonian: {
+    male: {
+      given: ['Beekatan', 'Dreekius', 'Gah-Julan', 'Huleeya', 'Im-Kilaya', 'Okan-Shei', 'Teeba-Ei', 'Wuleen-Shei', 'Weebam-Na', 'Yinz-Hei', 'Beem-Ja', 'Gulum-Ei', 'Talen-Jei', 'Veezara', 'Deekus', 'Basks-In-The-Sun', 'Hides-His-Eyes', 'Stands-In-Shallows', 'Swims-In-Deep-Water', 'Watches-The-Roots', 'Grey-Throat', 'Scar-Tail', 'Speaks-With-Blades'],
+    },
+    female: {
+      given: ['Chuna', 'Deeja', 'Keerava', 'Kud-Ei', 'Ocheeva', 'Shahvee', 'Wujeeta', 'Zali', 'Teegla', 'Trees-That-Sway', 'Lifts-Her-Tail', 'Shulki', 'Marz', 'Onasha'],
+    },
+  },
+});
+
+/**
+ * A stable 0…1 for one person and one purpose — the same FNV-1a law `raceSkin.raceDraw` uses.
+ *
+ * @param {{seed?: number, row?: number, col?: number, key?: string}} person
+ * @param {string} salt  what the draw is *for* (`given`, `family`), so the two do not correlate
+ * @returns {number}
+ */
+export function nameDraw(person, salt) {
+  const text = `${(person?.seed ?? 0) >>> 0}|${person?.row ?? 0}|${person?.col ?? 0}|${person?.key ?? ''}|${salt}`;
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h / 4294967296;
+}
+
+/**
+ * A lore-accurate name from the built-in table, for a race and a sex.
+ *
+ * @param {string|null} race  a `raceSkin.js` race key (`darkElf`, `khajiit`, …)
+ * @param {boolean} female
+ * @param {{seed?: number, row?: number, col?: number, key?: string}} person
+ * @returns {string|null} null for a race this table does not carry
+ */
+export function loreNameFor(race, female, person) {
+  const row = race && LORE_NAMES[race];
+  if (!row) return null;
+  const list = female ? row.female : row.male;
+  const given = list.given[Math.floor(nameDraw(person, 'given') * list.given.length) % list.given.length];
+  const family = list.family?.length
+    ? list.family[Math.floor(nameDraw(person, 'family') * list.family.length) % list.family.length]
+    : null;
+  return family ? `${given} ${family}` : given;
+}
+
+/**
+ * One person's name: the sibling corpus where it has this race's bank, the built-in table
+ * otherwise — and **always for the sex the figure is drawn as**.
+ *
+ * @param {object} opts
+ * @param {{banks: Record<string, string[][]>}|null} [opts.banks]  `parseNamegen`'s answer
+ * @param {string|null} [opts.race]  the person's own race (`raceSkin.js` key)
+ * @param {boolean} [opts.female]  whether the art is a woman
+ * @param {number} [opts.seed] @param {number} [opts.row] @param {number} [opts.col] @param {string} [opts.key]
+ * @returns {string|null}
+ */
+export function nameForPerson({ banks, race, female = false, seed = 0, row = 0, col = 0, key = '' } = {}) {
+  const person = { seed, row, col, key };
+  const bank = race && banks && Array.isArray(banks[race]) ? race : null;
+  if (bank) {
+    // The corpus's own composed name, drawn from the person's identity rather than from a live
+    // die: `personName` takes anything with `next()`, and this one is their cell and outfit.
+    let n = 0;
+    const rng = { next: () => nameDraw(person, `corpus${n++}`) };
+    const composed = personName({ banks, rng }, bank, Boolean(female));
+    if (composed) return composed;
+  }
+  return loreNameFor(race, Boolean(female), person);
+}

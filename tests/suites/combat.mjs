@@ -27,7 +27,10 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
     // ── a dungeon with monsters in it ────────────────────────────────────────
     await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&${q}`);
     await page.waitFor('window.__debug?.scene === "interior" && !!window.__debug.combat', { label: 'the dungeon', timeoutMs: 90000 });
-    await page.waitFor('document.getElementById("combat")?.classList.contains("on")', { label: 'the combat HUD', timeoutMs: 60000 });
+    // **The one panel.** The bottom-right `#combat` box the owner asked away ("use only the gui on
+    // the left ad not two guis") is gone: the fight's own lines are a band of `#hud` now, so the
+    // wait is for the panel to have something in it at all, not for a class that no longer exists.
+    await page.waitFor('(document.getElementById("hud")?.textContent ?? "").length > 0', { label: 'the combat HUD', timeoutMs: 60000 });
 
     const start = await page.evalJs('window.__debug.combat()');
     check('the dungeon is populated', start.monsters.length > 0, `${start.monsters.length} monsters: ${start.monsters.map((m) => m.name).join(', ')}`);
@@ -47,8 +50,20 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
     check('the player is the character that was created, or a stand-in',
       Boolean(start.player.name) && start.player.health > 0,
       `${start.player.name} (${start.player.class ?? 'no class'}) ${start.player.health}/${start.player.maxHealth}`);
-    check('the HUD states which numbers are Arena\'s and which are the project\'s',
-      /reconstruction/.test(await page.evalJs('document.getElementById("combat").textContent')), '');
+    // **The provenance moved off the HUD.** The owner, 2026-10-21: *"this part of the gui
+    // should not be there anymore instead in the settings"*. The fight's HUD now says only what
+    // is happening; the tables' own account is in the pack panel, where a player looks for it.
+    const hudText = await page.evalJs('document.getElementById("hud").textContent');
+    await page.pressKey('KeyI');
+    await page.pressKey('KeyI', false);
+    await page.waitFor('document.getElementById("inventory")?.classList.contains("on")',
+      { label: 'the pack open', timeoutMs: 10000 });
+    const packText = await page.evalJs('document.getElementById("inventory").textContent');
+    await page.pressKey('KeyI');
+    await page.pressKey('KeyI', false);
+    check('the HUD is the fight\'s, and the tables\' own account is in the pack',
+      !/WASD move/.test(hudText) && !/reconstruction/.test(hudText) && /reconstruction/.test(packText),
+      JSON.stringify({ hud: hudText.slice(-80), pack: /reconstruction/.test(packText) }));
 
     // ── the health a monster is rolled with is its own kind's ───────────────
     const ranged = await page.evalJs(`JSON.stringify(window.__debug.combat().monsters.map((m) => ({ id: m.id, health: m.maxHealth })))`);
@@ -94,6 +109,13 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
       if (now.health < before.health) landed = true;
     }
     check('repeated blows land, so the roll is not stuck on miss', landed);
+    // **The swing speaks the install's own clip.** The owner, 2026-10-21: *"sounds that
+    // perfectarena uses … are not the correct sounds the original arena is using"*. The bank is
+    // warmed at boot (`warmSfxClips`) and a blow names `SWISH.VOC`; the seam says which path spoke.
+    const swingSound = await page.evalJs('window.__debug.sfx()');
+    check('a blow speaks Arena\'s own clips, not the synthesized fallback',
+      swingSound?.source === 'arena' && /SWISH|EHIT|CLANK|MDIE|BODYFALL/.test(swingSound?.clip ?? ''),
+      JSON.stringify(swingSound));
 
     // ── a real mouse click is a swing too ───────────────────────────────────
     //
@@ -105,6 +127,18 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
     // is the one thing that should be held constant.
     const rat = JSON.parse(await page.evalJs('(async () => JSON.stringify(await window.__debug.spawnMonster("rat")))()'));
     check('a monster can be brought into reach on purpose', rat?.name === 'Rat', JSON.stringify(rat));
+    // **The rat is a body, not a picture.** The owner's *"enemies have no collision with the
+    // player"*: the spawn stands 1.4 m ahead, and a walk straight into it has to stop on its
+    // chest (0.42 + 0.35 m) instead of passing through. The seam's `distance` is the same number
+    // the creature's own step reads.
+    await page.pressKey('KeyW');
+    await new Promise((r) => setTimeout(r, 750));
+    await page.pressKey('KeyW', false);
+    await new Promise((r) => setTimeout(r, 120));
+    const blocked = await page.evalJs('JSON.stringify(window.__debug.combat().monsters.find((m) => m.name === "Rat"))');
+    const ratNow = JSON.parse(blocked ?? 'null');
+    check('walking into a creature stops at its body instead of passing through it',
+      ratNow && Number(ratNow.distance) >= 0.7, blocked);
     const canvasBox = await page.evalJs('(() => { const c = document.getElementById("c").getBoundingClientRect(); return { x: c.left + c.width / 2, y: c.top + c.height / 2 }; })()');
     const killsBefore = (await page.evalJs('window.__debug.combat().player.kills'));
     for (let i = 0; i < 40 && (await page.evalJs('window.__debug.combat().player.kills')) === killsBefore; i++) {
@@ -117,19 +151,13 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
       `${killsBefore} → ${killsAfter} slain`);
     await page.screenshot(path.join(shots, 'm6-combat.png'));
 
-    // ── a plain click is a light swing; a hold arms the heavy ────────────────
+    // ── no heavy: the press is the only blow ────────────────────────────────
     //
-    // **The tell is a state now, not a spray.** These two checks used to read the amber
-    // particle tell the scene emitted while a heavy was held (`effects.chargeBursts`). The
-    // owner, playing both games side by side (2026-10-16), reported that tell as a bug in its
-    // own right — "if i hold left click i just spawn in front of me piss yellow particles and
-    // a message that says heavy harmed release" — and Arena's own presentation has no wind-up
-    // particles at all, so the spray is gone (`interior.js`'s charge block, D-20). What the
-    // heavy and the light swing are still held to is the *law the tell was a proxy for*: a
-    // press inside `HEAVY.armSeconds` (0.18 s) arms nothing, and a hold past it arms the blow.
-    // `defence.charge` is the step's own answer, so the checks read the mechanic rather than a
-    // side effect of it — and they no longer depend on a rat choosing not to hit the player
-    // during the sample.
+    // The owner, 2026-10-19: *"remove the possibility to do heavy blows in combat just normal
+    // blows for the player the mechanic doesnt insert well in combat"*. The press strikes at
+    // once, and holding the button cannot arm a second, stronger blow: `defence.charge` is
+    // pinned at `{armed:false, progress:0}` before and after a long hold. The click itself is
+    // still proven to fight by the kill check above, so this is the *absence* of the old tier.
     const at = { x: canvasBox.x, y: canvasBox.y, button: 'left', clickCount: 1 };
     await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, buttons: 0 });
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, buttons: 1 });
@@ -137,17 +165,17 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
     const tapCharge = await page.evalJs('window.__debug.combat().defence.charge');
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, buttons: 0 });
     await new Promise((r) => setTimeout(r, 150));
-    check('a light click’s press arms nothing (the heavy needs a hold)',
-      tapCharge?.armed === false, JSON.stringify(tapCharge));
+    check('a click arms no charge — there is no heavy to arm',
+      tapCharge?.armed === false && tapCharge?.progress === 0, JSON.stringify(tapCharge));
 
-    // …and the hold that *does* arm the heavy is reported as armed.
+    // …and a long hold adds nothing to it.
     await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, buttons: 1 });
     await new Promise((r) => setTimeout(r, 600));       // well past the arm
     const heldCharge = await page.evalJs('window.__debug.combat().defence.charge');
     await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, buttons: 0 });
     await new Promise((r) => setTimeout(r, 250));
-    check('a held heavy is armed while the hold runs',
-      heldCharge?.armed === true, JSON.stringify(heldCharge));
+    check('holding the button adds no heavy: the ordinary blow already landed on the press',
+      heldCharge?.armed === false && heldCharge?.progress === 0, JSON.stringify(heldCharge));
 
     // ── the player takes blows, and the HUD says so ─────────────────────────
     //
@@ -210,6 +238,43 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
       standing.player === standingLater.player && /#0$/.test(standing.player ?? ''),
       `${standing.player} → ${standingLater.player}`);
     await page.screenshot(path.join(shots, 'm6-third-person.png'));
+
+    // ── the third-person camera does not enter walls ─────────────────────────
+    // The old camera was a fixed 3.6 m behind the player, so a corridor put it inside the
+    // masonry. The boom is now raycast from the player's head and shortened at the first
+    // wall; this stands the player beside a solid cell, looks so the camera would be inside
+    // that cell, and reads the resolved eye.
+    const camera = await page.evalJs(`(() => {
+      const d = window.__debug;
+      const feet = d.state().feet;
+      const baseRow = Math.floor(feet[0] / 2.5), baseCol = Math.floor(feet[2] / 2.5);
+      let found = null;
+      for (let r = baseRow - 12; r <= baseRow + 12 && !found; r++) {
+        for (let c = baseCol - 12; c <= baseCol + 12 && !found; c++) {
+          const here = d.cellAt(r, c);
+          if (!here || here.solid || here.chasm) continue;
+          for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+            const next = d.cellAt(r + dr, c + dc);
+            if (next && next.solid) { found = { row: r, col: c, dr, dc }; break; }
+          }
+        }
+      }
+      if (!found) return null;
+      d.teleport((found.row + 0.5) * 2.5, feet[1], (found.col + 0.5) * 2.5);
+      // Put the camera's boom along the solid neighbour: eye = feet − (sin yaw, cos yaw)·d.
+      d.look(Math.atan2(-found.dr, -found.dc), 0);
+      return found;
+    })()`);
+    await new Promise((r) => setTimeout(r, 180));
+    const wallCam = await page.evalJs(`(() => {
+      const d = window.__debug, s = d.state(), c = s.thirdCamera;
+      if (!c) return null;
+      const eye = d.cellAt(Math.floor(c.eye[0] / 2.5), Math.floor(c.eye[2] / 2.5));
+      return { blocked: c.blocked, distance: c.distance, wanted: c.wanted, eyeSolid: Boolean(eye?.solid), eye: c.eye };
+    })()`);
+    check('the third-person camera shortens its boom against a wall instead of clipping through it',
+      Boolean(camera) && wallCam?.blocked === true && wallCam.distance < wallCam.wanted && wallCam.eyeSolid === false,
+      `${JSON.stringify(camera)} → ${JSON.stringify(wallCam)}`);
 
     // ── a walk cycle belongs to walking ─────────────────────────────────────
     //

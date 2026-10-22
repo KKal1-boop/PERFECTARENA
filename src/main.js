@@ -16,20 +16,23 @@
 //   ?test                 the hand-made courtyard from Milestone 2
 //   ?shot                 a fixed vantage, for the screenshot tests
 //
-// A URL that asks for **nothing** is a new game, and a new game is Arena's own first ten
-// minutes: creation, the opening movie, and a locked cell in the Imperial Dungeons
-// (`game/startFlow.js`). A URL that names a scene is a deep link and is taken at its word.
+// A URL that asks for **nothing** opens Arena's **start menu** — the install's title screen,
+// Continue or New Game (`scenes/startMenu.js`). New Game is Arena's own first ten minutes:
+// creation, the king's betrayal (`INTRO.FLC`), and a locked cell in the Imperial Dungeons
+// where Ria Silmane explains what happened (`game/startFlow.js`, `game/storyScript.js`). A URL
+// that names a scene is a deep link and is taken at its word.
 //
 // Arena's data is read at runtime from a folder the *player* picks; nothing is
 // bundled with the game. See docs/DECISIONS.md D9 and docs/ARCHITECTURE.md §1.
 
 import { Renderer } from './engine/render/renderer.js';
 import { crashText } from './engine/ui/crashText.js';
-import { loadCharacter } from './game/save.js';
+import { loadCharacter, loadLastLocation, loadQuestState, markCellDreamPending } from './game/save.js';
+import { CELL_DREAM } from './game/storyScript.js';
 // Where a game begins — the opening movie, then the Imperial Dungeons. The law is a module
 // of its own (`game/startFlow.js`) so it can be tested without a renderer; this file only
 // boots what it decides.
-import { asksForScene, destinationParams, isGameStart, openingGate } from './game/startFlow.js';
+import { destinationParams, isGameStart, resumeParams } from './game/startFlow.js';
 
 /** Every uncaught error and console error the page produces, for the tests. */
 function installErrorTrap() {
@@ -99,20 +102,18 @@ async function bootFromPickedFolder(canvas, renderer, params, status) {
           }
           window.__debug.arenaSource = source.label;
           try {
-            // Nobody has a character until creation has happened, and creation is a
-            // page of its own: it needs the same data source.
-            const fresh = needsCharacter(params);
-            if (fresh) {
+            if (isGameStart(params)) {
+              // A plain launch is the **start menu**: Arena's title screen, with Continue and
+              // New Game. New Game runs creation, the king's betrayal and the cell; Continue
+              // resumes the save's own last place (`game/startFlow.js`'s `resumeParams`).
+              await gameStart(canvas, renderer, params, status, source);
+            } else if (needsCharacter(params)) {
+              // A deep link that asks for a scene, from a browser with no character: creation
+              // resolves in this page so the folder the player just picked still answers.
               const { bootChargen } = await import('./scenes/chargen.js');
-              // Creation resolves in this page, and the scene the player asked for is
-              // booted with the folder they just picked still open.
               await bootChargen(canvas, renderer, params, status, source);
-              // A character made just now is greeted by Arena's own opening movie and then
-              // wakes in the Imperial Dungeons (`game/startFlow.js`).
-              if (isGameStart(params)) await showOpening(status, params, source, { fresh: true });
               await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
             } else {
-              if (isGameStart(params)) await showOpening(status, params, source, { fresh: false });
               await run(canvas, renderer, destinationParams(params, { fresh: false }), status, source);
             }
             document.getElementById('boot')?.classList.add('hidden');
@@ -158,42 +159,88 @@ async function run(canvas, renderer, params, status, source) {
 }
 
 /**
- * The opening movie, **once per session** — the same law the fanfare walks (`game/fanfare.js`):
- * a page per level means a scene swap would otherwise replay a two-minute movie, while an
- * ordinary reload of the page still starts a new session and still greets the player.
+ * A game start, in Arena's order: the start-up cards, the **title screen**, and the player's
+ * choice. New Game is the real new-game flow (`scenes/newGame.js`: creation → `INTRO.FLC`, the
+ * king's betrayal → the cell); Continue resumes the save's own last place. A `?menu` URL is the
+ * dev door to the menu alone.
+ *
+ * @param {HTMLCanvasElement} canvas @param {object} renderer
+ * @param {URLSearchParams} params @param {(m:string)=>void} status
+ * @param {import('./arena/browserSource.js').ArenaSource} source
+ */
+async function gameStart(canvas, renderer, params, status, source) {
+  // `?menu` is the dev door to the title screen alone, with no cards in front of it.
+  if (!params.has('menu')) await showStartup(status, params, source);
+  const { showStartMenu } = await import('./scenes/startMenu.js');
+  const choice = await showStartMenu(source, { status, hasSave: Boolean(loadCharacter()) });
+  window.__debug.startChoice = choice;
+  if (choice === 'new') {
+    const { beginNewGame } = await import('./scenes/newGame.js');
+    return await beginNewGame({ canvas, renderer, status, source, params });
+  }
+  if (choice === 'continue') {
+    // **An older save that never heard her is owed the explanation once.** The ledger is the
+    // save's own (`dreamsSeen`); the handshake tells the next level boot to play it
+    // (`game/storyScript.js`'s `dueCellDream`).
+    const quest = loadQuestState();
+    if (!(Array.isArray(quest.dreamsSeen) && quest.dreamsSeen.includes(CELL_DREAM))) markCellDreamPending();
+    const dest = resumeParams(params, loadLastLocation());
+    // The URL names where the player actually is, as every in-place scene change does, so a
+    // reload continues instead of returning to the title screen.
+    try {
+      history.replaceState(history.state ?? null, '', `${location.pathname}?${dest.toString()}${location.hash ?? ''}`);
+    } catch { /* a page that cannot rewrite its URL still continues */ }
+    await run(canvas, renderer, dest, status, source);
+    return { ok: true };
+  }
+  overlay('The gate is closed.\nReload the page to return to it.');
+  return { ok: false, why: 'quit' };
+}
+
+/**
+ * The **start-up** cinematics, once per session: the title and quote cards, the scroll movie and
+ * its three pictures (`game/cutscene.js`'s `STARTUP_STEPS`, OpenTESArena's `IntroUiMVC` order).
+ * A skip ends the cards only — never the story, which is exactly the bug this split removes: the
+ * king's betrayal and Ria's explanation are their own beats, played when the game begins.
  *
  * @param {(m: string) => void} status
  * @param {URLSearchParams} params
  * @param {import('./arena/browserSource.js').ArenaSource|null} source
- * @param {{fresh?: boolean}} [opts] `fresh` = this boot created the character, so the movie is
- *   owed whatever the tab has seen before (`game/startFlow.js`'s `openingGate`)
  */
-async function showOpening(status, params, source, { fresh = false } = {}) {
-  const GREETED = 'pa.intro.greeted';
+async function showStartup(status, params, source) {
+  const SEEN = 'pa.startup.seen';
   let seen = false;
-  try {
-    seen = sessionStorage.getItem(GREETED) === '1';
-  } catch { /* no storage: the opening is offered every boot, which is the honest default */ }
-  const due = openingGate({ fresh, seen });
-  if (!due.show) {
-    window.__debug.opening = { skipped: due.why };
+  try { seen = sessionStorage.getItem(SEEN) === '1'; } catch { /* no storage: show them */ }
+  if (seen) {
+    window.__debug.startup = { skipped: 'this session has seen the start-up' };
     return null;
   }
+  const arenaPath = params.get('arena') || null;
+  const steps = [];
+  let played = { played: false, skipped: false, steps };
   try {
-    const { showMovie } = await import('./scenes/cutscenePlayer.js');
-    const played = await showMovie('INTRO.FLC', {
-      source,
-      arenaPath: params.get('arena') || null,
-      status,
-    });
-    window.__debug.opening = { ...played.state, played: played.played, skipped: played.skipped };
-    try { sessionStorage.setItem(GREETED, '1'); } catch { /* private mode */ }
-    return played;
+    const { showMovie, showStill } = await import('./scenes/cutscenePlayer.js');
+    const { STARTUP_STEPS } = await import('./game/cutscene.js');
+    for (const step of STARTUP_STEPS) {
+      let result;
+      try {
+        result = step.kind === 'still'
+          ? await showStill(step.file, { source, arenaPath, status, seconds: step.seconds, paletteFile: step.paletteFile })
+          : await showMovie(step.file, { source, arenaPath, status });
+      } catch (err) {
+        result = { played: false, skipped: false, state: { error: String(err?.message ?? err) } };
+      }
+      steps.push({ file: step.file, played: result.played, skipped: result.skipped });
+      if (result.skipped) break;
+    }
+    played = { played: steps.some((s) => s.played), skipped: steps.some((s) => s.skipped), steps };
   } catch (err) {
-    // A movie is never a dependency: the game starts with or without it.
-    window.__debug.opening = { error: String(err?.message ?? err) };
-    return null;
+    // A movie is never a dependency: the menu appears with or without it.
+    played = { error: String(err?.message ?? err), steps };
   }
+  window.__debug.startup = played;
+  try { sessionStorage.setItem(SEEN, '1'); } catch { /* private mode */ }
+  return played;
 }
 
 /**
@@ -270,23 +317,50 @@ async function boot() {
     const { localServerSource } = await import('./arena/browserSource.js');
     const source = localServerSource(arenaPath);
     window.__debug.arenaSource = source.label;
-    // The dev door is for a named scene, so creation happens here when the page asks for
-    // it (`?chargen`) — **or when it asks for nothing at all**, which is the case a launch
-    // through `tools/launch.mjs` produces: `?arena=<folder>` and no scene. That used to drop
-    // the player into `START.MIF` with no character, which is not a game. It now goes through
-    // creation and out to the world map, exactly as a picked folder does.
-    if (params.has('chargen') || (!asksForScene(params) && needsCharacter(params))) {
+    // A launch through `tools/launch.mjs` is `?arena=<folder>` and no scene: the start menu,
+    // exactly as a picked folder gets (`scenes/startMenu.js`). `?chargen` is a dev door and is
+    // taken by name, without the menu, so its suite drives creation directly.
+    if (isGameStart(params)) {
+      await gameStart(canvas, renderer, params, status, source);
+      document.getElementById('boot')?.classList.add('hidden');
+      window.__ready = true;
+      return;
+    }
+    if (params.has('chargen')) {
       const { bootChargen } = await import('./scenes/chargen.js');
       await bootChargen(canvas, renderer, params, status, source);
-      // …and then the game's own opening, for a person who just started playing. A `?chargen`
-      // URL is a dev door (its own suite drives it), so it is asked for by name, not given.
-      if (isGameStart(params)) await showOpening(status, params, source, { fresh: true });
       await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
       document.getElementById('boot')?.classList.add('hidden');
       window.__ready = true;
       return;
     }
     await run(canvas, renderer, params, status, source);
+    window.__ready = true;
+    return;
+  }
+
+  // **The page's own server first** — a phone cannot pick a folder (`servedArenaSource`),
+  // and a checkout served by `tools/serve.mjs` already has Arena mounted beside the page.
+  // A page anywhere else gets `null`, and the picker below is the shipping path as before.
+  const { servedArenaSource } = await import('./arena/browserSource.js');
+  const served = await servedArenaSource();
+  if (served) {
+    window.__debug.arenaSource = served.label;
+    if (isGameStart(params)) {
+      await gameStart(canvas, renderer, params, status, served);
+      document.getElementById('boot')?.classList.add('hidden');
+      window.__ready = true;
+      return;
+    }
+    if (params.has('chargen')) {
+      const { bootChargen } = await import('./scenes/chargen.js');
+      await bootChargen(canvas, renderer, params, status, served);
+      await run(canvas, renderer, destinationParams(params, { fresh: true }), status, served);
+      document.getElementById('boot')?.classList.add('hidden');
+      window.__ready = true;
+      return;
+    }
+    await run(canvas, renderer, params, status, served);
     window.__ready = true;
     return;
   }

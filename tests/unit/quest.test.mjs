@@ -22,10 +22,15 @@ import assert from 'node:assert/strict';
 import { ArenaData } from '../../src/arena/arenaData.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import { loadWorldMap } from '../../src/game/worldMap.js';
+import { decodeLevel } from '../../src/game/mifLevel.js';
+import { buildLevelMesh } from '../../src/game/mifMesh.js';
+import { dangerOf } from '../../src/game/encounters.js';
+import { monsterReport, rosterFor, spriteFiles } from '../../src/game/monsters.js';
 import { discoverLooseMifs, enterableFromListing, enterableDungeons } from '../../src/game/radiantQuests.js';
 import {
-  FINAL_DUNGEON, STAGE_TEXT, START_DUNGEON, STAFF_DUNGEON_ORDER, buildQuestChain, stageMif,
+  FINAL_DUNGEON, STAGE_TEXT, STAGE_TEXT_KEYS, START_DUNGEON, STAFF_DUNGEON_ORDER, buildQuestChain, stageMif,
 } from '../../src/game/questData.js';
+import { STORY_LINES } from '../../src/game/storyLines.js';
 import {
   QUEST_EVENTS, applyQuestEvent, createQuestState, currentObjective, deserializeQuestState,
   questLog, serializeQuestState,
@@ -53,7 +58,7 @@ function play(state, events) {
 const FULL_QUEST = [
   'escaped',
   ...STAFF_DUNGEON_ORDER.flatMap(() => ['foundClue', 'foundPiece']),
-  'staffAssembled', 'mithrilKey', 'jewelOfFire', 'won',
+  'staffAssembled', 'mithrilKey', 'jewelOfFire', 'tharnSlain', 'won',
 ];
 
 test('the chain is derived from CITYDATA.64: ten stages, in the documented order', () => {
@@ -138,6 +143,16 @@ test('every stage has a line of Ria Silmane\'s text of its own', () => {
   for (const stage of chain.stages) assert.ok(STAGE_TEXT.includes(stage.text), `${stage.title} quotes the chain`);
 });
 
+test('every stage quotes its own TEMPLATE.DAT line, in the quest’s order', () => {
+  // The cell's dream, then Ria's dream for each piece's place, then Tharn at the palace.
+  assert.deepEqual(STAGE_TEXT_KEYS, [1400, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1447]);
+  assert.deepEqual(chain.stages.map((stage) => stage.textKey), [...STAGE_TEXT_KEYS]);
+  for (const stage of chain.stages) {
+    assert.equal(stage.text, STORY_LINES[stage.textKey], `${stage.title} is the game's own line`);
+    assert.equal(stage.text, STAGE_TEXT[stage.index], `${stage.title} quotes STAGE_TEXT`);
+  }
+});
+
 test('the map dungeon of a stage is never the piece dungeon of the same stage', () => {
   for (const stage of chain.stages.slice(1, 9)) {
     assert.notEqual(stageMif(stage), stageMif({ dungeonSeed: stage.clue.dungeonSeed }), `${stage.title} and ${stage.clue.title} are different maps`);
@@ -148,8 +163,8 @@ test('the map dungeon of a stage is never the piece dungeon of the same stage', 
 test('a fresh quest is at the escape, with nothing held and nothing known', () => {
   const fresh = createQuestState();
   assert.deepEqual(fresh, {
-    step: 0, pieces: 0, mapKnown: false, mithrilKey: false, hasKeyItem: false,
-    ended: false, log: [], visited: [],
+    step: 0, pieces: 0, mapKnown: false, mithrilKey: false, skeletonKey: false, hasKeyItem: false,
+    tharnSlain: false, ended: false, log: [], visited: [], dreamsSeen: [], ambushSeen: [],
   });
   assert.equal(currentObjective(fresh, chain), 'Escape Imperial Dungeons.');
 });
@@ -183,12 +198,19 @@ test('the whole quest can be walked, and says so at every step', () => {
 
   state = play(state, ['jewelOfFire']);
   assert.equal(state.hasKeyItem, true);
+  // **The Jewel is not the end.** Jagar Tharn stands in the chamber, and the quest says so
+  // until he falls (the owner, 2026-10-21: "the final boss battle is not scripted").
+  assert.match(currentObjective(state, chain), /Jagar Tharn/);
+  assert.equal(applyQuestEvent(state, 'won', { chain }).ok, false, 'the Emperor is not freed past a living Tharn');
+
+  state = play(state, ['tharnSlain']);
+  assert.equal(state.tharnSlain, true);
   assert.match(currentObjective(state, chain), /free the Emperor/);
 
   state = play(state, ['won']);
   assert.equal(state.ended, true);
   assert.equal(currentObjective(state, chain), 'The Arena is at peace.');
-  assert.equal(state.log.length, 1 + 8 * 2 + 4, 'an entry for every event that was accepted');
+  assert.equal(state.log.length, 1 + 8 * 2 + 5, 'an entry for every event that was accepted');
   assert.match(state.log.at(-1), /Jagar Tharn is undone/);
   const log = questLog(state, chain);
   assert.equal(log.ended, true);
@@ -253,7 +275,7 @@ test('the finale refuses a key without the Staff, a Jewel without the key, and a
   refused = applyQuestEvent(state, 'mithrilKey', { chain });
   assert.equal(refused.ok, false, 'the key cannot be found twice');
 
-  state = play(state, ['jewelOfFire', 'won']);
+  state = play(state, ['jewelOfFire', 'tharnSlain', 'won']);
   refused = applyQuestEvent(state, 'won', { chain });
   assert.equal(refused.ok, false);
   assert.match(refused.reason, /already over/);
@@ -324,3 +346,111 @@ test('a missing or damaged save is not a crash', () => {
   assert.equal(currentObjective(capped, chain), 'The quest is complete.');
   assert.equal(fresh.step, 0);
 });
+
+// ── every main-story dungeon the world sends a player to, level by level ─────
+//
+// The owner, 2026-10-17: *"check all the main story targets dungeon imports and enemies cause walls are
+// bugged and lead off the map in main story dungeons and the dagoth ur one isnt even ported at all"*.
+// Both halves of that report are real and this is the pin for them:
+//
+//   * **The `.INF` with no `@FLOORS` header.** `dagoth1.inf` and `dagoth2.inf` — Dagoth-Ur's first two
+//     levels (`42026882.MIF`) — open straight onto `*BOXCAP 0`, and the reader used to need a tag on the
+//     first line to accept its own decryption. It fell back to the ciphertext, so those two levels
+//     parsed with **zero voxel textures**: the mesher built 4 234 wall quads and 10 000 ceiling quads and
+//     dropped every one of them for want of a material. The level collided and drew *nothing* — which is
+//     what "walls are bugged … the dagoth ur one isnt even ported" looks like on screen. `arenaData.js`
+//     now reads it (`looksLikeInf`) and `parseInfText` starts in the floor section, as Arena's own reader
+//     does.
+//   * **And it is checked on the whole chain, not on one file**, because the same shape could hide in any
+//     of the install's 93 INFs.
+
+/** The `.MIF` names the chain's own stages load, with the dungeon each one is. */
+function chainDungeons() {
+  const list = [{ what: START_DUNGEON.name, mif: START_DUNGEON.mif }];
+  for (const stage of chain.stages) {
+    if (stage.kind === 'piece') list.push({ what: stage.title, mif: stageMif(stage) });
+    if (stage.clue) list.push({ what: stage.clue.title, mif: stage.clue.mif });
+  }
+  list.push({ what: FINAL_DUNGEON.name, mif: FINAL_DUNGEON.mif });
+  return list;
+}
+
+test('every main-story dungeon really draws, level by level — the Dagoth-Ur law', async () => {
+  const d = data();
+  const dungeons = chainDungeons();
+  // The escape's own level, eight pieces, the eight maps that reveal them, and the palace: eighteen.
+  assert.equal(dungeons.length, 1 + 8 + 8 + 1, 'the escape, sixteen quest dungeons and the palace');
+  const empty = [];
+  const shipped = [...new Set(dungeons.map((x) => x.mif))];
+  for (const name of shipped) {
+    assert.equal(await d.has(name), true, `${name} is not in this install`);
+    const mif = await d.mif(name);
+    for (let index = 0; index < mif.levelCount; index++) {
+      const raw = mif.levels[index];
+      const inf = await d.inf(raw.info);
+      // The floor that used to fail here: an INF whose texture table did not survive the read.
+      assert.ok(inf.voxelTextures.length > 0,
+        `${name} level ${index + 1} (${raw.info}) read no voxel textures at all`);
+      const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+      const mesh = buildLevelMesh(level);
+      const quads = mesh.model.indices.length / 6;
+      if (quads < 4000) empty.push(`${name} L${index + 1}: ${quads} quads`);
+      assert.ok(quads > 0, `${name} level ${index + 1} draws nothing (no material reached the mesh)`);
+      // A dungeon is walls, doors and things to find: a level with no door at all is not one.
+      assert.ok(level.stats.door >= 1, `${name} level ${index + 1} has no door`);
+      assert.ok(level.stats.entity >= 10, `${name} level ${index + 1} has ${level.stats.entity} entities`);
+      // The way in has to lead somewhere, which is the same walk the escape's own target uses.
+      const walk = deepestWalk(level);
+      assert.ok(walk > level.stats.air * 0.05,
+        `${name} level ${index + 1}: the arrival reaches only ${walk} of ${level.stats.air} open cells`);
+    }
+  }
+  assert.deepEqual(empty, [], 'a main-story level that draws almost nothing is not ported');
+});
+
+test('and every main-story dungeon has monsters this install can draw', async () => {
+  const d = data();
+  const report = monsterReport();
+  assert.deepEqual(report.spriteless, [], 'every creature in the roster has art');
+  for (const stage of chain.stages) {
+    const danger = dangerOf({ stage: stage.index, city: false });
+    const roster = rosterFor(danger);
+    // The band is this project's own rule (`monsters.js`: every creature whose level is within
+    // `danger ± 4`), so the count is not Arena's — the law worth pinning is that a stage's dungeon
+    // is **populated** wherever its danger lands on that ladder. Measured: the narrowest stage
+    // admits four, and every dungeon holds at least that many kinds of thing to meet.
+    assert.ok(roster.length >= 3, `stage ${stage.index} (${stage.title}) admits ${roster.length} creatures`);
+    for (const monster of roster) {
+      const files = spriteFiles(monster);
+      assert.ok(files.length === 6, `${monster.name} has no six-view sheet`);
+      assert.equal(await d.has(files[0]), true, `${monster.name}'s art ${files[0]} is not in this install`);
+    }
+  }
+});
+
+/** The standable cells the levels own walk reaches — `mifLevel.js`'s flood, counted. */
+function deepestWalk(level) {
+  const { width, depth, cells } = level;
+  const at = (row, col) => (row < 0 || col < 0 || row >= depth || col >= width ? null : cells[row * width + col]);
+  const start = { row: Math.min(depth - 1, Math.max(0, Math.floor(level.spawn?.x ?? 0))), col: Math.min(width - 1, Math.max(0, Math.floor(level.spawn?.z ?? 0))) };
+  const walkable = (cell) => Boolean(cell) && cell.kind !== 'wall';
+  if (!walkable(at(start.row, start.col))) return 0;
+  const seen = new Uint8Array(width * depth);
+  const queue = [start];
+  seen[start.row * width + start.col] = 1;
+  let reached = 0;
+  for (let head = 0; head < queue.length; head++) {
+    const here = queue[head];
+    reached++;
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const row = here.row + dr;
+      const col = here.col + dc;
+      if (row < 0 || col < 0 || row >= depth || col >= width) continue;
+      const index = row * width + col;
+      if (seen[index] || !walkable(at(row, col))) continue;
+      seen[index] = 1;
+      queue.push({ row, col });
+    }
+  }
+  return reached;
+}

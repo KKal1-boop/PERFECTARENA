@@ -28,6 +28,11 @@ export const SET_FRAME_SIZE = 64;
  * @property {string} [label]
  */
 
+// Scene replacement keeps the same source (picked folder or HTTP source object).
+// Decoded immutable assets belong to that source, not to a short-lived scene.
+// Weak keys release the session cache when the player switches folders.
+const sourceCaches = new WeakMap();
+
 /** Arena's own data, decoded and cached. */
 export class ArenaData {
   /**
@@ -39,7 +44,13 @@ export class ArenaData {
     this.paletteName = opts.paletteName ?? 'PAL.COL';
     this.onWarn = opts.onWarn ?? (() => {});
     /** @type {Map<string, Promise<any>>} */
-    this.cache = new Map();
+    let shared = sourceCaches.get(source);
+    if (!shared) {
+      shared = { cache: new Map(), archive: null };
+      sourceCaches.set(source, shared);
+    }
+    this.shared = shared;
+    this.cache = shared.cache;
     this.stats = { bytes: 0, hits: 0, misses: 0 };
   }
 
@@ -60,7 +71,7 @@ export class ArenaData {
       const archive = await this.bsa();
       return archive.get(key) ?? null;
     })();
-    this.cache.set(`b:${key}`, p);
+    this.cache.set(`b:${key}`, p.catch((error) => { this.cache.delete(`b:${key}`); throw error; }));
     this.stats.misses++;
     return p;
   }
@@ -81,14 +92,14 @@ export class ArenaData {
    * @returns {Promise<import('./bsaArchive.js').BsaArchive>}
    */
   async bsa() {
-    if (!this._bsa) {
-      this._bsa = (async () => {
+    if (!this.shared.archive) {
+      this.shared.archive = (async () => {
         const bytes = await this.source.getBytes('GLOBAL.BSA');
         if (!bytes) throw new Error('GLOBAL.BSA was not found in the Arena folder');
         return parseBsa(bytes, 'GLOBAL.BSA');
-      })();
+      })().catch((error) => { this.shared.archive = null; throw error; });
     }
-    return this._bsa;
+    return this.shared.archive;
   }
 
   /** @returns {Promise<boolean>} */

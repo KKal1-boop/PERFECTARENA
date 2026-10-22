@@ -19,11 +19,13 @@ import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import { MATERIALS, WEAPONS, materialById, weaponById } from '../../src/game/combat.js';
 import { weaponCarried } from '../../src/game/inventory.js';
 import {
-  ITEMS, ITEM_KINDS, SCROLL_SPELLS, addToBag, armourRating, bagRows, bagValue, countInBag,
-  createBag, dropFromBag, equipFromBag, itemById, itemNote, itemsOfKind, priceOf, removeFromBag,
-  STARTING_WEAPON_OF_CLASS, startingKit, useFromBag, weaponHeld,
+  ITEMS, ITEM_KINDS, SCROLL_SPELLS, addToBag, armourOn, armourRating, bagRows, bagValue,
+  carriedWeight, carryStatus, countInBag, createBag, dropFromBag, equipFromBag, itemById, itemNote,
+  itemsOfKind, maxCarryWeight, priceOf, removeFromBag, STARTING_WEAPON_OF_CLASS, startingKit,
+  useFromBag, weaponHeld,
 } from '../../src/game/items.js';
 import { parseSpellsFile, spellByName } from '../../src/arena/spellsFile.js';
+import { buildSpellLibrary } from '../../src/game/spells.js';
 import {
   SERVICE_KINDS, TEMPLE_SERVICES, buys, buysWhat, buyItem, buySpell, guildPrice, rest,
   restCost, sellItem, shelfFor, templePrice, templeService,
@@ -47,11 +49,162 @@ test('every weapon Arena documents is an item, under the same id the fight swing
     assert.deepEqual([item.damage.min, item.damage.max], [weapon.min, weapon.max], `${weapon.id} keeps its range`);
     assert.equal(item.hands, ['battle-axe', 'claymore', 'warhammer', 'dai-katana', 'long-bow', 'short-bow'].includes(weapon.id) ? 'two' : 'one');
   }
-  // …and the join the other way: every weapon item is a weapon the fight knows.
+  // …and the join the other way: **every weapon item names a base the fight knows.** A catalog
+  // row is either a plain base (`id`, the shape `character.weapon` and a save carry) or a
+  // weapon in a material (`weapon` + `material`, the shape a shelf carries) — and both resolve
+  // through `weaponById`, which is the join that makes equipping out of the bag need no
+  // translation layer. This used to demand `id` alone, which is why an Ebony Longsword could not
+  // exist in the catalog at all.
   for (const item of itemsOfKind('weapon')) {
-    assert.ok(WEAPONS.some((weapon) => weapon.id === item.id), `${item.id} is a real weapon base`);
+    const base = item.weapon ?? item.id;
+    assert.ok(WEAPONS.some((weapon) => weapon.id === base), `${item.id} names a real weapon base (${base})`);
+    const named = item.material ? `${materialById(item.material).name} ${weaponById(base).name}` : weaponById(base).name;
+    assert.equal(item.name, named, item.id);
   }
   assert.equal(weaponById(itemById('dai-katana').id).max, 21);
+});
+
+test('every weapon is listed in every material Arena makes it of, and one equip sets both', () => {
+  // The owner, 2026-10-17: *"import all armors weapons and magic from og arena"*. Arena's
+  // weapons are a base crossed with the metal — that is what `MATERIALS` is — so a smith's
+  // shelf has to be able to show an Ebony Longsword, and the base rows have to keep working
+  // beside them (a save, the class kit and the fight all carry `character.weapon`).
+  // UESP's base table has **four** bodily rows: the punch and three gauntlets. The fourth
+  // (`leather-gauntlets`, 2–3) was the one the port had left out.
+  const bodily = ['fists', 'leather-gauntlets', 'chain-gauntlets', 'plate-gauntlets'];
+  const craftable = WEAPONS.filter((weapon) => !bodily.includes(weapon.id));
+  const forged = itemsOfKind('weapon').filter((item) => item.weapon);
+  assert.equal(forged.length, craftable.length * MATERIALS.length,
+    `${forged.length} forged weapons for ${craftable.length} bases × ${MATERIALS.length} materials`);
+  for (const weapon of craftable) {
+    for (const material of MATERIALS) {
+      const item = itemById(`${material.id}-${weapon.id}`);
+      assert.ok(item, `${material.id}-${weapon.id} is on the shelf`);
+      assert.equal(item.kind, 'weapon');
+      assert.equal(item.weapon, weapon.id);
+      assert.equal(item.material, material.id);
+      assert.equal(item.name, `${material.name} ${weapon.name}`);
+      // The **base's** range, so exactly one material modifier is ever added (`weaponHeld`).
+      assert.deepEqual([item.damage.min, item.damage.max], [weapon.min, weapon.max], item.id);
+      assert.equal(item.hands, ['battle-axe', 'claymore', 'warhammer', 'dai-katana', 'long-bow', 'short-bow'].includes(weapon.id) ? 'two' : 'one');
+      assert.ok(item.price > 0 && item.weight > 0, item.id);
+    }
+  }
+  // **The shelf's ladder is the metals' own order** — the real teeth of the pricing rule, and
+  // the one thing a reader of a shop's list can see: an iron blade is cheaper than a plain one,
+  // silver costs the same as steel, and every rarer metal costs more than the last.
+  const ladder = ['iron', 'steel', 'silver', 'elven', 'dwarven', 'mithril', 'adamantium', 'ebony']
+    .map((material) => itemById(`${material}-longsword`).price);
+  for (let i = 1; i < ladder.length; i++) {
+    assert.ok(ladder[i - 1] <= ladder[i], `prices climb with the metal: ${ladder.join(', ')}`);
+  }
+  assert.ok(ladder[0] < itemById('longsword').price, `an iron longsword is cheaper than a plain one (${ladder[0]})`);
+  // A fist is not made of ebony, and the catalog does not pretend otherwise.
+  for (const weapon of bodily) assert.equal(itemById(`ebony-${weapon}`), null, weapon);
+
+  // **Equipping one sets both halves.** The plain base leaves the metal alone, and the forged
+  // row *is* its metal — otherwise an ebony longsword would be swung with yesterday's steel
+  // edge, and the panel would print the wrong range.
+  const bag = addToBag(createBag(), 'ebony-longsword');
+  const armed = equipFromBag(character({ weapon: 'dagger', material: 'iron' }), bag, 'ebony-longsword');
+  assert.equal(armed.ok, true, armed.reason);
+  assert.equal(armed.character.weapon, 'longsword');
+  assert.equal(armed.character.material, 'ebony');
+  assert.equal(countInBag(armed.bag, 'ebony-longsword'), 1, 'and it is still yours');
+  const held = weaponHeld(armed.character);
+  assert.deepEqual([held.min, held.max], [7, 21], '2–16 with an ebony edge');
+  assert.match(itemNote(itemById('ebony-longsword')), /7–21 damage/, 'and the shelf says so');
+  assert.match(itemNote(itemById('iron-longsword')), /2–14 damage/, 'iron is 0 on the low end and −2 on the high');
+  const plain = equipFromBag(character({ weapon: 'dagger', material: 'iron' }), addToBag(bag, 'longsword'), 'longsword');
+  assert.equal(plain.character.weapon, 'longsword', 'a plain base is still a weapon');
+  assert.equal(plain.character.material, 'iron', 'and leaves the metal the player chose alone');
+});
+
+test('all of Arena\'s armour and every shield is in the catalog — seven pieces, eight plate metals, gauntlets included', () => {
+  // UESP's `Arena:Base Armor`, read 2026-10-17: **seven** pieces, because the shoulders are
+  // separate — helm, left and right pauldron, cuirass, gauntlets, greaves, boots — in leather,
+  // chain and plate, and plate alone in the eight metals. The port had five pieces, no
+  // pauldrons and one plate; a player could punch in plate gauntlets (they are in `WEAPONS`)
+  // but never **wear** a pair.
+  const pieces = ['cuirass', 'helm', 'pauldron-left', 'pauldron-right', 'greaves', 'gauntlets', 'boots'];
+  const grades = ['leather', 'chain', 'plate'];
+  for (const material of grades) {
+    for (const piece of pieces) {
+      const id = piece === 'gauntlets' ? `${material}-gauntlet` : `${material}-${piece}`;
+      const item = itemById(id);
+      assert.ok(item, `${id} is in the catalog`);
+      assert.equal(item.kind, 'armour');
+      assert.equal(item.slot, piece, `${id} fills the ${piece} slot`);
+      assert.equal(item.material, material);
+      assert.ok(item.armour > 0);
+    }
+  }
+  // **The plate metals**: UESP's ladder moves the rating and the price together, iron the
+  // cheapest and weakest, ebony the dearest and strongest.
+  const metals = ['iron', 'steel', 'silver', 'elven', 'dwarven', 'mithril', 'adamantium', 'ebony'];
+  const cuirasses = metals.map((metal) => itemById(`${metal}-plate-cuirass`));
+  for (const item of cuirasses) assert.ok(item && item.kind === 'armour' && item.slot === 'cuirass', 'a metal plate cuirass');
+  assert.ok(cuirasses[0].armour < cuirasses[cuirasses.length - 1].armour, 'ebony plate is stronger than iron');
+  for (let i = 1; i < cuirasses.length; i++) assert.ok(cuirasses[i - 1].price <= cuirasses[i].price, 'and dearer');
+  assert.equal(itemsOfKind('armour').length, grades.length * pieces.length + metals.length * pieces.length,
+    'three plain grades and eight plate metals, each across the seven pieces');
+
+  // The armour gauntlet must not take the **weapon** row's id: `chain-gauntlets` and
+  // `plate-gauntlets` are Arena's own weapon bases and the catalog's ids are unique.
+  assert.equal(itemById('chain-gauntlets').kind, 'weapon');
+  assert.equal(itemById('plate-gauntlets').kind, 'weapon');
+  assert.equal(itemById('chain-gauntlet').kind, 'armour');
+
+  // **Shields in every metal**: four types, each plain (steel-equivalent) and in the eight
+  // metals — UESP's shield table has a material modifier for every one.
+  const shielded = itemsOfKind('shield');
+  assert.equal(shielded.length, 4 + 4 * metals.length, `${shielded.length} shields`);
+  for (const id of ['buckler', 'round-shield', 'kite-shield', 'tower-shield']) {
+    assert.ok(itemById(id), `${id} is still the plain shield`);
+  }
+  assert.ok(itemById('ebony-tower-shield').armour > itemById('tower-shield').armour, 'an ebony tower shield is stronger than a plain one');
+  assert.ok(itemById('iron-buckler').armour <= itemById('buckler').armour, 'iron is not');
+
+  // **Wearing them no longer just sums.** UESP's armour rating is per body area (D-68):
+  // `equipFromBag` still writes `armour[item.slot]` and the rating is the weighted average
+  // over the body, so one plate gauntlet protects the hands (9) and leaves seven areas bare —
+  // 9 of the body's weight × 12% = 1.08, which reads 1. The old expectation (3) was the
+  // invented "plate is 3 per piece" scale this audit replaced.
+  const gloved = equipFromBag(character(), addToBag(createBag(), 'plate-gauntlet'), 'plate-gauntlet');
+  assert.equal(gloved.ok, true, gloved.reason);
+  assert.equal(gloved.character.armour.gauntlets, 'plate-gauntlet');
+  assert.equal(gloved.character.armour.cuirass, undefined, 'and nothing else is invented');
+  assert.equal(armourRating(gloved.character), 1, 'a gauntlet protects the hands and nothing else');
+  assert.equal(armourOn(gloved.character, 'hands'), 9, 'UESP: plate is −9');
+  assert.equal(armourOn(gloved.character, 'head'), 0, 'and the head is bare');
+  const shoulder = equipFromBag(character(), addToBag(createBag(), 'leather-pauldron-left'), 'leather-pauldron-left');
+  assert.equal(shoulder.character.armour['pauldron-left'], 'leather-pauldron-left', 'a shoulder is a slot of its own');
+});
+
+test('every spell the install ships is one the game can cast, and the scrolls name them', async () => {
+  // **The magic half of the owner's request**, held as a join rather than as a claim: the
+  // install's own `SPELLSG.65` carries 64 named records, `game/spells.js` must have a meaning for
+  // every one (an unknown record reaches the library with no effects at all and cannot be cast),
+  // and a scroll here must name a spell that survives that test.
+  const file = parseSpellsFile(await nodeSource(ARENA).getBytes('SPELLSG.65'));
+  const library = buildSpellLibrary(file.named);
+  assert.equal(file.named.length, 64, 'Arena ships 64 standard spells');
+  assert.equal(library.spells.length, 64);
+  assert.deepEqual(library.unknown, [], 'every standard spell has a meaning here');
+  for (const spell of library.spells) {
+    assert.ok(spell.effects.length > 0, `${spell.name} does something`);
+    assert.ok(spell.points > 0, `${spell.name} costs something`);
+  }
+  for (const name of SCROLL_SPELLS) {
+    const spell = library.byName.get(name.toLowerCase());
+    assert.ok(spell, `${name} is in the install's spell file`);
+    assert.ok(spell.effects.length > 0, `and a scroll of it is a cast the game can perform`);
+  }
+  // What a scroll actually hands over: the spell's own name, for the caller to cast.
+  const read = useFromBag(character(), addToBag(createBag(), 'scroll-fireball'), 'scroll-fireball');
+  assert.equal(read.ok, true, read.reason);
+  assert.equal(read.effect.spell, 'Fireball');
+  assert.ok(library.byName.get('fireball').effects.length > 0);
 });
 
 test('the catalog is unique, kinded, priced and says what each thing is for', () => {
@@ -63,15 +216,18 @@ test('the catalog is unique, kinded, priced and says what each thing is for', ()
     assert.ok(item.price > 0, `${item.id} costs something`);
     assert.ok(item.weight > 0, `${item.id} weighs something`);
   }
-  assert.deepEqual(ITEM_KINDS, ['weapon', 'armour', 'shield', 'potion', 'scroll', 'misc']);
+  assert.deepEqual(ITEM_KINDS, ['weapon', 'armour', 'shield', 'potion', 'scroll', 'misc', 'jewelry']);
   for (const material of MATERIALS) {
     const bar = itemById(material.id);
     assert.ok(bar && bar.kind === 'misc', `${material.id} is a bar of metal`);
     assert.match(itemNote(bar), /smithing/);
   }
   assert.match(itemNote(itemById('longsword')), /2–16 damage/);
-  assert.match(itemNote(itemById('leather-cuirass')), /2 armour/);
-  assert.match(itemNote(itemById('potion-heal')), /heals 25 health/);
+  // UESP: leather is −3, chain −6, plate −9; the catalogue prints the positive form.
+  assert.match(itemNote(itemById('leather-cuirass')), /3 armour/);
+  // UESP: a potion is its spell **cast at level 16**, so Healing is Heal's 17–95 health —
+  // 56 at the midpoint, which is the dose the row carries.
+  assert.match(itemNote(itemById('potion-heal')), /heals 56 health/);
   assert.match(itemNote(itemById('scroll-fireball')), /Fireball/);
   // The shelves a shop draws from are sorted cheapest first, which is the order they are shown.
   const potions = itemsOfKind('potion');
@@ -174,7 +330,7 @@ test('using a potion heals and is spent; a scroll survives as the spell it will 
   const bag = addToBag(addToBag(createBag(), 'potion-heal', 2), 'scroll-open');
   const drunk = useFromBag(wounded, bag, 'potion-heal');
   assert.equal(drunk.ok, true, drunk.reason);
-  assert.equal(drunk.character.health, 35, '25 health back');
+  assert.equal(drunk.character.health, 66, '56 health back (Heal at level 16)');
   assert.equal(drunk.effect.kind, 'heal');
   assert.equal(countInBag(drunk.bag, 'potion-heal'), 1, 'one off the stack');
 
@@ -198,8 +354,42 @@ test('using a potion heals and is spent; a scroll survives as the spell it will 
   assert.deepEqual(cure.character.afflictions, ['disease']);
   const resist = useFromBag(character(), addToBag(bag, 'potion-resist-fire'), 'potion-resist-fire');
   assert.equal(resist.character.resistances.fire, 3);
-  const ward = useFromBag(character(), addToBag(bag, 'potion-shield'), 'potion-shield');
-  assert.equal(ward.character.ward, 10);
+  // **Arena's own potion list** (UESP, read 2026-10-17): Restore Power, Stamina, Purification,
+  // Free Action, Invisibility and Strength are real potions the port did not sell; a
+  // "Potion of Shielding" is not a thing Arena has, so the old check was testing an invention.
+  // The three figures UESP prints outright are used as printed: Restore Power is **25** spell
+  // points, Strength is Orc Strength's **+15**, and Purification is Purify — 100 health, the
+  // poison gone and Sanctuary (this project's ward).
+  const power = useFromBag(character({ spellPoints: 10 }), addToBag(bag, 'potion-restore-power'), 'potion-restore-power');
+  assert.equal(power.character.spellPoints, 35, '25 spell points back');
+  const stamina = useFromBag(character(), addToBag(bag, 'potion-stamina'), 'potion-stamina');
+  assert.equal(stamina.effect.kind, 'stamina', 'the bar is the scene\'s to fill, so the dose comes back');
+  const pure = useFromBag(character({ health: 10, afflictions: ['poison', 'disease'] }), addToBag(bag, 'potion-purification'), 'potion-purification');
+  assert.deepEqual(pure.character.afflictions, [], 'purification clears both');
+  assert.equal(pure.character.freeAction, true, 'and any hold with them');
+  assert.ok(pure.character.health > 10, `and it heals (${pure.character.health})`);
+  assert.ok(pure.character.ward >= 10, `Sanctuary is raised (${pure.character.ward})`);
+  const strong = useFromBag(character(), addToBag(bag, 'potion-strength'), 'potion-strength');
+  assert.equal(strong.character.strengthBuff, 15, 'Orc Strength\'s +15');
+  const unseen = useFromBag(character(), addToBag(bag, 'potion-invisibility'), 'potion-invisibility');
+  assert.equal(unseen.character.invisible, true);
+  assert.equal(itemById('potion-heal-great').id, 'potion-heal-true', 'a retired id is read as the Arena potion it became');
+  assert.equal(itemsOfKind('potion').length, 15, 'UESP lists fifteen potions');
+});
+
+test('every one of UESP\'s fifteen potions is drunk, spent, and has a line', () => {
+  // The list is the source's, so the *behaviour* has to be this project's side of the join:
+  // a potion whose `effect.kind` nothing applies is a bottle of coloured water, and the old
+  // catalogue had three of those (the invented Shielding/Light/Water Breathing).
+  const potions = itemsOfKind('potion');
+  assert.equal(potions.length, 15, 'UESP: fifteen potions');
+  for (const potion of potions) {
+    const result = useFromBag(character({ health: 10, spellPoints: 10, afflictions: ['poison'] }), addToBag(createBag(), potion.id), potion.id);
+    assert.equal(result.ok, true, `${potion.name}: ${result.reason}`);
+    assert.ok(result.note.length > 0, `${potion.name} says what it did`);
+    assert.ok(itemNote(potion).length > 0, `${potion.name} has a line on the shelf`);
+    assert.equal(result.bag.length, 0, `${potion.name} is spent doing it`);
+  }
 });
 
 test('dropping a thing takes it out of the bag and says what it was', () => {
@@ -214,14 +404,20 @@ test('dropping a thing takes it out of the bag and says what it was', () => {
 
 test('worn armour and a held shield add up, and the weapon in hand carries its material', () => {
   const dressed = character({ armour: { cuirass: 'plate-cuirass', helm: 'chain-helm' }, shield: 'buckler' });
-  // plate cuirass 3 × 2 = 6, chain helm 2, a buckler 1.
-  assert.equal(armourRating(dressed), 9);
+  // UESP's areas: plate cuirass 9 on the chest, chain helm 6 on the head, a buckler 1 on the
+  // hands and the left arm. Weighted over the body that is (9·30 + 6·8 + 1·10 + 1·10) / 100
+  // = 3.34, which the sheet prints as 3 — and the fight asks the area, not the average.
+  assert.equal(armourRating(dressed), 3);
+  assert.equal(armourOn(dressed, 'chest'), 9, 'the cuirass covers the chest');
+  assert.equal(armourOn(dressed, 'head'), 6, 'and the chain helm the head');
+  assert.equal(armourOn(dressed, 'rightArm'), 0, 'nothing covers the right arm');
+  assert.equal(armourOn(dressed, 'hands'), 1, 'the buckler covers the hands');
   assert.equal(armourRating(character()), 0);
   assert.equal(armourRating(character({ armour: { cuirass: 'not-a-thing' } })), 0, 'a save file cannot add armour out of thin air');
   const steel = weaponHeld({ weapon: 'longsword', material: 'steel' });
   assert.deepEqual([steel.min, steel.max], [2, 16]);
   const iron = weaponHeld({ weapon: 'longsword', material: 'iron' });
-  assert.deepEqual([iron.min, iron.max], [1, 15], 'iron is −1');
+  assert.deepEqual([iron.min, iron.max], [2, 14], 'iron is 0 on the low end and −2 on the high');
   // **No weapon is a fist**, which is the fight's own default (`combat.js`'s `resolveAttack`) and
   // the state a new character is in until they equip the weapon in their pack. This check used to
   // read `longsword` ("the default arm"): the HUD promised a sword to a character who had never
@@ -337,6 +533,34 @@ test('buying and selling move gold and goods the way a shop does', () => {
   assert.match(nothing.reason, /no shop in Tamriel/);
 });
 
+// The owner, 2026-10-22: *"if you sell something it needs to get unequipped"*. Equipment stays
+// in the pack while it is worn (`equipFromBag`), so the last copy leaving the pack has to leave
+// the body it was on — otherwise the sale paid the player and left the sword in their hand.
+test('selling the last copy of something worn takes it off the body', () => {
+  const armed = equipFromBag(character(), addToBag(createBag(), 'longsword'), 'longsword');
+  assert.equal(armed.ok, true, armed.reason);
+  assert.equal(armed.character.weapon, 'longsword');
+  const sold = sellItem(armed.character, armed.bag, 'longsword', { kind: 'equipment' });
+  assert.equal(sold.ok, true, sold.reason);
+  assert.equal(countInBag(sold.bag, 'longsword'), 0);
+  assert.equal(sold.character.weapon, 'fists', 'the empty hand is a fist');
+  assert.equal(sold.character.weaponItem, null);
+  assert.deepEqual(sold.unequipped, ['weapon']);
+  assert.match(sold.note, /sold for \d+ gold/);
+  assert.match(sold.note, /came off your body/);
+
+  // A second copy in the pack is still the player's: the one in hand stays in hand.
+  const two = equipFromBag(character(), addToBag(addToBag(createBag(), 'longsword'), 'longsword'), 'longsword');
+  const one = sellItem(two.character, two.bag, 'longsword', { kind: 'equipment' });
+  assert.equal(one.character.weapon, 'longsword');
+  assert.deepEqual(one.unequipped, []);
+
+  // A shield and a worn piece follow the same rule.
+  const shield = equipFromBag(character(), addToBag(createBag(), 'buckler'), 'buckler');
+  const shieldSold = sellItem(shield.character, shield.bag, 'buckler', { kind: 'equipment' });
+  assert.equal(shieldSold.character.shield, null);
+});
+
 test('the guild sells spells by the install\'s own price in spell points', () => {
   const fireball = { name: 'Fireball', points: 325 };
   assert.equal(guildPrice(character(), fireball), 440);
@@ -406,4 +630,31 @@ test('the material a weapon is made of is a thing the game can name', () => {
   assert.equal(materialById('ebony').damage, 5);
   const ebony = weaponHeld({ weapon: 'katana', material: 'ebony' });
   assert.deepEqual([ebony.min, ebony.max], [8, 21], '3–16 with an ebony edge');
+});
+
+test('a back at its limit takes nothing more — not even something weightless', () => {
+  // Strength 50 is the ceiling the game rolls, and 50 + 2 × 50 = 150 kg. Seven ebony tower
+  // shields at 20 kg and ten daggers at 1 kg land on it exactly, so the boundary is the test
+  // rather than an overflow.
+  const strong = character({ strength: 50 });
+  const bag = addToBag(addToBag(createBag(), 'ebony-tower-shield', 7), 'dagger', 10);
+  assert.equal(maxCarryWeight(strong), 150);
+  assert.equal(carriedWeight(strong, bag), 150);
+  const full = carryStatus(strong, bag, null, 0);
+  assert.equal(full.atLimit, true);
+  assert.equal(full.over, 0, 'not past the limit, exactly on it');
+  // The loot paths refuse on `atLimit` rather than `over` alone (`scenes/interior.js`'s
+  // `takeLoot` and `takeFromCorpse`): a chest of gold has no weight to overflow with, and a
+  // player whose back is full must still not be able to fill their purse from it.
+  const feather = carryStatus(strong, bag, { name: 'a feather', weight: 0 }, 1);
+  assert.equal(feather.atLimit, true, 'a full back takes nothing, weightless or not');
+  assert.equal(feather.ok, true, 'the carry check itself only reports; atLimit is what refuses');
+  const over = carryStatus(strong, bag, 'dagger', 1);
+  assert.equal(over.ok, false, 'one kilo past the limit is refused');
+  assert.equal(over.over, 1);
+  // Room is real room: drop one dagger and the same back can take it again.
+  const lighter = removeFromBag(bag, 'dagger', 1);
+  assert.equal(carriedWeight(strong, lighter), 149);
+  assert.equal(carryStatus(strong, lighter, 'dagger', 1).ok, true);
+  assert.equal(carryStatus(strong, lighter, 'dagger', 1).atLimit, true, 'and it lands full again');
 });

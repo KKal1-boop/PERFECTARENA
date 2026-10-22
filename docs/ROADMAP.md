@@ -13,11 +13,14 @@ Enhanced plus real combat; the enemy is a superficial port.
 **Status key.** `[x]` done and held by a passing check · `[~]` partly done, one sentence
 says what is missing · `[ ]` not started. A `[x]` without a check is not done.
 
-**Regression record** (`npm test` + `test:browser`, last runs 2026-10-15):
-**412 unit passes, 0 failures** (exit 0); `interior` 70/70 · `mainquest` 62/62 ·
-`cutscene` 14/14 (`interior`+`cutscene` 84/84 together) · earlier this session: last full browser set
-713/714 (the one wobble passes in isolation); `commerce` 25/25; `actioncombat`
-23/23; `guilds` 35/35 combined.
+**Regression record** (`npm test` + `test:browser`, last runs 2026-10-17):
+**677 unit passes, 0 failures** (exit 0); this pass's browser set: **`interior` 70/70** ·
+`world` 36/36 · `movement`+`dungeonplay`+`actioncombat` 67/67 · `townsfolk` 71/71 ·
+`gear` 30/30 · `bestiary` 10/10 · `combat` 37/37. `interior`'s two old reds — walking out of
+deep water (D-65) and the first-person blade's line (D-66) — are closed in `DEFECTS.md`.
+Earlier runs: `doors` 63/63 ·
+`commerce` 25/25 · `guilds` 13/13 · `world` 36/36 · `persist` 14/14 · `townsfolk` 69/69 ·
+`living` 46/46 · `automap` 13/13 · `menu` 39/39 · `mainquest` 62/62.
 
 **The install, counted** (`node tools/assetcoverage.mjs`, this session): `GLOBAL.BSA`
 holds **2 441 records / 16.4 MB** — 156 (6.4%) named whole in `src/`, 594 (24.3%) more
@@ -35,12 +38,13 @@ how it stays honest.
 
 | Phase | Territory | Status | Check |
 |---|---|---|---|
-| **A. Combat reads like a fight** | Telegraphs, dodge/parry/riposte, poise/stagger/hit-stop, held heavy, ranged casters | **[~] core complete** — missing: lock-on, attack *cancellation* by a landed counter, backstab, combo strings, exhaustion | `actioncombat` 23/23 · `unit/ranged.test.mjs` 6/6 · `unit/poise.test.mjs` · `unit/heavy.test.mjs` |
-| **B. Streets that live** | Crowds, day plans, trading, regard | **[~]** — stock+haggle ✅, names ✅ (S30), the archive's own townsfolk families ✅ (`peopleKinds.js`: the men and women with walk/**talk**/die, the watch, `BABE0`/`PAT`/`LGLIT0`); missing: greetings per trade, people seen going indoors | `commerce` 25/25 · `living` · `guilds` · `townsfolk` · `unit/peoplekinds.test.mjs` 3/3 |
-| **C. Interiors worth entering** | Furnishing, shops, houses | **[~]** — furnishing ✅; missing: multi-storey shops, per-family pixel judge | `doors` · `unit/furnish.test.mjs` 8/8 |
-| **D. The country is Tamriel** | Persistent wilderness, wild buildings | **[~]** — persistent wild cell ✅; missing: enterable wild buildings, moving weather front | `world` · `wildfoot.test.mjs` |
+| **A. Combat reads like a fight** | Telegraphs, dodge/parry/riposte, poise/stagger/hit-stop, held heavy, ranged casters, **the bestiary's own abilities** | **[~] core complete** — every one of UESP's 24 entries has its immunity floor, resistances, casters, holds, diseases and regeneration (`game/bestiary.js`, `docs/BESTIARY.md`); missing: lock-on, attack *cancellation*, human enemies, flight, per-creature loot | `actioncombat` 23/23 · `bestiary` 10/10 · `unit/ranged` 6/6 · `unit/bestiary` 11/11 · `unit/poise` · `unit/heavy` |
+| **B. Streets that live** | Crowds, day plans, trading, regard | **[~]** — stock+haggle ✅, names ✅ (S30), the archive's own townsfolk families ✅ (`peopleKinds.js`: the men and women with walk/**talk**/die, the watch, `BABE0`/`PAT`/`LGLIT0`), **a province's own race on every figure ✅** (`raceSkin.js`: a palette ladder for the human races, the Lizard Man's whole figure for the Argonians), **the still folk ✅** (`staticFolk.js`: a palace's court, a tavern's patrons); missing: the **serving roles hold a post** (D-44 — a priest still walks 22 cells in 21 minutes), greetings per trade, people seen going indoors | `commerce` 25/25 · `living` 46/46 · `guilds` · `townsfolk` 69/69 · `unit/raceskin` · `unit/staticfolk` |
+| **C. Interiors worth entering** | Furnishing, shops, houses | **[~]** — furnishing ✅; **every door is enterable at its own wall art** ✅ (D-51: 356 doors in Daggerfall, 294 of them homes, and 209 country doors over the 66 `.RMD` blocks; signs are decoration), and **every settlement is the size its own record names** ✅ (D-54: 72 cities on 6×6, 72 towns on 5×5, 144 villages on 4×4 — 71 648 painted doors over the world, 0 door-art wall cells left as wall); missing: multi-storey shops, per-family pixel judge | `doors` 63/63 · `unit/furnish.test.mjs` 8/8 · `unit/shops` 14/14 · `unit/mif` 27/27 · `unit/city` 10/10 · `audit` 26/26 |
+| **D. The country is Tamriel** | Persistent wilderness, wild buildings | **[~]** — **one continuous Tamriel ✅** (`tamrielGrid.js`: 256 cells a pixel, `TERRAIN.IMG`'s coastline and biome, all 288 settlements on their own `CITYDATA` pixel, a gate walked through into the same country); missing: **a resident window** (a wilderness slide is still a scene re-boot, B25), enterable wild buildings, moving weather front | `world` 31/31 · `persist` 14/14 · `movement` 12/12 · `unit/tamrielgrid` · `wildfoot.test.mjs` |
 | **E. The whole main quest** | 8 Staff pieces, palace, ending | **[x]** whole chain playable page-load to throne | `mainquest` |
 | **F. Presentation parity** | Sky, sun, weather, fit-and-finish | **[~]** — night sky recompose ✅, **the install's own movies ✅** (see §5); missing: climate side-by-side judge, the 946 `.IMG` screens, the `.SET` tilesets, the speech bank | `scenevisuals` · `unit/sky.test.mjs` · `unit/cutscene.test.mjs` · `cutscene` 13/13 |
+| **G. Navigation** | The map of the level, and the map of the world | **[x]** — **Arena's automap ✅** (`game/automap.js`, ported from OpenTESArena: its palette, its voxel law, its 8-direction 3×3 arrow, `PixelSize = 3`), the world map already ✅; **`M` is Tamriel everywhere** (the owner's correction), **`Tab`** is the level in a dungeon or a building, and the sheet has a world-map button | **`unit/automap` 15/15** · **`automap` 13/13** |
 
 ---
 
@@ -53,6 +57,9 @@ how it stays honest.
 - [x] Parry `B` in a timed window → bounded riposte window → guaranteed damage. `actioncombat`.
 - [x] Bounded particles (≤192) on hits/parries; screen shake on wound; hit-stop by sim
   dilation. `unit/poise.test.mjs` + `actioncombat`.
+- [x] **Control magic that the fight obeys**: Silence stops a caster throwing, fear sends a
+  creature running, poison/disease take a point a second, Spell Shield eats a bolt, and
+  Shalidor's Mirror turns one back on its caster. `bestiary` 10/10.
 - [x] Held heavy: 1.3×–2.0× charge, amber thread announces it, paid from the same bar a
   roll pays into. `unit/heavy.test.mjs` + `actioncombat` 16/16.
 - [x] Poise/stagger: a break drops the committed windup, 0.9 s opening. `unit/poise.test.mjs`.
@@ -66,6 +73,49 @@ how it stays honest.
 - [ ] **Attack cancellation by a landed counter** — a stagger should cancel, it currently
   drops the telegraph only.
 - [ ] **First-person weapon in the GL UI pass, not a 2D layer** (the last visual gap vs the engine).
+
+## 1b. The equipment, whole
+
+- [x] **Every weapon Arena makes, in every metal** (UESP's 18 bases and the **four** bodily
+  attacks — punch, leather, chain and plate gauntlets — crossed with the eight materials):
+  a smith's shelf can show an Ebony Longsword, and equipping one sets the base and the metal
+  together. **166 weapon rows** (22 bases + 144 forged), after the audit found leather
+  gauntlets missing. `unit/items` · `unit/combat` · `gear`.
+- [x] **Every armour piece and shield** (UESP's **seven** slots — helm, left and right
+  pauldron, cuirass, gauntlets, greaves, boots — in leather, chain and the eight plate
+  metals, and four shield types in every metal). 77 armour rows and 36 shields, all wearable.
+  **And they protect**: UESP's rating is spent per body area (`armour.js` — a hit-location
+  roll, the piece's own coverage, the shield's own reach), so a cuirass covers the chest and
+  a tower shield reaches the head. `unit/armour` · `gear` 34/34. D-68 closed.
+- [x] **Every weapon family usable, including the two the archive does not draw** (D-71):
+  a **bow looses an arrow** now — `src/game/archery.js` flies it from the crosshair, `CombatFx`
+  draws the shaft, and the wound is the fight's own `resolveAttack` at the moment it lands, so
+  a silver arrow doubles at a vampire and an iron one is refused by an iron golem exactly as a
+  sword's is. The **flail** is drawn from `MACE.CIF`, a documented stand-in (`weaponView.js`'s
+  `WEAPON_SHEET_STAND_INS`, printed in the HUD), because this install ships six of Arena's
+  eight sheets — and the bow **has its animation**: `weaponView.js`'s `ARROW_STATES` draws the
+  shot from the install's own `ARROWS.CIF` (its nine frames sit on Arena's screen in a measured
+  3×3 grid, and the centre column is the arrow leaving). `unit/archery` 7/7 · `unit/weapon` 13/13 ·
+  `gear` **41/41** (603 pixels of arrow on screen, `state firing`, `frame 7`) · `combat` 37/37.
+- [x] **Human Enemies** — UESP's second bestiary section: any of the **18 classes** and
+  **8 races** (`character.js`'s own tables, abilities included), a quest dungeon's at the
+  player's exact level and a group's one lower, `Exp: 25×(level−1)²`, and the page's loot
+  line (1–50 gold, the four-piece set with a 10%/level better grade, pauldrons after 6 and
+  11, helm after 16, a 3% rare weapon, a shield with a one-handed one). `src/game/humans.js`,
+  `unit/humans` 11/11, `bestiary` 17/17. D-67 closed.
+- [x] **Every potion Arena has, at Arena's own prices** (UESP's fifteen: Healing, Heal True,
+  Restore Power, Stamina, Purification, Free Action, Cure Poison, Cure Disease, Levitation,
+  Invisibility, Strength, Resist Fire/Cold/Shock/Poison). The three invented ones are gone;
+  the retired id an old save may name still heals (`items.js`'s `RETIRED_IDS`). The audit
+  replaced the invented prices and three doses with the page's (25 … 500; Heal 56, Heal True
+  117, Restore Power 25, Strength +15, Purification 100 + Sanctuary) — D-70.
+- [x] **Every spell in the Known Spellbook** — UESP's **50** named spells, joined to the
+  install's own `SPELLSG.65` records (`spells.js`'s `MEANINGS`; the file spells one of them
+  `Gods' Fire`), each with an effect the scene carries out. `[~]` the caster levels UESP does not print are this project's stand-ins
+  (inert data; marked RECONSTRUCTED in `bestiary.js`).
+- [x] **A metal's two ends** (UESP: iron is 0 / −2, elven…ebony +1…+5; silver doubles at a
+  vampire and is the vampire's own exception to the ladder). The fight, the panel and the
+  shelf print the same range.
 
 ## 2. Dungeons stay coherent
 
@@ -88,6 +138,12 @@ how it stays honest.
 - [x] Trading: shelf per trade, buy/sell/spells/temple/rest real gold. `gear`.
 - [x] **The counter is real** (this session): per-shop stock by entered door, rows that
   sell down, Great Find, three-try haggle. `commerce` 25/25 · `unit/shops.test.mjs` 11/11.
+- [x] **Every door painted on a wall is enterable — in the city and in the country** (D-51, this pass): the door is the wall's
+  own art (`T_DEQ`, `T_DTAV`, `T_DBS1..3`, `T_DNB1`), bound by the `.INF`'s `*MENU` table as
+  OpenTESArena's `tryMakeVoxelTransitionDefGenInfo` reads it; the hanging signs the blocks draw
+  are decoration. 3 925 wall doors in the 368 blocks; Daggerfall 421 (345 houses, 23 equipment,
+  19 taverns, 5 temples, 1 Mages Guild, 28 noble); `E` on the paving in front opens, and leaving
+  returns to that paving. The palace is one marked house door. `doors` 49/49 · `unit/shops` 11/11.
 - [x] **The archive's own townsfolk, not only its fighters** (this session): the roster
   matched the 89 armoured `xxNNNWLK` files and nothing else, so a town held only figures in
   armour — the reported "we ported the moving NPCs and are missing assets because of that".
@@ -108,6 +164,9 @@ how it stays honest.
   corpus also carries the noble and two monster-name banks for what comes next. Checks:
   `unit/names.test.mjs` 5/5 + `townsfolk`'s names-on-the-street check (48/48 named,
   "Solinar Gaeorin" on the panel).
+- [x] **A province's own people, on the street** (`game/raceSkin.js`, D-45): the names were the province's since S30; the **race** is now too. A palette race is Arena's own body under a six-entry skin ladder written over `PAL.COL`'s skin entries only; an **Argonian is the Lizard Man's whole figure** (`RACE_FIGURE`), because that is the race's art the install really ships, not a green human. Measured: Lilmoth 92% Argonian, Necrom 67% Dark Elf, Daggerfall 58% Breton, 48/48 carrying a race. `unit/raceskin` · `townsfolk` 69/69.
+- [x] **The still folk and the court** (`game/staticFolk.js`): a palace holds `KING`/`QUEEN`/`PRINCE`/`PRINCESS` as painted figures, and a tavern holds `MAN01…04`/`WOMAN01…04` as its patrons — the art nobody had placed. `living`'s still-patrons check.
+- [x] **The serving roles hold their post** (D-44): `livingWorld.js`'s `POST_ACTIVITIES` (`openShop`, `work`, `worship`) marks the goal `post`, and `stepTownsfolk` holds that person for the block's own length **without** `atHome` — the priest, vendor and wizard stand where Arena puts them and are still drawn. Measured before: a priest visited 22 cells in 21 minutes; on a page now a post holds through 12 samples and stays outside. `living` 46/46 · `unit/livingworld`.
 - [ ] **Arrival greetings per trade** (S33's tail).
 
 ## 4. The country is Tamriel
@@ -115,6 +174,8 @@ how it stays honest.
 - [x] All 144 dungeon records reachable (16 shipped `.MIF`, 128 assembled). `radiant` · `dungeonplan.test.mjs`.
 - [x] 8 Staff pieces derived from world data; palace + ending. `mainquest`.
 - [x] Outdoor persistence: absolute wilderness cell saved, gate crossings land right. `wildfoot.test.mjs`.
+- [x] **One continuous Tamriel** (`game/tamrielGrid.js`): 256 cells to a world-map pixel, the coastline and biome from `TERRAIN.IMG`, every one of the 288 settlements on its own `CITYDATA` pixel, and a gate that is **walked through** into the same country rather than a page of its own. A town's wall is now the distance the map always drew it at, and the country outside Daggerfall is not Daggerfall's private wilderness. `unit/tamrielgrid` · `movement` 12/12 · `world` 31/31.
+- [~] **A resident country** (B25): the window still **re-boots the page** once per 64 cells (~160 m, ~20 s of walking). The slide is the original's own mechanism; the cost is that it is a new page. Next: time one `goInPlace`, then shift the window in place. `persist` 14/14.
 - [~] `.RMD` country decoded enough to draw, not the original's field layout — keep the
   window honest and say so.
 - [ ] **Enterable wild buildings** (D's tail).
@@ -122,6 +183,8 @@ how it stays honest.
 - [ ] Daedra artifact quests as artifacts on a shelf.
 
 ## 5. Presentation + parity
+
+- [x] **Arena's automap** (`game/automap.js` + `scenes/automap.js`, B21, ported from OpenTESArena's `AutomapUiMVC`): **`Tab`** inside a dungeon, a shop, a guildhall or the palace draws the level in the game's own automap palette — wall, raised, door, up-stair, down-stair, dry/wet/lava chasm — with the reference's eight 3×3 player arrows and `PixelSize = 3`. **`M` stays Tamriel from everywhere**, and the sheet carries its own world-map button. `unit/automap` 15/15 · `automap` 13/13.
 
 - [x] Night sky per climate with stars, dusk/dawn recompose. `unit/sky.test.mjs`.
 - [x] The landscape measured (three-storey trees by species). `flats.test.mjs`.

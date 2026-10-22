@@ -266,30 +266,43 @@ test('the weapon table is the published one, with its ranges intact', () => {
   assert.equal(weaponById('fists').max, 2);
   assert.equal(weaponById('dagger').min, 1);
   assert.equal(weaponById('dagger').max, 6);
-  assert.equal(weaponById('broadsword').max, 10);
+  assert.equal(weaponById('broadsword').max, 12, 'UESP: 1–12, not this port\'s earlier 1–10');
   assert.equal(weaponById('mace').max, 12);
   assert.equal(weaponById('longsword').min, 2);
   assert.equal(weaponById('claymore').max, 18);
   assert.equal(weaponById('warhammer').min, 3);
   assert.equal(weaponById('dai-katana').max, 21);
-  assert.equal(WEAPONS.length, 21, 'the reference lists 21 bases');
+  assert.equal(weaponById('long-bow').min, 2, 'UESP: the long bow is 2–12');
+  // UESP's 18 base families plus the **four** bodily attacks its table also lists — the punch
+  // and the leather, chain and plate gauntlets — which are rows here because the fight can
+  // swing them. The leather row was missing until the equipment audit against `Arena:Base
+  // Weapons` (2026-10-17): 2–3, exactly as the source prints it.
+  assert.equal(WEAPONS.length, 22, '18 bases and four gauntlet/fist rows');
+  assert.deepEqual([weaponById('leather-gauntlets').min, weaponById('leather-gauntlets').max], [2, 3]);
   assert.equal(weaponById('not a weapon').id, 'fists', 'an unknown weapon is a fist, not a crash');
   for (const weapon of WEAPONS) assert.ok(weapon.min <= weapon.max, weapon.name);
 });
 
-test('the materials are the published ones, iron to ebony', () => {
-  assert.deepEqual(materialById('iron'), { id: 'iron', name: 'Iron', hit: -1, damage: -1 });
+test('the materials are the published ones, iron to ebony — with damage\'s two ends kept apart', () => {
+  // UESP's material table, read on 2026-10-17: iron is **0 on the low end and −2 on the high
+  // end**, steel and silver are 0, and elven…ebony add +1…+5 to both ends. The earlier test
+  // asserted `hit === damage` and iron −1/−1, which is the reading this pass corrected.
+  assert.deepEqual(materialById('iron'), { id: 'iron', name: 'Iron', hit: -1, min: 0, max: -2, damage: -2 });
   assert.equal(materialById('steel').hit, 0);
-  assert.equal(materialById('silver').damage, 0, 'silver is not a damage tier, it is a material for what iron cannot hurt');
+  assert.equal(materialById('silver').max, 0, 'silver is not a damage tier; its law is the vampire');
+  assert.equal(materialById('silver').vsVampire, 2, 'and that law is double damage');
   assert.equal(materialById('elven').hit, 1);
   assert.equal(materialById('dwarven').damage, 2);
   assert.equal(materialById('mithril').hit, 3);
   assert.equal(materialById('adamantium').damage, 4);
   assert.equal(materialById('ebony').hit, 5);
   assert.equal(MATERIALS.length, 8);
-  for (let i = 1; i < MATERIALS.length; i++) {
-    assert.equal(MATERIALS[i].hit, MATERIALS[i].damage, `${MATERIALS[i].name} modifies hit and damage together`);
+  assert.deepEqual(MATERIALS.map((m) => m.id), ['iron', 'steel', 'silver', 'elven', 'dwarven', 'mithril', 'adamantium', 'ebony']);
+  for (const material of MATERIALS.filter((m) => !['iron', 'steel', 'silver'].includes(m.id))) {
+    assert.equal(material.hit, material.min, `${material.name}: the hit modifier and the low end are the same`);
+    assert.equal(material.min, material.max, `${material.name}: both ends rise together`);
   }
+  assert.notEqual(materialById('iron').min, materialById('iron').max, 'iron lowers the ceiling, not the floor');
 });
 
 test('five points of Agility is one point of armour class, as UESP states', () => {
@@ -383,8 +396,24 @@ test('weapon and material change the damage, in the direction the tables say', (
   const steel = resolveAttack({ attacker: base, defender, weapon: 'longsword', material: 'steel', random: new ArenaRandom(3) });
   const ebony = resolveAttack({ attacker: base, defender, weapon: 'longsword', material: 'ebony', random: new ArenaRandom(3) });
   if (steel.hit && ebony.hit) assert.equal(ebony.damage - steel.damage, 5, 'ebony is +5');
-  const iron = resolveAttack({ attacker: base, defender, weapon: 'longsword', material: 'iron', random: new ArenaRandom(3) });
-  if (steel.hit && iron.hit) assert.equal(steel.damage - iron.damage, 1, 'iron is −1');
+  // **The range a metal actually rolls**, read from 400 guaranteed hits: steel is the base
+  // 2–16, iron keeps the floor and loses two at the ceiling, ebony raises both by five.
+  // (Comparing two single blows was the earlier shape of this check and it was meaningless —
+  // two different material ranges draw two different rolls from the same seed.)
+  const spread = (material) => {
+    let min = Infinity, max = -Infinity;
+    for (let seed = 1; seed <= 400; seed++) {
+      const blow = resolveAttack({
+        attacker: base, defender, weapon: 'longsword', material, guaranteedHit: true, random: new ArenaRandom(seed),
+      });
+      min = Math.min(min, blow.damage);
+      max = Math.max(max, blow.damage);
+    }
+    return [min, max];
+  };
+  assert.deepEqual(spread('steel'), [2, 16], 'the base range');
+  assert.deepEqual(spread('iron'), [2, 14], 'iron: 0 on the low end, −2 on the high');
+  assert.deepEqual(spread('ebony'), [7, 21], 'ebony: +5 at both ends');
 });
 
 test('a critical blow doubles the damage, at the class\'s own rate', () => {
@@ -447,6 +476,32 @@ test('a monster\'s blow follows its own damage range and the player\'s defence',
   const nimble = hitChance({ level: monster.level, attributes: { luck: 50 } }, { level: 1, attributes: { agility: 100 } });
   const clumsy = hitChance({ level: monster.level, attributes: { luck: 50 } }, { level: 1, attributes: { agility: 0 } });
   assert.ok(nimble < clumsy, `${nimble} vs ${clumsy}`);
+});
+
+test('inside the circle a creature\'s blow always lands — the dodge is the evasion', () => {
+  // The owner, 2026-10-19: *"enemies need to ignore the main game dodge chance and always hit you
+  // if youre not outside their circle or if you didnt manually dodge"*. The scene decides the
+  // three ways a blow misses (`insideAttack`, the sight test, the roll's i-frames) and then hands
+  // `guaranteed` in; here the arithmetic itself is held to it.
+  const monster = monsterById('Rat');
+  for (let seed = 1; seed <= 200; seed++) {
+    const blow = monsterAttack({ monster, target: { level: 1 }, random: new ArenaRandom(seed), guaranteed: true });
+    assert.equal(blow.hit, true, `seed ${seed} lands`);
+    assert.equal(blow.chance, 100, `seed ${seed} says so`);
+    assert.equal(blow.guaranteed, true);
+    assert.ok(blow.damage >= 1 && blow.damage <= Math.max(...monster.damage), `seed ${seed} damage ${blow.damage}`);
+  }
+  // …and the same seeds without the guarantee still miss sometimes: that roll is the player's own
+  // (`resolveAttack`), which the owner asked to keep, and it is why this rule had to be explicit
+  // rather than a change to `hitChance`.
+  let misses = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    if (!monsterAttack({ monster, target: { level: 1 }, random: new ArenaRandom(seed) }).hit) misses++;
+  }
+  assert.ok(misses > 0, `${misses} of 200 unguaranteed blows missed`);
+  // The player's own blade keeps the roll, so a low-Agility player still misses.
+  const swing = resolveAttack({ attacker: { level: 1, attributes: { agility: 0, strength: 50 } }, defender: { level: 1, attributes: { agility: 100 } }, random: new ArenaRandom(9) });
+  assert.ok(swing.chance < 100, `the player's own chance is still a chance: ${swing.chance}`);
 });
 
 test('a slower, heavier monster takes longer between blows, and the rate is ours', () => {

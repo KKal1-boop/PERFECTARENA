@@ -368,6 +368,26 @@ export function openSettlementGate(level) {
     const cell = at(spot.row, spot.col);
     cell.gateway = true;
   }
+  // **Every wall the gate art is painted on is a gate, not just the two-cell opening.** The
+  // owner, 2026-10-19: *"all walls that use the sprites AR-sprite-DGATE AR-sprite-MGATE
+  // AR-sprite-PGATE should have no collision because they are barring the way in and out of
+  // cities"*. The opening is the `0x9` arch; the gate's illustrated posts stand one cell behind
+  // it and are ordinary solid voxels wearing `PGATE.IMG` (measured on `CITY1`: row 0 cols 18–19
+  // open, row 2 cols 18–19 painted `PGATE.IMG`). Those posts used to remain in the collision
+  // soup, which is the wall a player walked into after passing the arch. They are marked here
+  // too: drawn exactly as before, colliding with nobody.
+  const gateArtCells = [];
+  const gateArt = (cell) => ['side', 'cap'].some((face) => {
+    const name = cellTexture(cell, face, level.inf)?.filename ?? '';
+    return /^(D|M|P)GATE\.IMG$/i.test(name);
+  });
+  for (const cell of cells) {
+    if (!cell || cell.gateway || cell.kind === 'air' || cell.kind === 'entity') continue;
+    if (!gateArt(cell)) continue;
+    cell.gateway = true;
+    gateArtCells.push({ row: cell.z, col: cell.x });
+  }
+  level.gateArtCells = gateArtCells;
   return runs[0].map(({ row, col, axis }) => ({ row, col, axis }));
 }
 
@@ -537,6 +557,140 @@ export function stairKindOf(cell, inf) {
   return null;
 }
 
+/**
+ * **The missing half of a stairway** — the down stair on the floor above.
+ *
+ * A stairway in Arena is one cell drawn in **both** levels it joins, and the reference says so
+ * in the way it reads an interior: `tryMakeVoxelTransitionDefGenInfo` asks each *level's own*
+ * `.INF` whether a texture is `*LEVELUP`/`*LEVELDOWN`, so each end of the pair has its own art.
+ * Several of this install's multi-storey interiors carry only **one** end: the upper floor is
+ * missing the down stair that would reach the lower one. Measured over every interior `.MIF`
+ * with more than one level: the crypts (`WCRYPT1…8`) are the plainest case — **level 0, the
+ * entrance, has no stair at all**, while level 1 carries one `*LEVELUP` cell, which points at
+ * level 0. The palaces (`PALACE1…5`, `TOWNPAL1…3`, `VILPAL1…3`) have the same shape, and so do
+ * the taverns 2/3/4/5/7/8, the temples, the Mages Guild halls and the equipment stores (those
+ * last are single-storey rooms in a two-level file, and their second level is unused).
+ *
+ * This fills the pair **from the data's own half**: where the level below carries an `*LEVELUP`
+ * cell, the same cell in this level becomes an `*LEVELDOWN` stair with this level's own art —
+ * but only when the cell is already a **wall** there and is not a stair of its own. Nothing is
+ * moved and nothing is invented: the position is the lower level's, the art is this level's
+ * `.INF`'s, and the pair is exactly the one the file draws.
+ *
+ * @param {object} opts
+ * @param {Uint16Array} opts.map1            this (upper) level's raw `MAP1`
+ * @param {import('../arena/infFile.js').InfFile} opts.inf  this level's `.INF`
+ * @param {Uint16Array} opts.belowMap1       the level below's raw `MAP1`
+ * @param {number} opts.width                the level's width in cells
+ * @param {import('../arena/infFile.js').InfFile} opts.belowInf  the level below's `.INF`
+ * @returns {{map1: Uint16Array, at: {row: number, col: number}[]}|null} a new `MAP1` and the
+ *   cells filled, or null when the pair is already whole or cannot be completed
+ */
+export function fillStairPair({ map1, inf, belowMap1, belowInf, width }) {
+  if (!map1?.length || !belowMap1?.length || !inf || !belowInf || !width) return null;
+  const down = inf.levelDownIndex;
+  const up = belowInf.levelUpIndex;
+  if (!Number.isInteger(down) || down < 0 || !Number.isInteger(up) || up < 0) return null;
+  const stairUp = ((up + 1) << 8) | (up + 1);
+  const stairDown = ((down + 1) << 8) | (down + 1);
+  // **A floor that already descends is not touched.** A tower, a noble house and a shop with a
+  // real pair carry their own down stair — possibly at another cell than the one the floor below
+  // draws — and adding a second one would give the level two ways into the same storey. The rule
+  // is for the **missing** half, never for a second one.
+  for (let i = 0; i < map1.length; i++) if (map1[i] === stairDown) return null;
+  const usable = (i) => {
+    const voxel = map1[i];
+    if (!voxel || (voxel >> 8) !== (voxel & 0xff)) return false;   // not a wall
+    const texture = (voxel >> 8) - 1;
+    return texture !== down && texture !== inf.levelUpIndex;        // not already a stair
+  };
+  let out = null;
+  const at = [];
+  for (let i = 0; i < belowMap1.length; i++) {
+    if (belowMap1[i] !== stairUp) continue;
+    const row = Math.floor(i / width);
+    const col = i % width;
+    // **The same cell first** — that is the reference's own pair. Where the upper level has no
+    // wall there at all (the crypts: the lower level's `*LEVELUP` cell is open air above), the
+    // nearest wall of its four neighbours takes the stair, so the two ends stay within one cell
+    // of each other and a player at the bottom comes up beside where they went down.
+    // Distance 1 first (the pair's own cell and its cross), then distance 2 — a crypt's lower
+    // stair can sit two cells from any wall of the floor above it (`WCRYPT1` does), and the
+    // alternative is a storey no player can ever reach.
+    const ring = [];
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) ring.push([row + dr, col + dc]);
+    for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) ring.push([row + dr, col + dc]);
+    const neighbours = ring
+      .filter(([r, c]) => r >= 0 && c >= 0 && c < width && r * width + c < map1.length)
+      .map(([r, c]) => r * width + c);
+    const candidates = neighbours.filter((cell) => usable(cell));
+    const cell = candidates[0];
+    if (cell === undefined) continue;
+    out ??= Uint16Array.from(map1);
+    out[cell] = stairDown;
+    at.push({ row: Math.floor(cell / width), col: cell % width, from: { row, col } });
+  }
+  return out ? { map1: out, at } : null;
+}
+
+/**
+ * **The cell a player stands in at the level's own way out** — beside the level's up-stair.
+ *
+ * The owner, 2026-10-17: *"move the exit from the imperial prison target really where the exit
+ * is"*. The escape stage's target was the same as every other stage's — the deepest reachable
+ * chamber — and the Imperial Dungeons' exit is not a chamber at all: `START.MIF` carries
+ * **exactly one** stair (`GATE.IMG` at x 48, z 46 — the art `stairKindOf` above reads as the way
+ * out to the world, and its neighbour at x 47, z 46 is the corridor the player walks) and the
+ * deepest cell of a 50×50 maze can sit at the far end of it, which sent the player hunting for a
+ * room when the door was in the wall beside them.
+ *
+ * A stair cell is **solid** — that is why a player can never stand in one — so the answer is
+ * one of its four neighbours: the first the player can stand in, in a fixed order (south,
+ * north, east, west) so the same level always answers the same cell. A generated level's way
+ * out is stamped into a wall beside its arrival instead (`dungeonPlan.js`'s `level.exit`, raw
+ * `row`/`col`, which is this grid's `x`/`z`), and that is answered the same way.
+ *
+ * @param {import('./mifLevel.js').ArenaLevel|object} level
+ * @returns {{x: number, z: number, stair: {x: number, z: number}}|null} in cells, or null when the
+ *   level marks no way out (or marks one with no room to stand at)
+ */
+export function wayOutCell(level) {
+  const width = Number(level?.width);
+  const depth = Number(level?.depth);
+  if (!level?.cells?.length || !(width > 0) || !(depth > 0)) return null;
+  // **The grid's own convention, not the cell's two fields.** This module's `makeCell(col, row)`
+  // names a cell's **column** `x` and its **row** `z`, which is the reverse of the world: the
+  // mesher puts `row` on world x and `col` on world z (`mifMesh.js`, `x0 = row * S, z0 = col * S`),
+  // and every reader that walks the grid — `deepestCells`, the scene's own stair search, `flats.js`
+  // (`row: cell.z, col: cell.x`, the same swap written down) — works in that world reading. So a
+  // cell's world coordinates are its **array position**: x = the first index, z = the second, and
+  // the lookup is `cells[x * width + z]`. Reading `cell.x`/`cell.z` here transposed the map, and
+  // on a square, wall-boundary level (`START.MIF`) the transposed neighbour of the `GATE.IMG`
+  // stair at x 48, z 46 is solid, so the escape's own way out answered `null` and the objective
+  // fell back to the deepest chamber — exactly the bug this function exists to remove.
+  const at = (x, z) => (x >= 0 && z >= 0 && x < depth && z < width ? level.cells[x * width + z] : null);
+  const standable = (cell) => Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+  /** @type {{x: number, z: number}[]} */
+  const stairs = [];
+  for (let i = 0; i < level.cells.length; i++) {
+    const cell = level.cells[i];
+    if (cell?.stair !== 'up') continue;
+    stairs.push({ x: Math.floor(i / width), z: i % width });
+  }
+  // A generated level's stamped exit (`dungeonPlan.js`'s `level.exit`) is already raw `row`/`col`,
+  // and raw `row` is the first index — the same world reading, so it needs no conversion.
+  if (Number.isFinite(level.exit?.row) && Number.isFinite(level.exit?.col)) {
+    stairs.push({ x: level.exit.row, z: level.exit.col });
+  }
+  for (const stair of stairs) {
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      if (!standable(at(stair.x + dx, stair.z + dz))) continue;
+      return { x: stair.x + dx, z: stair.z + dz, stair: { x: stair.x, z: stair.z } };
+    }
+  }
+  return null;
+}
+
 /** MAP2: whether there is a ceiling over this cell, and its texture. */
 function decodeMap2(cell, inf, hasMap2) {
   if (!hasMap2) {
@@ -603,8 +757,23 @@ function voxelIndexOf(inf, id) {
 }
 
 /**
- * Pick a spawn: the `.MIF` start point when it is standable, otherwise the first
- * non-solid cell found spiralling out from the centre.
+ * Pick a spawn: the `.MIF` start point when it is standable **and leads somewhere**,
+ * otherwise the middle of the level's largest reachable region.
+ *
+ * **"and leads somewhere" is the important half.** Arena keeps its start points in the
+ * `.MIF` **header, one set per file rather than per level** (`decodeLevel`'s own note), so
+ * the point is the *ground floor's* arrival and every level below it is handed the same
+ * two numbers. Measured over the install's sixteen quest dungeons, that lands a player in a
+ * sealed pocket on more than one level: `40642738.MIF` (Selene's Web) level 2 arrives in a
+ * region of **25 cells out of 2 483** walkable ones — the reported *"you find yourself
+ * blocked off as soon as you enter"*, one level down. The header point is still preferred
+ * when it is in the **largest** region (it is the file's own answer to where a player comes
+ * in), and the level's own middle is the fallback rather than the first non-solid cell found
+ * spiralling out from it: a spiral can start inside a closed room and stop there.
+ *
+ * Reachability is the flood `deepestCells` and `openSettlementGate` already use — a wall is
+ * the only thing a player cannot cross (doors open, chasms are jumped, raised platforms are
+ * stepped onto) — so the arrival and the objective agree about the level they are standing in.
  *
  * @param {LevelVoxel[]} cells
  * @param {number} width
@@ -619,24 +788,57 @@ function pickSpawn(cells, width, depth, startPoints, floorY) {
     const cell = cells[row * width + col];
     return cell && !cell.solid && !cell.floor.chasm;
   };
+  const crossable = (row, col) => row >= 0 && col >= 0 && row < depth && col < width
+    && cells[row * width + col]?.kind !== 'wall';
+
+  // ── the level's own regions ─────────────────────────────────────────────────
+  // One flood per region, each cell visited once, so this is linear in the level's size: the
+  // largest region, and a set of the cells inside it, which is what tells a header point
+  // whether it arrives somewhere (see the doc above).
+  const component = new Int32Array(width * depth).fill(-1);
+  let largest = { id: -1, size: 0, row: 0, col: 0 };
+  let id = 0;
+  for (let row = 0; row < depth; row++) {
+    for (let col = 0; col < width; col++) {
+      const start = row * width + col;
+      if (component[start] !== -1 || !crossable(row, col)) continue;
+      const queue = [{ row, col }];
+      component[start] = id;
+      for (let head = 0; head < queue.length; head++) {
+        const here = queue[head];
+        for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const r = here.row + dr;
+          const c = here.col + dc;
+          if (!crossable(r, c) || component[r * width + c] !== -1) continue;
+          component[r * width + c] = id;
+          queue.push({ row: r, col: c });
+        }
+      }
+      // The region's own middle: the cell nearest the level's arithmetic centre, restricted to
+      // cells a body actually fits in (`usable`: no wall, not a chasm).
+      let best = null;
+      const cx = (depth - 1) / 2;
+      const cz = (width - 1) / 2;
+      for (const spot of queue) {
+        if (!usable(spot.row, spot.col)) continue;
+        const distance = Math.abs(spot.row - cx) + Math.abs(spot.col - cz);
+        if (!best || distance < best.distance) best = { ...spot, distance };
+      }
+      if (best && queue.length > largest.size) largest = { id, size: queue.length, row: best.row, col: best.col };
+      id++;
+    }
+  }
 
   for (const point of startPoints) {
     if (!point.x && !point.z) continue;
     const row = Math.floor(point.x);
     const col = Math.floor(point.z);
-    if (usable(row, col)) return { x: row + 0.5, y: floorY, z: col + 0.5 };
+    if (!usable(row, col)) continue;
+    // The header point arrives in the level's own largest region, or it is not the arrival here.
+    if (largest.id < 0 || component[row * width + col] === largest.id) return { x: row + 0.5, y: floorY, z: col + 0.5 };
   }
 
-  const cx = Math.floor(depth / 2);
-  const cz = Math.floor(width / 2);
-  for (let r = 0; r < Math.max(width, depth); r++) {
-    for (let dx = -r; dx <= r; dx++) {
-      for (let dz = -r; dz <= r; dz++) {
-        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
-        if (usable(cx + dx, cz + dz)) return { x: cx + dx + 0.5, y: floorY, z: cz + dz + 0.5 };
-      }
-    }
-  }
+  if (largest.size > 0) return { x: largest.row + 0.5, y: floorY, z: largest.col + 0.5 };
   return null;
 }
 

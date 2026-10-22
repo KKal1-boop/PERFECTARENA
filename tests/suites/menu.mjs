@@ -113,8 +113,11 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
       /Side work:/.test(panel) || /No side work in hand/.test(panel), '');
     check('so is who knows the player, straight from the ledger',
       /Who knows you:/.test(panel), /Who knows you:[^\n]*/.exec(panel)?.[0] ?? '');
+    // **The section is Settings now.** The HUD's key list is gone (the owner, 2026-10-21:
+    // *"this part of the gui should not be there anymore instead in the settings"*), so the
+    // panel's own name is the thing to hold.
     check('and the three things a player can do with it',
-      /Resume/.test(panel) && /Controls/.test(panel) && /New Game/.test(panel),
+      /Resume/.test(panel) && /Settings/.test(panel) && /New Game/.test(panel),
       JSON.stringify((await menuState())?.rows ?? null));
 
     // ── the controls, by click ────────────────────────────────────────────────
@@ -122,12 +125,14 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
     await page.clickSelector('#menu button[data-menu="controls"]');
     const shown = await page.evalJs('getComputedStyle(document.querySelector("#menu .controls")).display');
     const listed = await menuText();
-    check('Controls prints the keys a player has forgotten, on demand',
+    check('Settings prints the keys a player has forgotten, on demand',
       hidden === 'none' && shown !== 'none' && /W A S D/.test(listed) && /Esc/.test(listed),
       `${hidden} → ${shown}`);
-    check('including the ones this milestone added, and only real ones',
-      /first or third person/.test(listed) && /talk to whoever is in front of you/.test(listed),
-      listed.split('\n').map((l) => l.trim()).filter((l) => /^[EWMFIVB\]]/.test(l)).slice(0, 4).join(' · '));
+    check('the list is the whole game: walking, fighting, the panels and the maps',
+      /Ctrl/.test(listed) && /crouch/.test(listed) && /Left mouse/.test(listed)
+      && /first or third person/.test(listed) && /talk to whoever is in front of you/.test(listed)
+      && /world map of Tamriel/.test(listed) && /automap of this level/.test(listed),
+      listed.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4).join(' · '));
     await page.clickSelector('#menu button[data-menu="controls"]');
     check('and puts them away again',
       (await page.evalJs('getComputedStyle(document.querySelector("#menu .controls")).display')) === 'none');

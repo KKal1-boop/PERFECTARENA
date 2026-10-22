@@ -99,44 +99,44 @@ const LOCAL_SIZE = Object.freeze({ width: 320, height: 200 });
  */
 export const CYRODIIL_SETTLEMENTS = Object.freeze([
   // ── the seven free city-state slots: Oblivion's cities, less Kvatch ──────────────────────
-  { name: 'Anvil', kind: 'city', index: 1, at: [0.05, 0.60], source: 'oblivion' },
-  { name: 'Bruma', kind: 'city', index: 2, at: [0.50, 0.07], source: 'oblivion' },
-  { name: 'Bravil', kind: 'city', index: 3, at: [0.55, 0.73], source: 'oblivion' },
+  { name: 'Anvil', kind: 'city', index: 1, at: [0.06, 0.55], source: 'oblivion' },
+  { name: 'Bruma', kind: 'city', index: 2, at: [0.55, 0.04], source: 'oblivion' },
+  { name: 'Bravil', kind: 'city', index: 3, at: [0.703125, 0.52], source: 'oblivion' },
   { name: 'Cheydinhal', kind: 'city', index: 4, at: [0.81, 0.25], source: 'oblivion' },
-  { name: 'Chorrol', kind: 'city', index: 5, at: [0.19, 0.21], source: 'oblivion' },
-  { name: 'Leyawiin', kind: 'city', index: 6, at: [0.72, 0.93], source: 'oblivion' },
-  { name: 'Skingrad', kind: 'city', index: 7, at: [0.33, 0.63], source: 'oblivion' },
+  { name: 'Chorrol', kind: 'city', index: 5, at: [0.33, 0.27], source: 'oblivion' },
+  { name: 'Leyawiin', kind: 'city', index: 6, at: [0.81, 0.84], source: 'oblivion' },
+  { name: 'Skingrad', kind: 'city', index: 7, at: [0.38, 0.52], source: 'oblivion' },
 
   // ── the eight town slots ────────────────────────────────────────────────────────────────
   // Kvatch is a town here because the later games made it one: sacked and burned in the
   // Oblivion Crisis. It is the only Oblivion city this province does not give a city-state
   // slot to, and the slot count is Arena's, not this table's.
-  { name: 'Kvatch', kind: 'town', index: 0, at: [0.17, 0.76], source: 'oblivion' },
-  { name: 'Weye', kind: 'town', index: 1, at: [0.41, 0.52], source: 'oblivion' },
-  { name: 'Cropsford', kind: 'town', index: 2, at: [0.66, 0.61], source: 'oblivion' },
-  { name: 'Hackdirt', kind: 'town', index: 3, at: [0.15, 0.37], source: 'oblivion' },
-  { name: 'Sutch', kind: 'town', index: 4, at: [0.03, 0.47], source: 'eso' },
-  { name: 'Vlastarus', kind: 'town', index: 5, at: [0.26, 0.72], source: 'eso' },
-  { name: 'Weynon Priory', kind: 'town', index: 6, at: [0.27, 0.29], source: 'oblivion' },
-  { name: 'Gottlesfont Priory', kind: 'town', index: 7, at: [0.25, 0.42], source: 'oblivion' },
+  { name: 'Kvatch', kind: 'town', index: 0, at: [0.18, 0.57], source: 'oblivion' },
+  { name: 'Weye', kind: 'town', index: 1, at: [0.49, 0.34], source: 'oblivion' },
+  { name: 'Cropsford', kind: 'town', index: 2, at: [0.73, 0.575], source: 'oblivion' },
+  { name: 'Hackdirt', kind: 'town', index: 3, at: [0.33, 0.39], source: 'oblivion' },
+  { name: 'Sutch', kind: 'town', index: 4, at: [0.13, 0.50], source: 'eso' },
+  { name: 'Vlastarus', kind: 'town', index: 5, at: [0.28, 0.56], source: 'eso' },
+  { name: 'Weynon Priory', kind: 'town', index: 6, at: [0.31, 0.31], source: 'oblivion' },
+  { name: 'Gottlesfont Priory', kind: 'town', index: 7, at: [0.38, 0.34], source: 'oblivion' },
 
   // ── the sixteen village slots: Oblivion's villages, then its farms ──────────────────────
-  { name: 'Aleswell', kind: 'village', index: 0, at: [0.50, 0.34], source: 'oblivion' },
-  { name: 'Bleaker\u2019s Way', kind: 'village', index: 1, at: [0.45, 0.20], source: 'oblivion' },
-  { name: 'Pell\u2019s Gate', kind: 'village', index: 2, at: [0.54, 0.63], source: 'oblivion' },
-  { name: 'Brindle Home', kind: 'village', index: 3, at: [0.29, 0.52], source: 'oblivion' },
+  { name: 'Aleswell', kind: 'village', index: 0, at: [0.52, 0.25], source: 'oblivion' },
+  { name: 'Bleaker\u2019s Way', kind: 'village', index: 1, at: [0.47, 0.22], source: 'oblivion' },
+  { name: 'Pell\u2019s Gate', kind: 'village', index: 2, at: [0.57, 0.45], source: 'oblivion' },
+  { name: 'Brindle Home', kind: 'village', index: 3, at: [0.29, 0.45], source: 'oblivion' },
   { name: 'Harlun\u2019s Watch', kind: 'village', index: 4, at: [0.79, 0.37], source: 'oblivion' },
-  { name: 'Water\u2019s Edge', kind: 'village', index: 5, at: [0.57, 0.88], source: 'oblivion' },
-  { name: 'Border Watch', kind: 'village', index: 6, at: [0.65, 0.85], source: 'oblivion' },
-  { name: 'Blankenmarch', kind: 'village', index: 7, at: [0.87, 0.79], source: 'oblivion' },
-  { name: 'Weatherleah', kind: 'village', index: 8, at: [0.22, 0.49], source: 'oblivion' },
-  { name: 'Odiil Farm', kind: 'village', index: 9, at: [0.26, 0.36], source: 'oblivion' },
-  { name: 'Shardrock', kind: 'village', index: 10, at: [0.30, 0.72], source: 'oblivion' },
-  { name: 'Gweden Farm', kind: 'village', index: 11, at: [0.14, 0.84], source: 'oblivion' },
-  { name: 'Whitmond Farm', kind: 'village', index: 12, at: [0.06, 0.53], source: 'oblivion' },
-  { name: 'Applewatch', kind: 'village', index: 13, at: [0.35, 0.13], source: 'oblivion' },
-  { name: 'Drakelowe', kind: 'village', index: 14, at: [0.87, 0.41], source: 'oblivion' },
-  { name: 'Harm\u2019s Folly', kind: 'village', index: 15, at: [0.66, 0.13], source: 'oblivion' },
+  { name: 'Water\u2019s Edge', kind: 'village', index: 5, at: [0.76, 0.76], source: 'oblivion' },
+  { name: 'Border Watch', kind: 'village', index: 6, at: [0.79, 0.68], source: 'oblivion' },
+  { name: 'Blankenmarch', kind: 'village', index: 7, at: [0.85, 0.79], source: 'oblivion' },
+  { name: 'Weatherleah', kind: 'village', index: 8, at: [0.26, 0.39], source: 'oblivion' },
+  { name: 'Odiil Farm', kind: 'village', index: 9, at: [0.36, 0.29], source: 'oblivion' },
+  { name: 'Shardrock', kind: 'village', index: 10, at: [0.32, 0.52], source: 'oblivion' },
+  { name: 'Gweden Farm', kind: 'village', index: 11, at: [0.11, 0.585], source: 'oblivion' },
+  { name: 'Whitmond Farm', kind: 'village', index: 12, at: [0.08, 0.52], source: 'oblivion' },
+  { name: 'Applewatch', kind: 'village', index: 13, at: [0.42, 0.21], source: 'oblivion' },
+  { name: 'Drakelowe', kind: 'village', index: 14, at: [0.75, 0.44], source: 'oblivion' },
+  { name: 'Harm\u2019s Folly', kind: 'village', index: 15, at: [0.68, 0.21], source: 'oblivion' },
 ]);
 
 /**

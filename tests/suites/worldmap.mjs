@@ -105,6 +105,42 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
     const edges = Math.max(...[0.35, 0.5, 0.65].map((f) => scanlineEdges(decoded, Math.floor(decoded.height * f))));
     check('the map is a drawn picture, not a flat fill', edges > 20, `${edges} edges along the best scanline`);
 
+    // The continent's original city dots are a different projection from TERRAIN.IMG.
+    const alignment = await page.evalJs('window.__debug.alignment()');
+    const originalCities = alignment.filter((l) => l.kind === 'city' && (l.provinceID < 8 || l.local.x === 180));
+    check('all 65 original city markers align with their painted yellow continent dots',
+      originalCities.length === 65 && originalCities.every((l) => l.artIndex === 11),
+      `${originalCities.filter((l) => l.artIndex === 11).length}/65 exact yellow pixels`);
+    const winter = await page.evalJs('window.__debug.continentMarkerAt("Winterhold")');
+    check('Winterhold uses its painted dot rather than the old sea coordinate', winter?.tamriel?.x === 179 && winter?.tamriel?.y === 33,
+      JSON.stringify(winter));
+    await page.clickSelector('#map-terrain');
+    await page.clickSelector('#map-borders');
+    const inspection = await page.evalJs('window.__debug.state().inspection');
+    check('terrain and province-border inspection controls respond to real clicks', inspection.terrain && inspection.borders);
+    await page.screenshot(path.join(shots, 'tamriel-inspection.png'));
+    await page.clickSelector('#map-terrain');
+    await page.clickSelector('#map-borders');
+    await page.clickSelector('#map-search');
+    await page.send('Input.insertText', { text: 'Winterhold' });
+    const found = await page.evalJs('({ count: document.querySelectorAll("#map-results button").length, text: document.querySelector("#map-results").textContent })');
+    check('typing a settlement name filters the visible search results', found.count === 1 && found.text.includes('Winterhold'), JSON.stringify(found));
+    await page.clickSelector('#map-results button');
+    check('a real result click opens the correct province and place card',
+      await page.evalJs('window.__debug.state().province === "Skyrim" && window.__debug.state().selected.name === "Winterhold"'));
+    check('searching and selecting do not move the player or write a false departure',
+      await page.evalJs('localStorage.getItem("perfectarena.lastLocation") === null'));
+    // Clear using a real search-field event, not a debug state setter.
+    await page.evalJs('document.querySelector("#map-search").select()');
+    await page.send('Input.insertText', { text: '' });
+    await page.evalJs('document.querySelector("#map-search").value = ""; document.querySelector("#map-search").dispatchEvent(new Event("input", { bubbles: true }))');
+    await page.clickSelector('#map-next');
+    check('next province navigates directly from Skyrim to Morrowind', await page.evalJs('window.__debug.state().province === "Morrowind"'));
+    await page.clickSelector('#map-continent');
+    check('the Tamriel button returns to the continent', await page.evalJs('window.__debug.state().view === "tamriel"'));
+    check('the map exposes a day/hour, province and coordinate readout',
+      /Day \d+.*\d\d:\d\d/.test(await page.evalJs('document.querySelector("#map-readout").textContent')));
+
     const at = (name) => page.evalJs(`window.__debug.markerAt(${JSON.stringify(name)})`);
     const daggerfall = await at('Daggerfall');
     check('a named city is a place on the map, at the pixel CITYDATA keeps for it',
@@ -125,11 +161,12 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
 
     // ── the blink: two records, one shape, alternating ──────────────────────
     const before = await page.evalJs('window.__debug.state().mapArt');
-    await new Promise((r) => setTimeout(r, 900));
+    await page.waitFor(`window.__debug.state().mapArt.record !== ${JSON.stringify(before.record)} && window.__debug.state().mapArt.switches > ${before.switches}`,
+      { label: 'the opposite blink record', timeoutMs: 5000 });
     const after = await page.evalJs('window.__debug.state().mapArt');
     check('the map blinks between the two marker records',
       after.record !== before.record && after.switches > before.switches,
-      `${before.record} → ${after.record}, ${after.switches - before.switches} switches in 0.9 s`);
+      `${before.record} → ${after.record}, ${after.switches - before.switches} switches`);
 
     // ── the second level: the province's own hand-drawn map ─────────────────
     const opened = await page.evalJs('window.__debug.openProvince("High Rock")');
@@ -191,7 +228,40 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
       && await page.evalJs('window.__debug.state().view') === 'tamriel');
 
     await page.evalJs('window.__stillTheSamePage = 1');
-    const journey = await page.evalJs('window.__debug.travel("Daggerfall")');
+    const departure = await page.evalJs('JSON.parse(localStorage.getItem("perfectarena.world") ?? "null")?.clock ?? {day: 1, minutes: 600}');
+    // **The horse is the between.** Start the journey without awaiting it, catch the card while
+    // it is on screen, then let the same promise resolve. `HORSE.DFA` is 132×82, eleven frames,
+    // so the card's canvas must be a scaled copy of that art and carry painted pixels.
+    const journeyPromise = page.evalJs('window.__debug.travel("Daggerfall")');
+    await page.waitFor('!!document.getElementById("travel-horse")', { label: 'the travel horse', timeoutMs: 5000 });
+    const horse = await page.evalJs(`(() => {
+      const host = document.getElementById('travel-horse');
+      const canvas = host?.querySelector('canvas');
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      const art = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let painted = 0;
+      const colours = new Map();
+      for (let i = 0; i < art.length; i += 4) {
+        if (!art[i + 3]) continue;
+        painted++;
+        const key = art[i] + ',' + art[i + 1] + ',' + art[i + 2];
+        colours.set(key, (colours.get(key) ?? 0) + 1);
+      }
+      const common = [...colours.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([key]) => key);
+      return { width: canvas.width, height: canvas.height, painted, common, caption: host.textContent.trim() };
+    })()`);
+    // **The palette is `TAMRIEL.MNU`'s, not a rotated character sheet.** The horse, rider, sky and
+    // grass are indices into that screen's own embedded palette (`WorldMapUiMVC.cpp`'s
+    // `FastTravelUiView::getPaletteTextureAsset`), and the owner's report was *"HORSE.DFA has
+    // inverted colors now"* after an earlier pass read them through `CHARSHT.COL` and added 128.
+    // So the check names the colours the art actually has: the sky's teal and the horse's brown.
+    check('fast travel briefly shows Arena\u2019s HORSE.DFA on the road, in the world map\u2019s own colours',
+      horse?.width === 396 && horse?.height === 246 && horse.painted > 1000
+        && /Daggerfall/.test(horse.caption)
+        && horse.common.includes('36,105,121') && horse.common.includes('170,109,0'),
+      JSON.stringify(horse));
+    const journey = await journeyPromise;
     check('travelling names where it is going', journey?.to === 'Daggerfall', JSON.stringify(journey));
     await page.waitFor('window.__debug?.scene === "interior" || (window.__debug?.pageErrors ?? []).length > 0', { label: 'the arrival', timeoutMs: 60000 });
     const arrived = await page.evalJs('({ scene: window.__debug?.scene ?? null, search: location.search, samePage: window.__stillTheSamePage === 1, errors: (window.__debug?.pageErrors ?? []).slice(0, 3) })');
@@ -199,6 +269,10 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
       arrived?.scene === 'interior' && /location=Daggerfall/.test(arrived?.search ?? ''), JSON.stringify(arrived).slice(0, 220));
     check('and the journey happened in this page, so a picked Arena folder survives it',
       arrived?.samePage === true, JSON.stringify(arrived).slice(0, 220));
+    const arrivalClock = await page.evalJs('window.__debug.living().clock');
+    check('fast travel advances both calendar days and arrival hour, and the scene reads the saved clock',
+      arrivalClock.day > departure.day && arrivalClock.minutes !== departure.minutes,
+      `${JSON.stringify(departure)} → ${JSON.stringify(arrivalClock)}`);
     check('the arrival raised no errors', (arrived?.errors ?? []).length === 0, (arrived?.errors ?? []).join(' | ').slice(0, 300));
 
     // ── and a Cyrodiil place boots the city it names ───────────────────────
@@ -247,6 +321,7 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
       { name: 'Necrom', province: 'Morrowind', ground: 'desert', letter: 'M', floors: 'DCN.INF' },
       { name: 'Corinth', province: 'Elsweyr', ground: 'temperate', letter: 'D', floors: 'TCN.INF' },
       { name: 'Winterhold', province: 'Skyrim', ground: 'mountain', letter: 'M', weather: 'snow' },
+      { name: 'Bruma', province: 'Imperial Province', ground: 'mountain', letter: 'M', weather: 'snow' },
     ];
     for (const place of PLACES) {
       await page.goto(`http://localhost:${PORT}/?location=${encodeURIComponent(place.name)}&${q}`);
@@ -283,6 +358,30 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
       /desert country, mountain buildings/.test(cardText ?? ''),
       (cardText ?? '').slice(0, 200));
     await page.screenshot(path.join(shots, 'd41-provinces.png'));
+
+    // ── a job's mark in the country has no journey of its own ─────────────────
+    // The owner, 2026-10-21: *"radiant quests that take place in the wilderness spawn in the
+    // tamriel map a quest marker that if you travel to it it crashes so the travel button for
+    // that questmarker should be disabled"*. The card keeps the button, disabled and named, and
+    // the map refuses the journey even if something else calls it.
+    const wild = await page.evalJs(`window.__debug.makeWildJob('hunt')`);
+    check('a country job puts its own marker on the map', Boolean(wild?.ok && wild?.cell
+      && Number.isFinite(wild.cell.row) && Number.isFinite(wild.cell.col)),
+      JSON.stringify(wild).slice(0, 240));
+    const selectedJob = await page.evalJs('window.__debug.selectWildJob()');
+    const card = await page.evalJs('document.getElementById("map")?.textContent ?? ""');
+    const button = await page.evalJs('(() => { const b = document.getElementById("map-travel");'
+      + ' return b ? { disabled: b.disabled, text: b.textContent, handler: Boolean(b.onclick) } : null; })()');
+    check('the job marker\u2019s travel button is disabled, and names the walk instead',
+      Boolean(selectedJob && button?.disabled && button.handler === false
+        && /on foot/i.test(button.text ?? '') && /no fast travel/i.test(card ?? '')),
+      JSON.stringify({ selectedJob, button, card: (card ?? '').slice(0, 200) }).slice(0, 400));
+    const refusal = await page.evalJs('window.__debug.travelToWildJob()');
+    const afterTravel = await page.evalJs('({ travel: window.__debug.state().travelled, handoffs: window.__debug.state().handoffs })');
+    check('and travelling to the spot itself is refused, with nothing handed off',
+      refusal?.refused === 'wild-job' && !afterTravel?.travel && afterTravel?.handoffs === 0,
+      JSON.stringify({ refusal, afterTravel }).slice(0, 300));
+    await page.evalJs("window.__debug.radiantEvent('abandon', {})");
 
     check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
     const pageErrs = await page.evalJs('window.__debug.pageErrors || []');

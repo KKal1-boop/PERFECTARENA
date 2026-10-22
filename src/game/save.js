@@ -28,6 +28,7 @@ import { deserializeRadiantState, createRadiantState, serializeRadiantState } fr
 import { deserializeRegard, createRegardRecord, serializeRegard } from './regard.js';
 import { parseWorld, serializeWorld } from './worldState.js';
 import { createGuildState } from './guilds.js';
+import { WORLD_GRID_VERSION, migrateWildCell } from './tamrielGrid.js';
 
 /** Where the last location's identity is remembered, so the map can return to it. */
 export const LAST_LOCATION_KEY = 'perfectarena.lastLocation';
@@ -139,6 +140,33 @@ function write(key, value) {
   } catch { /* a private-mode browser is allowed to refuse; the game just will not persist */ }
 }
 
+/**
+ * The one-shot handshake that a story scene is owed at the next level boot.
+ *
+ * Ria's explanation (`TEMPLATE.DAT` 1400) belongs to the game's beginning, and the start
+ * menu is what knows a game actually began — a dev link that opens `?interior=START.MIF`
+ * is not a new game. `game/storyScript.js`'s `dueCellDream` still decides from the save's
+ * own ledger whether she has been heard; this only says "look now".
+ */
+export const CELL_DREAM_KEY = 'perfectarena.cellDream';
+
+/** Ask the next level boot to play the explanation. */
+export function markCellDreamPending() {
+  write(CELL_DREAM_KEY, true);
+}
+
+/** @returns {boolean} whether a level boot owes the explanation */
+export function cellDreamPending() {
+  return read(CELL_DREAM_KEY) === true;
+}
+
+/** The handshake was consumed (or there is nothing to play). */
+export function clearCellDreamPending() {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(CELL_DREAM_KEY);
+  } catch { /* a refused write is a refused clear */ }
+}
+
 /** @returns {import('./questState.js').QuestState} */
 export function loadQuestState() {
   const saved = read(QUEST_KEY);
@@ -193,27 +221,47 @@ export function saveRegard(record) {
  *
  * @returns {{name: string, dungeon: boolean, wild: {row: number, col: number}|null}|null}
  */
-export function loadLastLocation() {
+export function loadLastLocation(world = null) {
   const saved = read(LAST_LOCATION_KEY);
   const wild = saved && Number.isFinite(saved?.wild?.row) && Number.isFinite(saved?.wild?.col)
     ? { row: Math.max(0, Math.round(saved.wild.row)), col: Math.max(0, Math.round(saved.wild.col)) }
     : null;
   return saved && typeof saved.name === 'string'
-    ? { name: saved.name, dungeon: Boolean(saved.dungeon), wild }
+    ? {
+      name: saved.name,
+      dungeon: Boolean(saved.dungeon),
+      seed: saved.seed ?? null,
+      wild: world ? migrateWildCell(world, wild, saved.gridVersion) : wild,
+      gridVersion: world ? WORLD_GRID_VERSION : saved.gridVersion ?? 1,
+      provinceID: Number.isInteger(saved.provinceID) ? saved.provinceID : null,
+      locationID: Number.isInteger(saved.locationID) ? saved.locationID : null,
+      // **Whether the player is in open country** — the field that stops the map claiming a city
+      // (B26's own report: *"when im in the wilderness it says im in a city but im not"*). `wild`
+      // is a **world cell** now, and a page in the country sets this; a page inside a settlement
+      // clears it, so the map draws its mark from the cell rather than from the name.
+      country: Boolean(saved.country) && Boolean(wild),
+    }
     : null;
 }
 
 /**
  * Remember where the player is.
- * @param {{name: string, dungeon?: boolean, wild?: {row: number, col: number}|null}} entry
+ *
+ * @param {{name: string, dungeon?: boolean, seed?: number|null,
+ *   wild?: {row: number, col: number}|null, country?: boolean}} entry
  */
 export function saveLastLocation(entry) {
   write(LAST_LOCATION_KEY, {
     name: entry.name,
+    gridVersion: WORLD_GRID_VERSION,
+    provinceID: Number.isInteger(entry.provinceID) ? entry.provinceID : null,
+    locationID: Number.isInteger(entry.locationID) ? entry.locationID : null,
     dungeon: Boolean(entry.dungeon),
+    seed: entry.seed ?? null,
     wild: entry.wild && Number.isFinite(entry.wild.row) && Number.isFinite(entry.wild.col)
       ? { row: Math.round(entry.wild.row), col: Math.round(entry.wild.col) }
       : null,
+    country: Boolean(entry.country),
   });
 }
 

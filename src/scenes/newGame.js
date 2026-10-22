@@ -36,7 +36,7 @@
 // exactly that). This used to hand the player to the world map, which is the middle of the
 // story rather than its first step.
 
-import { clearSave, loadCharacter } from '../game/save.js';
+import { clearSave, loadCharacter, markCellDreamPending } from '../game/save.js';
 import { START_INTERIOR } from '../game/startFlow.js';
 
 /**
@@ -52,6 +52,11 @@ import { START_INTERIOR } from '../game/startFlow.js';
  */export async function beginNewGame({ canvas, renderer, status, source, params = null }) {
   if (!source) return { ok: false, why: 'no Arena data source' };
   clearSave();
+  // **Ria's explanation is owed with the new game.** The movie before the cell is the king's
+  // betrayal (`INTRO.FLC`); the explanation itself (`TEMPLATE.DAT` 1400) belongs to the cell and
+  // is played by the first level boot, from the save's own ledger (`game/storyScript.js`'s
+  // `dueCellDream`). This handshake is what tells a level boot that a game actually began.
+  markCellDreamPending();
 
   /** The dev door's own folder travels in the URL; a picked one is already open in memory. */
   const folder = source.arenaPath ?? params?.get('arena') ?? null;
@@ -79,9 +84,10 @@ import { START_INTERIOR } from '../game/startFlow.js';
 
   // ── the opening movie, and the cell it wakes you in ──────────────────────
   //
-  // "New Game" is a game start by definition, so the movie is owed whatever this tab has
-  // already seen (`game/startFlow.js`'s `openingGate`). A page whose install ships no such
-  // file still starts: a movie is never a dependency (`cutscenePlayer.js`).
+  // "New Game" is a game start by definition, so the movie is owed on **every** new game
+  // (`game/cutscene.js`'s `NEW_GAME_STEPS`) — never gated on what this tab has seen. A page
+  // whose install ships no such file still starts: a movie is never a dependency
+  // (`cutscenePlayer.js`). Ria's explanation follows it, owed by the cleared save.
   try {
     const { showMovie } = await import('./cutscenePlayer.js');
     const played = await showMovie('INTRO.FLC', { source, arenaPath: folder, status });

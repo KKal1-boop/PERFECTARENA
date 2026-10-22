@@ -71,6 +71,119 @@ export const SWING_DEGREES = 90 - 0.005 * (180 / Math.PI);
 export const HAND_FORCE_MAX = 10;
 
 /**
+ * How far from its sign a riddle door may stand, in cells.
+ *
+ * The install's own shape is **adjacent**: every quest dungeon's `TRIG` cell with a riddle
+ * text stands in the cell in front of the door it seals (`halls3`, `murk1`, `elden2`, `fang2`,
+ * `labrnth2`, … measured over all sixteen riddle doors, 2026-10-21). Dagoth-Ur's escape is the
+ * one room whose sign stands in the middle of four exits, two cells from each — so the law is
+ * "the doors beside the sign first; if it stands beside none, the sealed doors within two".
+ */
+export const RIDDLE_REACH = 2;
+
+/**
+ * The doors a riddle sign speaks for.
+ *
+ * A riddle in Arena is not a text: it is a **sealed door** with a sign beside it, and the
+ * answer opens it. The sign is the level's own `TRIG` cell (`levelTriggers.js`) and the door is
+ * the `0xB` voxel the map put next to it, with a lock level the hand cannot pick (255, 90, 125,
+ * 56, 29 — `HAND_FORCE_MAX` is 10).
+ *
+ * The adjacent doors win whole: an answer is not a master key, so a sign standing beside its
+ * own door never opens the next room's. Only when the sign stands beside no door at all — the
+ * four-exit room of Dagoth-Ur's third level — does it speak for the sealed doors within
+ * `reach`, which there are its four ways out and nothing else.
+ *
+ * @param {{level: object, trigger: {row:number,col:number}, locks: Map<string,number>, reach?: number}} opts
+ * @returns {{row:number, col:number, lock:number}[]}
+ */
+export function riddleDoors({ level, trigger, locks, reach = RIDDLE_REACH }) {
+  const { width, depth, cells } = level ?? {};
+  if (!width || !depth || !trigger) return [];
+  const doorAt = (row, col) => {
+    if (row < 0 || col < 0 || row >= depth || col >= width) return null;
+    const cell = cells[row * width + col];
+    if (!cell || cell.kind !== 'door') return null;
+    return { row, col, lock: lockAt(locks, row, col) };
+  };
+  const beside = [];
+  for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    const door = doorAt(trigger.row + dr, trigger.col + dc);
+    if (door) beside.push(door);
+  }
+  if (beside.length) return beside;
+  const room = [];
+  for (let dr = -reach; dr <= reach; dr++) {
+    for (let dc = -reach; dc <= reach; dc++) {
+      if (!dr && !dc) continue;
+      const door = doorAt(trigger.row + dr, trigger.col + dc);
+      if (door) room.push(door);
+    }
+  }
+  if (room.length) return room;
+  // **A pressure plate is not a door's sign.** Crystal Tower ships two of them
+  // (`crystal3.inf` id 32/33): *"Emergency cell release — Section 1 and 2 — Push the plate?"*,
+  // standing in a corridor with no door beside it. What such a plate releases is not written
+  // down anywhere in the file, but the doors it is about are the level's **cells** — the run of
+  // doors that all carry the one ordinary lock the level repeats (measured: 22 of `crystal3`'s 28
+  // locked doors are lock 10, the prison's cells). So the plate speaks for the level's commonest
+  // lock, and answering it unbolts that run. Anything else would be a door this project invented
+  // a link to.
+  const counts = new Map();
+  for (let row = 0; row < depth; row++) {
+    for (let col = 0; col < width; col++) {
+      const door = doorAt(row, col);
+      if (!door || !door.lock || door.lock > HAND_FORCE_MAX) continue;
+      counts.set(door.lock, (counts.get(door.lock) ?? 0) + 1);
+    }
+  }
+  let common = 0;
+  let most = 0;
+  for (const [lock, count] of counts) if (count > most) { common = lock; most = count; }
+  if (!common || most < 2) return [];
+  return releaseRun(level, locks, common);
+}
+
+/** Every door on a level carrying one lock level, in row-major order. */
+function releaseRun(level, locks, lock) {
+  const { width, depth, cells } = level;
+  const out = [];
+  for (let row = 0; row < depth; row++) {
+    for (let col = 0; col < width; col++) {
+      const cell = cells[row * width + col];
+      if (cell?.kind === 'door' && lockAt(locks, row, col) === lock) out.push({ row, col, lock });
+    }
+  }
+  return out;
+}
+
+/**
+ * Does an answer satisfy a riddle, in the install's own words?
+ *
+ * The answers are the file's (`"108"`, `"one hundred and eight"`, `"Theodorus"`, `"the sun"`,
+ * `"foot-steps"`), and a player types a sentence fragment at a keyboard. The comparison is
+ * therefore forgiving in exactly the ways a person is — case, punctuation, a leading article,
+ * and a space where the file wrote a hyphen — and in no other: a wrong answer is still wrong,
+ * and no riddle has a "close enough".
+ *
+ * @param {{answers?: string[]}|null|undefined} riddle
+ * @param {string} answer
+ * @returns {boolean}
+ */
+export function riddleAnswerMatches(riddle, answer) {
+  const normalise = (value) => String(value ?? '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[^a-z0-9' ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(?:the|a|an) /, '');
+  const given = normalise(answer);
+  if (!given) return false;
+  return (riddle?.answers ?? []).some((candidate) => normalise(candidate) === given);
+}
+
+/**
  * The lock level from which a door **must** have a key somewhere in the level.
  *
  * `forceChance` gives a level-4 lock 0.65 and a level-10 one about 0.20, so from four upward a
@@ -303,13 +416,21 @@ export function reachableCells({ level, doors = [], spawn = null }) {
 /**
  * Where the keys for a level's sealed doors lie.
  *
- * One key per *lock level* that is sealed, on the player's own side of it (a flood fill
- * that refuses to pass a sealed door), as far from the arrival point as the reachable area
- * allows — a dungeon key being deep in the level. A level with no sealed door places none,
- * which is most of them.
+ * **One key per sealed door**, on the player's own side of it (a flood fill that refuses
+ * to pass a sealed door), as far from the arrival point as the reachable area allows — a
+ * dungeon key being deep in the level. A level with no sealed door places none, which is
+ * most of them.
+ *
+ * **A key per door, not per lock number.** The first law answered one key for each distinct
+ * lock *level*, which is right until two doors carry the same level: `DAGOTH3` seals four
+ * doors at 254 and was given **one** key, and `BGATE2` seals four at 57/58/59 and got three.
+ * A sealed door (above `HAND_FORCE_MAX`) cannot be forced at all, so the door with no key was
+ * a door the main quest could never open — the owner's *"the keys still not work as
+ * intended"*. Each sealed door now has its own key, and `door` names it so the HUD can say
+ * which lock the player is carrying.
  *
  * @param {{level: object, doors: object[], spawn: {row: number, col: number}|null}} opts
- * @returns {{row: number, col: number, lock: number, art: string}[]}
+ * @returns {{row: number, col: number, lock: number, art: string, door?: {row: number, col: number}}[]}
  */
 export function placeKeys({ level, doors, spawn }) {
   // **Every lock worth a key, not only the unforceable ones.** `sealed` used to mean "above
@@ -319,7 +440,19 @@ export function placeKeys({ level, doors, spawn }) {
   // to open the door in front of you". A lock of `KEYWORTHY_LOCK` or more gets one, on the
   // player's own side of it and as deep in the level as the reachable area allows, so forcing
   // is the quick way through and the key is the certain one.
-  const sealed = [...new Set((doors ?? []).filter((d) => d.lockLevel >= KEYWORTHY_LOCK).map((d) => d.lockLevel))].sort((a, b) => a - b);
+  // **A riddle door and the quest's own seal are not key doors.** A riddle is opened by its
+  // answer and the Jewel of Fire's cell by the mithril key; dropping a generic key of that
+  // lock's number in the level would open either without its own mechanic (and a key bearing
+  // `255`, the riddle doors' own number, would open every door in the place).
+  const sealed = (doors ?? [])
+    .filter((d) => d.lockLevel >= KEYWORTHY_LOCK && !d.riddle && !d.questSeal)
+    .map((d) => ({ row: Math.round(d.row), col: Math.round(d.col), lock: d.lockLevel }))
+    // A door cell named twice (a saved leaf and the level's lock table can both answer) is
+    // still one door, and one key.
+    .filter((door, index, list) => list.findIndex((other) => other.row === door.row && other.col === door.col) === index)
+    // The heaviest locks first, so a level with more sealed doors than deep cells still puts a
+    // key on the doors a player cannot force.
+    .sort((a, b) => b.lock - a.lock || a.row - b.row || a.col - b.col);
   if (!sealed.length) return [];
   const reach = reachableCells({ level, doors, spawn });
   const start = spawn ? { row: Math.round(spawn.x - 0.5), col: Math.round(spawn.z - 0.5) } : { row: 1, col: 1 };
@@ -351,11 +484,11 @@ export function placeKeys({ level, doors, spawn }) {
   /** @type {{row:number,col:number,lock:number,art:string}[]} */
   const keys = [];
   const taken = new Set();
-  for (const lock of sealed) {
+  for (const door of sealed) {
     const spot = candidates.find((c) => !taken.has(`${c.row},${c.col}`));
     if (!spot) break;
     taken.add(`${spot.row},${spot.col}`);
-    keys.push({ row: spot.row, col: spot.col, lock, art: 'KEY.IMG' });
+    keys.push({ row: spot.row, col: spot.col, lock: door.lock, art: 'KEY.IMG', door: { row: door.row, col: door.col } });
   }
   return keys;
 }

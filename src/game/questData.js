@@ -28,12 +28,17 @@
 
 import { mainQuestDungeonMifName } from '../arena/cityDataSeeds.js';
 import { cityTypeOf } from '../arena/cityDataFile.js';
+import { STORY_LINES } from './storyLines.js';
 
 /**
  * The eight Staff-piece dungeons, in the order the game is meant to be played.
  * Each is matched by *name* against the province's staff dungeon, so a
  * discrepancy between this list and the data is caught rather than assumed.
  */
+// Pickup levels from UESP's individual walkthroughs; zero-based for the scene.
+// Stonekeep's second level is unused; Labyrinthian returns to level one after the keys.
+export const STAFF_PICKUP_LEVELS = Object.freeze([1, 0, 1, 2, 3, 3, 1, 2]);
+export const CLUE_PICKUP_LEVELS = Object.freeze([0, 1, 1, 2, 1, 1, 1, 1]);
 export const STAFF_DUNGEON_ORDER = Object.freeze([
   'Fang Lair', 'Labyrinthian', 'Elden Grove', 'Halls of Colossus',
   'Crystal Tower', 'Crypt of Hearts', 'Murkwood', 'Dagoth-Ur',
@@ -45,19 +50,18 @@ export const START_DUNGEON = Object.freeze({ mif: 'START.MIF', inf: 'START.INF',
 /** The finale: the palace, whose four levels each have their own `.INF`. */
 export const FINAL_DUNGEON = Object.freeze({ mif: 'IMPPAL.MIF', name: 'The Imperial Palace' });
 
-/** Ria Silmane's stage texts. Arena tells the story through her dreams. */
-export const STAGE_TEXT = Object.freeze([
-  'You must escape this place. The Emperor is betrayed and only you know it.',
-  'The first piece of the Staff of Chaos lies in Fang Lair, in Hammerfell. A parchment in Stonekeep names the way.',
-  'The second piece lies in Labyrinthian, in Skyrim. The Fortress of Ice holds the map.',
-  'The third piece lies in the Elden Grove of Valenwood. Selene\'s Web holds the map.',
-  'The fourth piece lies in the Halls of Colossus, in Elsweyr. The Temple of Agamanus holds the map.',
-  'The fifth piece lies in the Crystal Tower of Summurset Isle. The Temple of Mad God holds the map.',
-  'The sixth piece lies in the Crypt of Hearts, in High Rock. The Mines of Khuras hold the map.',
-  'The seventh piece lies in Murkwood, in Black Marsh. The Vaults of Gemin hold the map.',
-  'The eighth piece lies in Dagoth-Ur, in Morrowind. Black Gate holds the map.',
-  'The Staff is whole, but the Emperor\'s prison needs the Jewel of Fire. Return to the Imperial Palace.',
-]);
+/**
+ * The `TEMPLATE.DAT` key of each stage's own words.
+ *
+ * Arena tells the quest through Ria Silmane's dreams, one per stage: `1400` is the cell's dream,
+ * `1294`…`1301` name the eight pieces' places (the dream that sends the player after stage `i`
+ * is `1293 + i`), and the palace's own words are Tharn's `1447`. The texts in `storyLines.js`
+ * are the install's, pinned by a unit test.
+ */
+export const STAGE_TEXT_KEYS = Object.freeze([1400, 1294, 1295, 1296, 1297, 1298, 1299, 1300, 1301, 1447]);
+
+/** The game's own words for each stage, keyed by `STAGE_TEXT_KEYS`. */
+export const STAGE_TEXT = Object.freeze(STAGE_TEXT_KEYS.map((key) => STORY_LINES[key]));
 
 /**
  * Build the quest chain from a loaded world.
@@ -75,6 +79,7 @@ export function buildQuestChain(world) {
     index: 0,
     kind: 'escape',
     title: START_DUNGEON.name,
+    textKey: STAGE_TEXT_KEYS[0],
     text: STAGE_TEXT[0],
     mif: START_DUNGEON.mif,
     inf: START_DUNGEON.inf,
@@ -107,6 +112,7 @@ export function buildQuestChain(world) {
       kind: 'piece',
       piece: i + 1,
       title: staff.name,
+      textKey: STAGE_TEXT_KEYS[i + 1],
       text: STAGE_TEXT[i + 1],
       provinceID: province.id,
       province: province.name,
@@ -128,6 +134,7 @@ export function buildQuestChain(world) {
     index: 9,
     kind: 'finale',
     title: FINAL_DUNGEON.name,
+    textKey: STAGE_TEXT_KEYS[9],
     text: STAGE_TEXT[9],
     mif: FINAL_DUNGEON.mif,
     inf: 'IMPPAL1.INF',

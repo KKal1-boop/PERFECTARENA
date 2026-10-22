@@ -84,6 +84,10 @@ export const EFFECT_CODES = Object.freeze({
  * a light, a levitation), which is what lets `applySpell` decide without asking the scene.
  */
 export const EFFECTS = Object.freeze({
+  absorb: { name: 'Spell Absorption', self: true },
+  intelligence: { name: 'Intelligence', self: true },
+  speed: { name: 'Speed', self: true },
+  fatigueDrain: { name: 'Fatigue Drain' },
   damage: { name: 'Damage', note: 'a blow of the spell\'s own element' },
   heal: { name: 'Healing', note: 'mends the caster', self: true },
   ward: { name: 'Warding', note: 'turns blows and spells aside', self: true },
@@ -122,6 +126,14 @@ export const EFFECTS = Object.freeze({
  * caster's level on top of it (`applySpell`), which is the one rule Arena's own progression
  * tables are known to have.
  */
+/**
+ * **How long a light spell lasts.** The owner, 2026-10-19: *"the spell light needs to cast a
+ * light that follows the player for 60 seconds"*. The spell used to last until the character
+ * rested, which in a dungeon meant forever; a minute is long enough to cross a dark room and
+ * short enough that the spell is a moment rather than a permanent torch.
+ */
+export const LIGHT_SECONDS = 60;
+
 const MEANINGS = Object.freeze({
   'Stamina': { target: 'self', code: 0x0c, effects: [{ kind: 'heal', power: 12 }] },
   'Sanctuary': { target: 'self', code: 0x05, effects: [{ kind: 'ward', power: 10 }] },
@@ -524,6 +536,17 @@ export function applySpell(spell, ctx = {}) {
         words.push(`${(Number(next.health) || 0) - before} health back`);
         break;
       }
+      case 'absorb': {
+        next.spellAbsorption = Math.min(100, power);
+        events.push({kind:'absorb', power});
+        break;
+      }
+      case 'speed':
+      case 'intelligence': {
+        next.attributeBuffs = {...(next.attributeBuffs ?? {}), [effect.kind]: power};
+        events.push({kind:effect.kind, power});
+        break;
+      }
       case 'regeneration': {
         next.regeneration = Math.max(Number(next.regeneration) || 0, power);
         events.push({ kind: 'regeneration', power });
@@ -564,8 +587,8 @@ export function applySpell(spell, ctx = {}) {
         break;
       }
       case 'light': {
-        next.light = { radius: power, wandering: Boolean(effect.wandering) };
-        events.push({ kind: 'light', power, wandering: Boolean(effect.wandering) });
+        next.light = { radius: power, wandering: Boolean(effect.wandering), seconds: LIGHT_SECONDS };
+        events.push({ kind: 'light', power, wandering: Boolean(effect.wandering), seconds: LIGHT_SECONDS });
         words.push('light to see by');
         break;
       }
@@ -607,6 +630,7 @@ export function applySpell(spell, ctx = {}) {
       case 'fear':
       case 'poison':
       case 'disease':
+      case 'fatigueDrain':
       case 'spellDrain': {
         events.push({ kind: effect.kind, power, target: ctx.targetName ?? null });
         words.push(EFFECTS[effect.kind]?.note ?? effect.kind);

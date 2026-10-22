@@ -121,7 +121,7 @@ future co-op pass would take — Worker + one Durable Object per room, the world
 | B09 | Combat **presentation**: blood, tells, no invented particles | the original's own look (no wind-up bursts) | `combatFx.js`, `bloodEffect.js`, `engine/combat/bloodDecals.js` | `[~]` **the owner's "ugly battle particles"** — the invented amber bursts are gone (D-20), a landed blow is now `combatFx.blood()` (one blood red, `5cccb80`), and `bloodEffect.js` turns a blow into the engine's own decal records; **the remaining half is the decal pass** (`renderer.createDecalBatch` / `place` / `writeDecalSlot` / `drawDecals`, `renderer.js:3128-3166`) — nobody has read `engine/combat/bloodArt.js`, which is where that pass's texture comes from | `combat`, `actioncombat`, `unit/bloodeffect.test.mjs` |
 | B10 | Rest: a tavern room, a camp in the wild, **a dungeon that hears you** | the original's own behaviour (roll is `A.EXE`, not shipped) | `services.js` (`rest`), `interior.js:rest`, `encounters.js` (`stirTheLevel`) | `[x]` (D-19, this session) | `unit/hunt` |
 | B11 | Townsfolk, day plans, trades, regard | `NAMEGEN.DAT`, `.INF` `*ITEM` people, `GLOBAL.BSA` crowd sheets | `townsfolk.js`, `livingWorld.js`, `peopleKinds.js`, `wildernessBestiary.js` | `[x]` **(D-01b closed, `5cccb80`)**: a city's crowd is its own blocks' trades, its night is the trades whose day keeps them out, and the country has travellers of its own on every road | `living`, `townsfolk`, `regard`, `audit` (S-A ×4) |
-| B12 | Shops, guilds, temples, services | `TEMPLATE.DAT`, `.INF` menus | `shops.js`, `services.js`, `guilds.js` | `[x]` | `commerce`, `guilds`, `unit/shops` |
+| B12 | Shops, guilds, temples, services — **and every door on a wall, in a city and in the country** | `TEMPLATE.DAT`, `.INF` menus; OpenTESArena's `tryMakeVoxelTransitionDefGenInfo` for the wall case and `tryGetInteriorTypeFromMenuIndex` for both tables | `shops.js` (`interiorKindOfTexture`, `doorStand`, `cityDoors`, `wildDoors`), `services.js`, `guilds.js`, `interior.js` (`doorNear`, `enterDoor`) | `[x]` **(D-51, §4o/§4p: 3 925 city wall-door cells in the 368 blocks; Daggerfall 421 doors — 345 homes; and the country's own 209 doors over the 66 `.RMD` blocks, 154 of them farmhouses and barns; the sign is decoration, the wall art is the door)** | `doors` **54/54**, `commerce` 25/25, `guilds` 13/13, `unit/shops` **14/14** |
 | B13 | Radiant quests **given by NPCs** | `TEMPLATE.DAT` + `.INF` people | `radiantQuests.js` | `[x]` | `unit/radiant`, `radiant`, `bounties` |
 | B14 | Main quest: eight pieces, the palace, the ending | `CITYDATA.64/65`, `DUNGEON.TXT`, `TEMPLATE.DAT`, `END01.FLC` | `questData/questState/radiantQuests` | `[x]` | `mainquest`, `unit/quest` |
 | B15 | **The first ten minutes**: creation → `INTRO.FLC` → the Imperial Dungeons | `START.MIF`, `INTRO.FLC`, `QUESTION.TXT` | `startFlow.js`, `chargen.js`, `newGame.js`, `main.js` | `[x]` (D-12, this session) | `unit/startflow`, `chargen`, `menu` |
@@ -130,7 +130,7 @@ future co-op pass would take — Worker + one Durable Object per room, the world
 | B18 | Climate + weather + night: ground, sky, precipitation | `.INF` name letters (`TCW` rain, `TCS` snow), `DAYTIME.COL`/`DREARY.COL`/`FOG.COL`, `ARENA.SKY`-family | `arenaSky.js`, `sceneLighting.js`, `daylight.js`, engine `weather.js` | `[~]` **D-23**: the level's *own* letter is honoured; there is no front that moves, no per-climate ground mix, no snow on the ground | `scenevisuals`, `unit/sky` |
 | B19 | A persistent, seamless world (P3) | — (an engineering goal) | `worldState.js`, `save.js`, `interior.js:goInPlace` | `[~]` **(§4j this pass: *the world keeps the hour*)** — `world.clock` (`{day, minutes}`) is written on every place change, on the world's own saves and on a 20-second tick, and read on the way in: the hour a player leaves a place at is the hour the next place opens on, a bare reload comes back at it, and a world that has never kept an hour still starts at ten. `?clock=` still wins (and is dropped from a transition's URL — D-32's law) so a probe cannot rewrite the world it measures. **What stays open on D-05**: a place change is still a full scene re-boot (level, crowd, creatures, light rebuilt from the save — S-E), which is the block's other half | `unit/worldstate`, **`persist`**, `audit` |
 | B20 | Sound: voices, one-shots, fanfare, music | `*.VOC`, `SOUND.CFG`, `FANFARE1/2.VOC`, `SPEECH/` | `trigSound.js`, `fanfare.js`, engine `audio.js` | `[~]` the speech bank (`arena/ARENA/SPEECH`) is unread; the `.INF` `@SOUND` slots are wired | `unit/voc`, `doors` |
-| B21 | The automap (the original's map screen, with notes) | `A.EXE`'s map screen (not shipped) | — **nothing yet** | `[ ]` | — |
+| B21 | The automap — the level the player is standing in | OpenTESArena's `Interface/AutomapUiMVC.{h,cpp}` (MIT): the palette, `getPixelColor`, `PlayerArrowPatterns`, `PixelSize = 3` | **`game/automap.js`** (the law) + **`scenes/automap.js`** (the sheet) + `interior.js` (`Tab`, the pause, the seam, the hand-over button) | `[x]` **(this pass, uncommitted)**: **`Tab`** in a dungeon, a shop, a guildhall or the palace opens the level's own map in Arena's automap colours, with the reference's 8-direction 3×3 arrow; **`M` is Tamriel from everywhere** (the owner's correction: the first cut took `M`, and the sheet now also carries a world-map button); a city and the country have no local sheet. What is this project's is stamped in the header: the whole-level fitted view (the reference scrolls a 3-chunk window), the screen compass, and **no fog of war** (the reference has none) | **`unit/automap` 15/15**, **`automap` 13/13** (`M` still opening Tamriel in a dungeon; `Tab` opening START.MIF's own 686 floors / 1535 walls / 14 doors / 1 up; the canvas's real pixels; the marker on the player's cell; a quarter turn; the hand-over button; Escape; a tavern interior; a city's `M` still Tamriel and its `Tab` empty) |
 | B22 | Asset coverage: the 946 `.IMG`, 180 `.SET`, 340 `.CFA` named by no source | `GLOBAL.BSA` census | `tools/assetcoverage.mjs`, `docs/ASSETS.md` | `[~]` **the census half is done (`5cccb80`)**: every one of the 1 691 unread records is grouped by the module that would consume it, with the five wiring jobs that would show most; the **wiring** is the open half (D-03/D-24, and the owner's "you should port much more from arena" = D-31) | `unit/assetcoverage.test.mjs` + the tool's own run |
 | B24 | **`ACD.EXE` — the game's own tables** (read: the string tables are out — **§4f**; what is left is the numeric blocks) (the owner's "you need to decompile all of Arena"; the brief's P2) | `arena/ARENA/ACD.EXE` (174 429 B) — **the game itself**: `ARENA.BAT` runs `@ACD -Ssbpdig.adv -IOS220 -IRQS7 …`. The format's description is the entropymine write-up *Notes on PKLITE format* (jsummers, Parts 1–3) and the instance is the file's own bytes. **Measured from the bytes this session** (`node` read of the file): `MZ`, **1** relocation, header **96 B** (6 paragraphs) so the image is 174 333 B, `minAlloc` 9 024 paragraphs, `maxAlloc` 65 535, entry `IP:CS = 100:fff0`, `SS:SP = 2a96:200`; the stub carries `"PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved"` at offset 30 (the **pre-1993** PKLITE string, so not the 1.5+ "1990-93" variant), **no** `LZ91` marker, and the tail's entropy is **7.872 bits/byte** over the last 64 KiB — packed, not encrypted | new (`src/arena/pklite.js`, runtime-only) + `src/arena/exeData.js` (anchor-located tables) | `[~]` **THE FILE IS UNPACKED (`fb8fa77`) — the game's tables are readable**. **What packed it, read from its own bytes:** offset 28 = `0x0C` (minor 12) and offset 29 = `0x31` → major **1**, bit `0x10` = **"extra"** compression, bit `0x20` = **"large"** codebook, i.e. **PKLITE 1.12 registered**; the copyright string is at **30** (`PKLITE Copr. 1990-91 PKWARE Inc. All Rights Reserved`, NUL at 83). *(Correction to the previous pass's reading: the `1` that looked like the string's version digit at 29 is the **flags byte**, and the string starts at 30 — the format's own version table keys on the pair `31 0c`.)* The write-up's table gives that pair **656** bytes into the code-image segment, and the image starts at 96 → compressed stream at **752**, which is exactly where this file's byte entropy climbs (7.0 bits/byte at 704, 7.2 from 752 on). **What came out:** a **305 520-byte code image** (19 095 whole paragraphs), **4 044 relocations**, footer `SS=19087 SP=128 CS=0 IP=0`, code image ending at 166 321, relocation table ending at **174 421 = the file's end − 8** (exactly the footer), no warnings, **33 ms** in Node. Four structural checks a desynchronised stream cannot pass, all green: the image is whole paragraphs; `SS×16+SP = 305 520 = ` the image's length (the stack ends at the top of the load image); the entry the footer names is the image's **first byte**, which is why it opens `BA A0 3B B4 30 CD 21` = `mov dx,3BA0h / mov ah,30h / int 21h` — a DOS version call, then PSP reads; and every relocation segment is a multiple of `0x0fff` (the extra-compression normalisation). **And it is this game:** measured offsets into the image — `to select your class?` @220304, `the world of Tamriel, home of the Arena…` @221192, `Imperial Province` @235528, `Khajiit` @251849, `Redguard` @255313, `Nord` @255323, `wild.mif` @249113, `menuscrn.img` @249067 — plus the **wilderness draws' own thresholds as words**: `0x6666` ×71, `0x4000` ×235, `0x2666` ×73, `0x1999` ×3, the cross-check `game/wilderness.js` has never had. **And the tables came out in the same session — see §4f**, which is what `a9aa3a6` is: `src/arena/exeTables.js` reads **thirty string tables** out of the image by their own words, the Minotaur's art among them (**D-30 closed, D-29's exist half with it**). Still unexplained and not needed by the static route: the stub's own setup words `mov ax,4DC1h` / `mov dx,2A90h` at offset 96. Doctrine unchanged: derived at runtime on the player's machine, cached for the page's life, **never committed** (law 6). **What is left of this block:** the image's **non-string** tables — the byte blocks behind the holidays and the race tables, the word offsets after the noble ranks, the creature stat rows — which need a reader that can say what a number *means* before it is worth reading (queue §5 item 0) | `unit/pklite.test.mjs` 6/6 (format, structure, and Arena's own words) + **`unit/exetables.test.mjs` 8/8** and **`unit/monsterart.test.mjs` 9/9** (install-optional, as the format suites are: the tables, the readings, the pairing, the fingerprint) + **`exe` browser suite 14/14** (every number and every table produced in a real page from the player's own copy, with a real Minotaur standing on it) |
 | B23 | **Dungeon depth**: the level below (a wet basement — the original's sewers) and the storeys a tall level implies | the install's `*.MIF` + each level's `*.INF` `*LEVELUP`/`*LEVELDOWN` markers; OpenTESArena's `INFFile` for the marker names | `dungeonPlan.js` (assembly), `mifLevel.js` (markers), `interior.js` (`stairNear`/`useStair`) | `[ ]` **the owner's "dungeons should have a level below like with water (sewers) and some maybe should have one more level above because there are statues that go trough the ceiling"** — a multi-level file is walkable already (`state().level`/`levelCount`); what does not exist is a level *below* an assembled dungeon, and the storey a decoration pokes through | first probe: per dungeon, `levelCount`, each stair's cell, and which levels are wet — then assemble the second level (D-28) |
@@ -705,6 +705,11 @@ Winterhold's snow and every biome's own background).
 
 Each entry names **the first probe**, because a block starts with a measurement.
 
+**This pass (§4n) closed B21 (the automap) and verified the eighteenth pass's B26 / B11 work** —
+one Tamriel grid, the gate walked through, the province's own people, the still folk, chasm depth
+with a climb — on its own suites (172/172) and the unit set (643/643). Nothing below changed
+order: the resident country is still the loudest open item.
+
 0. ~~**B24 continued · the tables out of the unpacked image**~~ **THE STRING TABLES ARE READ
    (`a9aa3a6`, §4f)**: thirty of them, the creature art joined and D-29/D-30's Minotaur settled.
    **What is left of this block, and it is two different jobs:**
@@ -1029,3 +1034,250 @@ move — probe as written), **0b/B24** (the executable's tables, now with the ra
 second reason), **0l** (the two map levels, one picture — the owner's *"the big map and the
 region maps coherence needs to be redone"*), **0g** (the volcano, D-46), **0e/B25** (the resident
 country, above), then **0c/0d** and P2/P3's big ones.
+
+## 4n. What this pass closed (2026-10-17, part fifteen — **the level has a map again, and the country is one Tamriel**)
+
+**B21 · THE AUTOMAP — CLOSED.** The ledger had carried it as `[ ] nothing yet` since the first
+pass. `M` was the world map everywhere, so inside a dungeon, a shop or the palace the one key a
+player presses when lost opened the **continent** — which is exactly the owner's *"you dont
+understand where you are going"*. The reference was in the checkout all along: OpenTESArena's
+`Interface/AutomapUiMVC.{h,cpp}`.
+
+**The key is `Tab`, and `M` was returned.** The first cut of this pass bound the sheet to `M` in
+interiors and the owner reported the regression: *"your local map made it impossible to open the
+entire tamriel map the game had cause you put it on M"*. `M` now always opens Tamriel — from a
+city, from the country **and from inside a dungeon** (it closes the sheet, giving back the pause,
+then opens the world map) — and the automap is on `Tab`, closed by `Tab` or `Escape`, with its own
+"world map of Tamriel" button on the sheet. The suite's first two checks assert both halves from
+the same room.
+
+**What was ported, number for number.** The eight automap colours (`ColorWall(130,89,48)`,
+`ColorRaised(97,85,60)`, `ColorDoor(146,0,0)`, `ColorLevelUp(0,105,0)`,
+`ColorLevelDown(0,0,255)`, `ColorDryChasm(20,40,40)`, `ColorWetChasm(109,138,174)`,
+`ColorLavaChasm(255,0,0)`, `ColorPlayer(247,255,0)`); `getPixelColor`'s own cases — a dry chasm
+under a wall is `raised`, water and lava ignore everything but a raised platform, a hedge (a
+transparent wall **with** collision) is a wall while an archway is floor, a diagonal is floor, a
+door/gate/Enter/Exit is `door`, and the `.INF`'s own stair art is `levelUp`/`levelDown`; and
+`PlayerArrowPatterns`, the eight 3×3 arrows, with `PixelSize = 3` keeping the cell scale a
+multiple of three so one arrow sub-pixel is a whole canvas pixel.
+
+**What is this project's, stamped in the header.** The **whole level fitted to the panel**
+(the reference scrolls a 3-chunk window with a quill cursor; a browser panel has the room, and a
+fitted map answers "where am I" in one look); the **screen compass** (`+col` east, `+row` south —
+`tamrielGrid.pixelOfCell`'s own axes, so the automap and the world map agree about north); and
+**no fog of war**, because `makeAutomap` builds from the level's loaded chunks and has none. If
+the original revealed its map cell by cell, that is a later rule laid on top of this law, not a
+silent invention now.
+
+**Measured.** `unit/automap.test.mjs` **15/15** — every classification arm on a fixture, the
+eight patterns (inside the cell, unique, distinct), the eight yaw sectors, marker clamping, the
+layout's multiple of three, a recording canvas (parchment, wall ink, 3×3 yellow arrow in the
+player's cell), and **START.MIF itself** (686 floors / 1535 walls / 14 doors / exactly 1 up-stair,
+the spawn on a floor cell). `automap` browser suite **13/13** — the real page: `M` in a dungeon
+still opens **Tamriel** and not the sheet, `Tab` then opens the automap on START.MIF, the panel
+prints the level's own counts, the canvas really has 55 516 parchment / 121 014 wall / 27 arrow
+pixels at cell scale 9, the marker is `floor(feet/2.5)` on both axes, a quarter turn changes
+east→south, **the sheet's button hands over to Tamriel**, Escape closes it and resumes the world,
+**a tavern interior draws the same sheet**, and a city's `M` still opens the world map while its
+`Tab` offers nothing. **Cost**: one
+`buildAutomap` is **1.0 ms cold / 0.22 ms warm** on a 50×50 level (ten builds in Node), taken
+once per level load — never in the frame loop.
+
+**THE IN-FLIGHT PASS, VERIFIED (not new in this pass, but unverified until now).** The large
+uncommitted work — **one Tamriel grid** (`tamrielGrid.js`: 256 cells a pixel, `TERRAIN.IMG`'s
+coastline and biome, every settlement on its own pixel, `?wild=` world cells, the gate walked
+through), the **ruin door** in that country (`dungeonSurface.js`), the **province's own people**
+(`raceSkin.js`: a palette race is Arena's body under a six-entry skin ladder; an Argonian is the
+**Lizard Man's whole figure**, `RACE_FIGURE`), the **still folk and the court**
+(`staticFolk.js`: `KING`/`QUEEN`/`PRINCE`/`PRINCESS`, tavern patrons `MAN01…04`/`WOMAN01…04`),
+and **chasm depth with a ledge climb** (`mifMesh` 1.2/1.55/1.0 m, `motor.ledgeClimbing` measured
+from the water line) — was run through its own suites this pass: `movement` **12/12**, `world`
+**31/31**, `persist` **14/14**, `townsfolk` **69/69**, `living` **46/46** = **172/172**, and unit
+**643/643** (628 + the automap's 15).
+
+**Two checks restated, with the law they were measuring.** `townsfolk` required every person's
+sheet key to end `#<race>`. That is true of a **palette race** and false of a **figure race**:
+`LIZARD1.CFA` is the Argonian's whole art, and a suffix there would lay a second skin over the
+art that already is the race (the "green people" the owner refused). The checks now require
+`person.race` for everyone and the matching suffix **when the sheet is a palette race**; both
+pass with 48/48 carrying their race (Lilmoth 92% Argonian, Necrom 67% Dark Elf).
+
+**Docs restored.** `docs/` was **deleted in the working tree** (tracked deletions) when this pass
+began; `git checkout -- docs` brought the thirteen documents back from `HEAD`, and this section,
+`AGENT_STATE.md`, `DEFECTS.md`'s D-45 row, `ROADMAP.md` and `ARCHITECTURE.md` now describe both
+passes. The hash for this work is owed on commit — the tree still holds the eighteenth pass
+uncommitted as well, so the commit that lands them is the one to write into these rows.
+
+## 4o. What this pass closed (2026-10-17, part sixteen — **the door is the wall's own art**)
+
+**D-51 · EVERY CITY DOOR IS ENTERABLE, AND IT IS THE DOOR THE PLAYER SEES.** The owner: *"all
+doors in the game should be enterable and i mean the texture of a door on a wall instead the
+houses and royal palaces are linked to a weird little sprite that is the clothes hanging to dry"*.
+The reference had the law all along, in OpenTESArena's `World/MapGeneration.cpp`, function
+`tryMakeVoxelTransitionDefGenInfo`, and it reads **two** cases: `isWall = mostSigByte ===
+leastSigByte` (texture `most − 1`) **or** `isEdge` (texture `(leastSigByte & 0x3F) − 1`), and then
+asks `INFFile::getMenuIndex(textureIndex)` which `*MENU` slot (if any) binds that texture. The
+port had implemented only the edge case **and** had substituted a pair rule (`T_T…` art after each
+slot) for `getMenuIndex`, which is why the laundry sign — the *next* entry after a house slot, not
+a slot — became the way into a house while every real door painted on a wall stayed solid.
+
+**Measured from the player's own archive.** All 368 block `.MIF`s were walked:
+**wall** cells bound by a menu slot carry exactly eight textures — 5 `T_DEQ` (167 cells), 10
+`T_DTAV` (190), 16 `T_DMU` (54), 23 `T_DTEP` (84), 30/35/40 `T_DBS1..3` (1 040 + 879 + 1 688) and
+53 `T_DNB1` (180) = **3 925 doors** — and the `0xA` edges carry exactly five **sign** indices — 6
+`T_TEQ` (167), 11 `T_TTAV` (186), 17 `T_TMU` (49), 24 `T_TTEP` (84), 47 `TLAUNDRY` (60). One sign
+per shop and no sign per home: in Daggerfall's city, **23 equipment signs for 23 equipment doors,
+19 tavern signs for 19 tavern doors**, while **345 house doors share 60 laundry signs**.
+
+**The law, ported.** `game/shops.js` exports `MENU_SLOT_INTERIORS` — the reference's city table:
+0 equipment, 1 tavern, 2 Mages Guild, 3 temple, 4/5/6 house, 9 noble, 11/12/13 palace — and
+`interiorKindOfTexture(inf, textureIndex)`, which is `inf.menus.indexOf(texture)` then that table;
+`cityDoors` scans **wall and edge** cells, records the door's own art as `sign`, marks `wall`, and
+gives every wall door a `stand` cell (`doorStand`: the first walkable neighbour) because a player
+cannot stand in the wall. A wall whose art is a door but which no slot binds is a **house**,
+which is the owner's *"every texture of a door … should be an enterable house"*. The palace is
+still one marked house door nearest the middle of a city (this install's blocks draw no 11–13
+door art), and a village still gets none.
+
+**What changed in the scene.** `doorNear` measures to the door **or its stand cell**, so `E`
+works anywhere on the paving in front of a door rather than only in its centre; `teleportToDoor`
+stands on `stand`; `enterDoor`'s `?at=` (the return URL) is the stand cell, so leaving a building
+puts the player back on the paving they entered from instead of snapping diagonally to the
+nearest walkable cell. The HUD names the room (`This is a house — press E at the door to go in.`)
+and the city line counts doors, not signs.
+
+**Measured.** `unit/shops` **11/11** (all 368 blocks; the 421 doors of one city; no sign is a door;
+every stand cell walkable; one palace in a city and none in a village). Browser `doors` **49/49**:
+equipment, tavern, house, temple and palace round trips from the paving, the wall art names the
+room, hanging signs are refused, 353 of 356 doors in the tested city are reachable (the 3 facing
+masonry are counted, not hidden), and `M`/`Tab` from the automap pass are untouched. Around it:
+`commerce` 25/25, `guilds` 13/13, `living` 46/46, `townsfolk` 69/69, `movement` 12/12 (the gate
+still walks through), `persist` 14/14, unit **643/643**.
+
+The **country's** doors are §4p below: the same law against the wilderness's own table.
+
+## 4p. What this pass closed (2026-10-17, part seventeen — **the country has doors too**)
+
+**D-51, the other half.** The owner's law — *"every texture of a door that is not a shop or a guild or a
+door that leads you out of the settlement … should be an enterable house"* — is not a city law. The
+wilderness is the same mechanism against a different table, and OpenTESArena says so in
+`tryGetInteriorTypeFromMenuIndex` (`MapType::Wilderness`): **1 crypt, 2 house, 3 tavern, 4 temple,
+5 tower**, with 6/7 the city gate and 8/9 the dungeon. The port had never asked the wilderness `.INF`
+anything, so a farmhouse, a tavern, a temple, a tower or a crypt was solid wall from every side, and
+the only wilderness building with an entrance was a dungeon (through the ruin's own flat).
+
+**Measured from the archive.** All eight shipped wilderness INFs (`TWN`, `TWS`, `TWR`, `DWN`, `DWR`,
+`MWN`, `MWS`, `MWR` — the ninth, `DWS`, is absent) bind the same fifteen slots to the same art, and
+slot 0 is a **barn** door (`TZDBARN.IMG`) which the reference maps to *none*. Decoding every `.RMD`
+against `TWN.INF` then counting wall cells whose art a slot binds: **123 `TZDFARM.IMG`, 31 `TZDBARN.IMG`,
+19 `TZDTAV.IMG`, 17 `TZDTEP.IMG`, 13 `TZDTOWER.IMG`, 6 `TZDCRYPT.IMG`** — the country's doors, all of
+them painted on walls, plus the gate's two posts and the dungeon mouth which are not doors.
+
+**The law, ported.** `game/shops.js` exports `MENU_SLOT_WILDERNESS` (`0` barn → a **house**, because a
+barn is a building and the owner's law is every door; `1` crypt, `2` house, `3` tavern, `4` temple,
+`5` tower) and `wildDoors({ level, inf, blocks })`, which walks the window exactly as `cityDoors` walks
+a city: wall or walk-through edge, `interiorKindOfTexture(inf, sideTexture, 'wilderness')`,
+`doorStand` for the cell it opens from, the art as `sign`. Which of the eight interiors is the block's
+own number plus the window's quadrant (a `.RMD` carries no rotation letter) — **RECONSTRUCTED**, and
+said so. `interiorKindOfTexture` grew a `mapType`, because the two tables share slot **numbers** and not
+meanings: the wrong table answers a door that is not there. `SHOP_KINDS` gained `crypt` (`WCRYPT1…8`)
+and `tower` (`TOWER1…8`); a crypt holds nobody (`BUILDING_FOLK.crypt = 0`), a tower keeps one.
+
+**What changed in the scene.** A country window gets `doors` from `wildDoors` and every reader of them
+follows for free — `doorNear`, the HUD line (*"This is a tavern — press E at the door to go in."*),
+`E`, the keeper, the spawn. The one thing that had to be country-specific is the **way back**: a city
+door returns through `?at=` (a cell of the city), while a country page names its cell in world
+coordinates, so `enterDoor` writes `?wild=row,col` for a `door.country` and the player lands on the same
+world cell they entered from — even when the window re-centres a block on the way back (measured:
+entered from window cell 31,32 of origin 17344, returned at window cell 95,32 of origin 17280 — **the
+same world cell 17375,11872**).
+
+**Measured.** `unit/shops` **14/14** (all 66 `.RMD`s: 209 doors, 154 houses/barns, 19 taverns, 17
+temples, 13 towers, 6 crypts; every door's file is a real family; one unreachable door named). Browser
+`doors` **54/54**: in the country outside Daggerfall, `DTAV.IMG` opens `TAVERN5.MIF`, the room is a
+building with its own kind, and leaving puts the player back on the world cell they came from. Around
+it: `movement` 12/12 (the gate crossing is untouched), `living` 46/46, `persist` 14/14, `townsfolk`
+69/69, `world` 31/31, `commerce` 25/25, `guilds` 13/13, unit **646/646**.
+
+**The tomb was empty, and that was a bug of this pass (D-52).** The probe that opened this section
+went further than the door: `WCRYPT.INF` names eight species and every crypt and tower level answers
+`monsterCountFor` **7**, and `?interior=WCRYPT1.MIF` fielded six — but the page a **door** reaches
+fielded none. `populate` decided `inhabited = inCity || Boolean(entryCell)`, so the `?enter=` a door
+writes (how every settlement building says "somebody is home") also quieted a tomb. `inhabited` is
+now the **building's kind**: `shopForInteriorFile(mapName)?.kind` — `crypt` and `tower` are **lairs**
+and keep their roster, everything else stays a household. Measured after the fix: `WCRYPT4.MIF` by
+its own country door → **6 creatures**, 0 townsfolk, treasure and key still on the floor; `doors`
+**59/59**.
+
+**Still open, named.** The crypt is a lair now but its **deeper storeys** are only reachable by stairs
+the levels themselves draw — a probe of `WCRYPT1…8`'s second, third and fourth floors for stairs and
+for the roster their own INFs (`crypt2/3/4.inf`, 23 species) name is the next step on B12.
+
+## 4q. What this pass closed (2026-10-17, part eighteen — **the other half of the stairway**)
+
+**D-53 · a tomb's depth was drawn, and unreachable.** The pass that opened the country's doors
+found the crypts holding their own rosters (seven creatures per level, out of `WCRYPT.INF`'s eight
+species and `crypt2/3/4.inf`'s twenty-three) — and the storey holding them **unreachable**. Measured
+over every interior `.MIF` with more than one level: a stairway is one cell drawn in the two levels it
+joins, and the archive keeps both ends for towers, noble houses and several shops, but **only one**
+for the crypts (`WCRYPT1…8`: level 0, the entrance, has no stair at all; level 1 has a single
+`*LEVELUP` cell at (18,3)), for the palaces (`PALACE1…5`, `TOWNPAL1…3`, `VILPAL1…3`) and for the
+tavern/temple/Mage/equipment rooms whose second level is unused data.
+
+**The rule, and where it comes from.** `mifLevel.js`'s `fillStairPair` reads the pair out of the
+data's own half: the lower level's `*LEVELUP` cell says **where**, this level's own `*LEVELDOWN` art
+says **what**, and the cell must be a wall of this level — or the nearest wall within two cells when
+the floor above is open there (which is `WCRYPT1`'s shape). A level that already has a down stair is
+left exactly as the file drew it (a second one would be two ways into one storey), the archive's
+bytes are copied and never mutated, and only a **lair** is completed in the scene: a shop's unused
+upper floor is not a place the file means anybody to go. Stamped as this project's rule — Arena's own
+placements are in `A.EXE` (D11).
+
+**Measured.** All eight crypts gain their descent — `WCRYPT1` (16,1), `WCRYPT2/8` (17,2), `WCRYPT4`
+(17,4) and the rest within three cells of the lower stair — every one of them inside `DOOR_REACH` of
+the paving beside it (`stairs().filled.at[0].stand`). In the browser, `WCRYPT4` entered from its
+country door: down stair at (17,4) → **level 2/4 with six creatures**, up stair at (18,3) → back to
+level 1/4. `unit/mif` **27/27** (three new checks: the pair is completed, a whole pair is left alone,
+all eight crypts descend), `doors` **63/63**, `dungeonplay` 31/31, unit **649/649**.
+
+**Still open, named.** Crypt levels 2 and 3 carry **no stair in either direction**, so a crypt is two
+storeys (entrance + one below) rather than four; completing those needs a rule for a level with no
+data half at all, which is a different (and more invented) question than the pair this pass closed.
+
+## 4r. What this pass closed (2026-10-17, part nineteen — **every village was a city**)
+
+**D-54 · the record's kind, not its index.** The doors pass (D-51) left one number it could not
+explain: a sweep of all 288 settlements gave **216 cities, 72 towns and no villages at all**. The
+cause was one line in `scenes/interior.js`: `cityRequestOf` asked `cityTypeOf(place.index)` — the
+executable's `getCityType(localCityID)`, which expects Arena's **flat** province-local id (0–7
+city-states, 8–15 towns, 16–31 villages). `parseCityData` hands each record its **own** `index` (a
+town is 0…7 again, a village 0…15) *and* the `kind` it was read under, so every town read as a
+city-state and every village as a city or a town. A settlement whose record says `village` is built
+from `VILLAGE1…5`/`VILLAGW1…3` on a 4×4 block grid, a town from `TOWN*` on 5×5, a city from `CITY*`
+on 6×6 (`CITY_BLOCKS_PER_SIDE`, unchanged); `SETTLEMENT_KINDS.has(place.kind)` is the law and
+`cityTypeOf` survives only as the fallback for a record built without a kind.
+
+**Measured.** 72/72/144 — the file's own eight cities, eight towns and sixteen villages per province
+— and the world's painted doors with them: **71 648** over the 288 settlements (28 628 city, 18 135
+town, 24 885 village), each bound to an interior that exists in `GLOBAL.BSA`, and **0** door-art
+wall cells left as plain wall. 586 of them (0.8 %) are painted where no paving faces them and are
+listed with `stand: null` rather than hidden. In a page: `?location=Reich Gradkeep` →
+`VILLAGW1.MIF`, 124×124, 4×4 blocks, 199 doors, **no palace** (the palace rule is a city's, D-51),
+its gate on the east wall; `?location=Old Gate` → `TOWNW1.MIF`, 5×5, 221 doors; Daggerfall unchanged
+(`CITYW2.MIF`, 356 doors, one palace).
+
+**D-55 · and a check that had stopped measuring.** Verifying the sweep meant running `audit`, which
+was **17/26**: its three country windows all sat at `1024,1024` — "the middle of the 64×64-block
+grid, away from any settlement", i.e. the settlement's *private* wilderness, which the one-Tamriel
+grid replaced — and that cell is **open sea** on `TERRAIN.IMG`. Three oceans were asked whether they
+were inhabited (0 people, 0 creatures) and whether they differed (`-1,-1,-1,-1` each). A control run
+— D-54's line reverted, same command — read the same nine failures, so the row is older than this
+pass. Each climate now carries its own land window (temperate `14592,68608`, desert `13056,29696`,
+mountain `7552,31872`, picked by requiring every 64-cell block in a 128-cell margin to be land and no
+settlement within 400 cells): `audit` **26/26**, with blocks `[18,33,33,9]` / `[37,55,13,19]` /
+`[59,7,58,51]`, flats 1808/1468/917 and first flat `NBOULDR2` / `CACTUS1` / `BOATQURT` — the three
+countries really are three landscapes.
+
+**Still open, named.** The country still re-boots the scene when the window crosses a block boundary
+(B26's own remaining half), and the 586 doors facing masonry are the map's own art, not reachable
+from any paving.

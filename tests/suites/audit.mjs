@@ -45,13 +45,26 @@ const ARENA = process.env.ARENA_PATH || 'C:/ArenaProject/arena/ARENA';
  * so a name is the only honest way to ask for a climate.
  */
 const CLIMATES = [
-  { climate: 'temperate', name: 'Daggerfall' },
-  { climate: 'desert', name: 'Rihad' },
-  { climate: 'mountain', name: 'Eldenroot' },
+  { climate: 'temperate', name: 'Daggerfall', cell: '14592,68608' },
+  { climate: 'desert', name: 'Rihad', cell: '13056,29696' },
+  { climate: 'mountain', name: 'Eldenroot', cell: '7552,31872' },
 ];
 
-/** A wilderness cell in the middle of the 64×64-block grid, away from any settlement. */
-const WILD_CELL = '1024,1024';
+/**
+ * **Each climate's own window, on land, away from any settlement.**
+ *
+ * This used to be one address for all three — `1024,1024`, "the middle of the 64×64-block
+ * grid, away from any settlement". That grid was the settlement's **private** wilderness,
+ * which the world grid replaced (block B26): `1024,1024` is now open sea on Tamriel's own
+ * `TERRAIN.IMG`, so all three windows were four `-1` blocks with no flats, no people and no
+ * creatures, and the checks compared three identical pieces of ocean — measured on the
+ * suite: `-1,-1,-1,-1` at every climate, `0 people`, `0 creatures`, `1 distinct day
+ * bestiary`. The law the checks are about (a desert country is cactus and lizards, a
+ * mountain one is firs and wolves) needs three windows the world actually has land at, so
+ * each entry carries its own origin, chosen once and written down: every 64-cell block
+ * within a 128-cell margin is land (`isSeaCell`), the window's own centre pixel has the
+ * climate named here (`windowClimate`), and no settlement stands within 400 cells of it.
+ */
 
 export function makeAuditSuite({ check, shots, getPort, brightness }) {
   return async function suiteAudit(page) {
@@ -59,8 +72,8 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
     const q = `arena=${encodeURIComponent(ARENA)}`;
     const settle = (ms = 250) => new Promise((r) => setTimeout(r, ms));
     const cityUrl = (name, extra = '') => `http://localhost:${PORT}/?location=${encodeURIComponent(name)}&${q}${extra}`;
-    const wildUrl = (name, extra = '') =>
-      `http://localhost:${PORT}/?location=${encodeURIComponent(name)}&wild=${WILD_CELL}&${q}${extra}`;
+    const wildUrl = (place, extra = '') =>
+      `http://localhost:${PORT}/?location=${encodeURIComponent(place.name)}&wild=${place.cell}&${q}${extra}`;
     const ready = (label, timeoutMs = 240000) => page.waitFor(
       'window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
       { label, timeoutMs },
@@ -243,8 +256,9 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
     // S-B / S-C / S-D — the country: who lives there, what art it finds, what it looks like
     // ═══════════════════════════════════════════════════════════════════════════
     const wilds = [];
-    for (const { climate, name } of CLIMATES) {
-      await page.goto(wildUrl(name));
+    for (const place of CLIMATES) {
+      const { climate, name } = place;
+      await page.goto(wildUrl(place));
       await ready(`the country outside ${name}`);
       const frame = await brightness(page, `audit-wild-${climate}.png`);
       const artWild = await missingArt();
@@ -274,7 +288,7 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
     }
 
     // ── S-B, the same country at night — and S-D, do two climates differ? ────
-    await page.goto(wildUrl(CLIMATES[0].name, '&clock=1380'));
+    await page.goto(wildUrl(CLIMATES[0], '&clock=1380'));
     await ready('the country at night');
     const nightBeast = await bestiary();
     beasts.push({ climate: CLIMATES[0].climate, hour: 'night', ...nightBeast });
@@ -299,8 +313,9 @@ export function makeAuditSuite({ check, shots, getPort, brightness }) {
     const grids = wilds.map((w) => (w.beast?.wild?.blockIds ?? []).join(','));
     const flatSets = wilds.map((w) => (w.beast?.wild?.flatNames ?? []).slice(0, 8).join(','));
     check('S-D: the climate changes what the country *is*, not only how it is lit (blocks + flats placed)',
-      new Set(grids).size > 1 || new Set(flatSets).size > 1,
-      `blocks at cell ${JSON.stringify(wilds[0]?.beast?.wild?.cell ?? null)}: ${wilds.map((w, i) => `${w.climate} [${grids[i]}] ${(w.beast?.wild?.flats ?? 0)} flats`).join(' · ')}; a desert window and a temperate one share ${grids[0] === grids[1] ? 'every' : 'no'} block`);
+      new Set(grids).size > 1 && new Set(flatSets).size > 1,
+      wilds.map((w, i) => `${w.climate} at ${JSON.stringify(w.beast?.wild?.cell ?? null)} [${grids[i]}] ${(w.beast?.wild?.flats ?? 0)} flats, first ${w.beast?.wild?.flatNames?.[0] ?? '-'}`).join(' · ')
+      + `; the temperate and desert windows share ${grids[0] === grids[1] ? 'every' : 'no'} block and ${flatSets[0] === flatSets[1] ? 'every' : 'no'} flat`);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // S-E — the country you *walk*: the door a dungeon's exit stands at, and the

@@ -43,7 +43,7 @@ import { parseImg } from '../../src/arena/image.js';
 import { parseCityData, PROVINCE_BLOCK_SIZE } from '../../src/arena/cityDataFile.js';
 import {
   FAIL_SAFE_REACH, SEA_WRAP_PIXELS, TERRAIN_CLIMATE, TERRAIN_FALLBACK, TERRAIN_GLYPH,
-  TERRAIN_SEA, WorldMap, loadWorldMap,
+  TERRAIN_SEA, WorldMap, loadWorldMap, parseWorldMapMasks, PROVINCE_MASK_RECTS, WORLD_MAP_MASK_OFFSET,
 } from '../../src/game/worldMap.js';
 import {
   CYRODIIL_SETTLEMENTS, IMPERIAL_PROVINCE_ID, cyrodiilEntryFor, fillImperialProvince,
@@ -103,11 +103,74 @@ async function installedWorld() {
     const archive = parseBsa(new Uint8Array(fs.readFileSync(path.join(ARENA, 'GLOBAL.BSA'))), 'GLOBAL.BSA');
     cachedWorld = await loadWorldMap({
       must: async (name) => new Uint8Array(fs.readFileSync(path.join(ARENA, name))),
+      bytes: async (name) => new Uint8Array(fs.readFileSync(path.join(ARENA, name))),
       img: async (name) => parseImg(archive.get(name), name),
     });
   }
   return cachedWorld;
 }
+
+test('province masks use padded rows, MSB-first bits and reject truncated files', () => {
+  const length = WORLD_MAP_MASK_OFFSET + PROVINCE_MASK_RECTS.reduce((n, r) => n + Math.ceil(r.width / 8) * r.height, 0);
+  const bytes = new Uint8Array(length);
+  const rect = PROVINCE_MASK_RECTS[0];
+  bytes[WORLD_MAP_MASK_OFFSET] = 0x80;
+  bytes[WORLD_MAP_MASK_OFFSET + Math.ceil(rect.width / 8)] = 0x40;
+  const masks = parseWorldMapMasks(bytes);
+  assert.equal(masks.length, 9);
+  assert.equal(masks[0].get(rect.x, rect.y), true);
+  assert.equal(masks[0].get(rect.x + 1, rect.y), false);
+  assert.equal(masks[0].get(rect.x + 1, rect.y + 1), true);
+  assert.equal(masks[0].get(rect.x - 1, rect.y), false);
+  assert.equal(parseWorldMapMasks(bytes.subarray(0, length - 1)), null);
+});
+
+test('all 65 original city-state markers land exactly on the continent artwork yellow dots', { skip: noInstall }, async () => {
+  const world = await installedWorld();
+  const cities = world.ofKind('city').filter((l) => l.provinceID < 8 || l.id === 0);
+  assert.equal(cities.length, 65);
+  for (const city of cities) {
+    assert.equal(world.mapImage.indices[city.tamriel.y * W + city.tamriel.x], 11, city.name);
+    assert.deepEqual(Array.from(world.mapImage.palette.rgb.slice(33, 36)), [255, 255, 0]);
+    assert.equal(world.masks[city.provinceID].get(city.tamriel.x, city.tamriel.y), true, city.name);
+  }
+  assert.deepEqual(world.byName('Winterhold').tamriel, { x: 179, y: 33 });
+  assert.deepEqual(world.byName('Winterhold').local, { x: 244, y: 17 });
+});
+
+test('every settlement and dungeon continent marker stays on non-blue art inside its province mask', { skip: noInstall }, async () => {
+  const world = await installedWorld();
+  for (const place of world.locations) {
+    const { x, y } = place.tamriel;
+    assert.equal(world.masks[place.provinceID].get(x, y), true, `${place.name}: province`);
+    const i = world.mapImage.indices[y * W + x] * 3;
+    const [r, g, b] = world.mapImage.palette.rgb.slice(i, i + 3);
+    assert.equal(b > r + 15 && b > g + 10, false, `${place.name}: water`);
+  }
+  assert.equal(world.provinceAt({ x: 0, y: 0 }), null, 'sea is not a rectangular province');
+});
+
+test('all 31 added Cyrodiil settlements stand on the green province territory', { skip: noInstall }, async () => {
+  const world = await installedWorld();
+  const archive = parseBsa(new Uint8Array(fs.readFileSync(path.join(ARENA, 'GLOBAL.BSA'))), 'GLOBAL.BSA');
+  const image = parseImg(archive.get('IMPERIAL.IMG'), 'IMPERIAL.IMG');
+  const added = world.settlementsOf(8).filter((l) => l.placed);
+  assert.equal(added.length, 31);
+  for (const place of added) {
+    const i = image.indices[place.local.y * W + place.local.x] * 3;
+    const [r, g, b] = image.palette.rgb.slice(i, i + 3);
+    assert.ok(g > r && g > b, `${place.name}: ${r},${g},${b}`);
+  }
+});
+
+test('Bruma is substantially north of the Temple of Elden on both maps and snows permanently', { skip: noInstall }, async () => {
+  const world = await installedWorld();
+  const bruma = world.byName('Bruma'), temple = world.byName('Temple of Elden');
+  assert.ok(bruma.local.y + 25 < temple.local.y);
+  assert.ok(bruma.tamriel.y + 10 < temple.tamriel.y);
+  assert.equal(bruma.weather, 'snow');
+  assert.equal(bruma.climate, 'mountain');
+});
 
 // ── D-38 · the classes, on their own ────────────────────────────────────────────────────────
 
@@ -286,7 +349,7 @@ test('the fill places every nameless slot the table has an entry for', () => {
   assert.deepEqual(warnings, []);
   const locations = out[IMPERIAL_PROVINCE_ID].locations;
   const anvil = locations.find((l) => l.name === 'Anvil');
-  assert.deepEqual(anvil.local, localPointOf([0.05, 0.60]), 'the fraction became the record\u2019s local point');
+  assert.deepEqual(anvil.local, localPointOf([0.06, 0.55]), 'the fraction became the record\u2019s local point');
   assert.equal(anvil.kind, 'city');
   assert.equal(anvil.index, 1);
   assert.equal(anvil.placed, true);

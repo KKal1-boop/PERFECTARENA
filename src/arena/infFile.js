@@ -42,8 +42,12 @@ export const MAX_TEXTURE_SLOT = 16;
  * @typedef {object} InfFlat
  * @property {number} textureIndex  index into `flatTextures`
  * @property {number|null} itemIndex Arena item index from the preceding `*ITEM`
- * @property {number} yOffset       pixels (negative moves the flat up)
+ * @property {number} yOffset       pixels (negative moves the flat up), from `Y:n`
  * @property {number|null} lightIntensity  from an `S:n` modifier
+ * @property {boolean} collider @property {boolean} puddle @property {boolean} largeScale
+ * @property {boolean} dark @property {boolean} transparent @property {boolean} ceiling
+ * @property {boolean} mediumScale   the seven `F:n` property bits (OpenTESArena `INFFile.cpp`)
+ * @property {number} scaleModifier  1, 1.5 or 3, read off those bits
  */
 
 /**
@@ -115,10 +119,38 @@ function decodeText(bytes) {
   };
   const direct = ascii(bytes);
   // A plaintext INF's first printable run is `@FLOORS`/`@WALLS`/`@...`.
-  if (/^\s*@/.test(direct)) return direct;
+  if (looksLikeInf(direct)) return direct;
   const decrypted = ascii(decryptInf(bytes));
   // Only accept the decryption if it actually looks like an INF.
-  return /^\s*@/.test(decrypted) ? decrypted : direct;
+  return looksLikeInf(decrypted) ? decrypted : direct;
+}
+
+/**
+ * Does this text read as an INF at all?
+ *
+ * **Not only by its first line.** Two of the install's own level definitions — `dagoth1.inf` and
+ * `dagoth2.inf`, the first two levels of **Dagoth-Ur** (`42026882.MIF`) — begin directly with
+ * `*BOXCAP 0` and simply **have no `@FLOORS` header**, because the floors are the section a
+texture before any `@` tag belongs to (Arena's own reader starts in the floor section). Testing
+ * only `^\s*@` refused those two files' *correct* decryption and fell back to the ciphertext, so
+ * both levels parsed with **zero voxel textures**: the mesher built their walls, floors and
+ * ceilings with no material and dropped every one of them (`materials: 0`, `quads: 0` — 4 234
+ * wall quads and 10 000 ceiling quads thrown away on level 1 alone). The player's report,
+ * *"the dagoth ur one isnt even ported at all"*, is exactly that: the level was there, collided,
+ * and drew nothing.
+ *
+ * An INF is therefore text that starts with a tag **or** that carries one of its section headers
+ * anywhere — the walls tag every real INF has, `@FLOORS` when it is at the top (the ordinary
+ * shape) or `*BOXCAP`/`*CEILING`/`*DOOR`/`*LEVELUP` (a directive line, which a decryption that
+ * went wrong never produces).
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksLikeInf(text) {
+  if (/^\s*@/.test(text)) return true;
+  if (/(^|\n)\s*@(FLOORS|WALLS|FLATS|SOUND|TEXT)\b/i.test(text)) return true;
+  return /(^|\n)\s*\*(BOXCAP|CEILING|DOOR|LEVELUP|LEVELDOWN|BOXSIDE|TRANS|DRYCHASM|WETCHASM|LAVACHASM)\b/i.test(text);
 }
 
 /**
@@ -132,8 +164,13 @@ export function parseInfText(text, name = '') {
   const inf = emptyInf(name);
   const lines = text.replace(/\r/g, '').split('\n');
 
+  // **The floors are the section that has no tag.** Two of the install's own INFs (`dagoth1.inf`
+  // and `dagoth2.inf`, Dagoth-Ur's first two levels) open on `*BOXCAP 0` with no `@FLOORS` line at
+  // all, so a reader that needs the tag throws their whole floor and wall table away — which is how
+  // that dungeon came out with no materials, an invisible level standing on a collider. Arena's own
+  // reader starts in the floor section and moves when it meets a tag, and so does this one.
   /** @type {'floors'|'walls'|'flats'|'sound'|'text'|null} */
-  let section = null;
+  let section = 'floors';
   // Per-group parser state, mirroring the original engine's modal reader: a
   // directive line opens a "slot" that the *next* filename fills.
   let floor = newFloorState(), wall = newWallState(), flat = newFlatState(), txt = newTextState();
@@ -227,6 +264,57 @@ export function withGroundFloors(architecture, ground) {
   return {
     inf: { ...architecture, voxelTextures, groundFloorsFrom: ground.name, merged: true, reason: null },
     merged: true,
+    reason: null,
+  };
+}
+
+/**
+ * Is an INF flat's art a climate-specific tree rather than architecture or street furniture.
+ * Kept in step with `game/flats.js:isTreeArt`; the INF merger needs the predicate before the
+ * scene's flat records are decoded.
+ * @param {string|null|undefined} name
+ * @returns {boolean}
+ */
+function isTreeFlatArt(name) {
+  const stem = String(name ?? '').toUpperCase().replace(/\.IMG$/, '');
+  return /^(?:[NSWKF](?:FIR|OAK|PINE)|CACTUS|PALM|TREE)\d*$/.test(stem);
+}
+
+/**
+ * Borrow only tree pictures from another climate's INF, preserving an architecture INF's walls,
+ * floors, props, and flat indices. Flat indices are part of the MIF format: a tree is replaced only
+ * when the same index is a tree in both INFs. Non-tree entries and mismatched slots are untouched.
+ *
+ * @param {InfFile} architecture  settlement INF supplying buildings and all non-tree art
+ * @param {InfFile} scenery       settlement INF supplying climate-specific tree pictures
+ * @returns {{inf: InfFile, merged: boolean, replaced: number, reason: string|null}}
+ */
+export function withGroundTreeFlats(architecture, scenery) {
+  if (!architecture || !scenery) {
+    return { inf: architecture, merged: false, replaced: 0, reason: 'missing architecture or scenery INF' };
+  }
+  const flatTextures = (architecture.flatTextures ?? []).slice();
+  const architectureFlats = architecture.flats ?? [];
+  const sceneryFlats = scenery.flats ?? [];
+  let replaced = 0;
+  const count = Math.min(architectureFlats.length, sceneryFlats.length);
+  for (let index = 0; index < count; index++) {
+    const target = architectureFlats[index];
+    const source = sceneryFlats[index];
+    const targetName = flatTextures[target?.textureIndex];
+    const sourceName = scenery.flatTextures?.[source?.textureIndex];
+    if (!isTreeFlatArt(targetName) || !isTreeFlatArt(sourceName)) continue;
+    if (targetName === sourceName || target?.textureIndex == null) continue;
+    flatTextures[target.textureIndex] = sourceName;
+    replaced++;
+  }
+  if (!replaced) {
+    return { inf: architecture, merged: false, replaced: 0, reason: 'no matching tree flat slots' };
+  }
+  return {
+    inf: { ...architecture, flatTextures, settlementTreesFrom: scenery.name, settlementTreeFlatsMerged: replaced },
+    merged: true,
+    replaced,
     reason: null,
   };
 }
@@ -371,14 +459,37 @@ function parseFlatLine(line, inf, state) {
     itemIndex: state.mode === 'item' ? state.itemID : null,
     yOffset: 0,
     lightIntensity: null,
+    // `F:` is a **bitfield of properties**, not a height (OpenTESArena `INFFile.cpp`):
+    // bit0 collider, bit1 puddle, bit2 large scale (×3), bit3 dark, bit4 transparent,
+    // bit5 ceiling, bit6 medium scale (×1.5). The port read it as `yOffset`, which would
+    // have hung any flat that carried one. This install ships no `F:` token in any of its
+    // 93 `.INF`s (measured 2026-10-18), so nothing on screen moves — the reading is fixed
+    // where it is wrong rather than left as a trap for the first install that uses it.
+    collider: false,
+    puddle: false,
+    largeScale: false,
+    dark: false,
+    transparent: false,
+    ceiling: false,
+    mediumScale: false,
+    /** The world-size multiplier the flags ask for (`game/flats.js`'s `flatSize`). */
+    scaleModifier: 1,
   };
   for (let i = 1; i < tokens.length; i++) {
     const [k, v] = tokens[i].split(':');
     const value = Number.parseInt(v, 10);
     if (!Number.isFinite(value)) continue;
     const type = k.toUpperCase();
-    if (type === 'F') record.yOffset = value;                 // flat-property modifier
-    else if (type === 'S') record.lightIntensity = value;      // light intensity
+    if (type === 'F') {
+      record.collider = (value & (1 << 0)) !== 0;
+      record.puddle = (value & (1 << 1)) !== 0;
+      record.largeScale = (value & (1 << 2)) !== 0;
+      record.dark = (value & (1 << 3)) !== 0;
+      record.transparent = (value & (1 << 4)) !== 0;
+      record.ceiling = (value & (1 << 5)) !== 0;
+      record.mediumScale = (value & (1 << 6)) !== 0;
+      record.scaleModifier = record.largeScale ? 3 : record.mediumScale ? 1.5 : 1;
+    } else if (type === 'S') record.lightIntensity = value;    // light intensity
     else if (type === 'Y') record.yOffset = value;             // Y offset
   }
   inf.flats.push(record);

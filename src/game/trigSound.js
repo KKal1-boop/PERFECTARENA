@@ -3,10 +3,10 @@
 //
 // The fanfare (`game/fanfare.js`) proved the whole path — the Creative `.VOC`
 // decode and the WebAudio playback at the file's own rate. This module is the same
-// path opened for every file a `.INF` names: fetched through the same `/arena-local`
-// dev door every install file loads by, decoded once per *filename*, and played as
-// a one-shot so a corridor of trigger cells rings one tell after another rather
-// than stacking.
+// path opened for every file a `.INF` names: read through whichever door the page
+// uses for Arena's data (a player's picked folder, or the `/arena-local` dev door),
+// decoded once per *filename*, and played so a corridor of trigger cells rings one
+// tell after another rather than stacking.
 //
 // The browser's autoplay law is honored the way the fanfare honors it: a context
 // the page has not touched yet waits for the first gesture, and the state seam
@@ -14,7 +14,7 @@
 
 import { decodeVoc } from '../arena/vocFile.js';
 
-/** Decoded WebAudio buffers by upper-case filename, built once per page. */
+/** Decoded WebAudio buffers by source and upper-case filename, built once per page. */
 const decoded = new Map();
 /** `AudioContext`, made on the first sound that needs one. */
 let ctx = null;
@@ -32,23 +32,61 @@ function ensureContext() {
 }
 
 /**
- * One SoundFile from `/arena-local`, decoded at its own rate. The context is
- * made for the decode (buffers belong to a context) and reused, so every later
- * trigger hands its buffer to the same graph.
+ * The file's bytes, from whichever door the page is reading Arena through.
+ *
+ * A player's own picked folder is the shipping path and carries the `SPEECH/`
+ * clips like any other file; `arenaPath` is the dev/test door. Neither bundles
+ * the bytes.
+ *
+ * @param {string} key upper-case 8.3 name
+ * @param {{source?: object, arenaPath?: string}} opts
+ * @returns {Promise<Uint8Array|null>}
+ */
+async function readFileBytes(key, opts) {
+  // The speech clips live in `SPEECH/`, and a picked folder's index keeps only
+  // base names (`webkitRelativePath` is flattened by `fileListSource`), so the
+  // folder door is asked for the bare name as well as the path. The dev door
+  // serves the path; the bare name is tried second for an install that keeps
+  // the clips loose at the root.
+  const names = [key, key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : null].filter(Boolean);
+  const source = opts.source;
+  if (source && typeof source.getBytes === 'function') {
+    for (const name of names) {
+      const bytes = await source.getBytes(name);
+      if (bytes?.length) return bytes;
+    }
+    return null;
+  }
+  const arenaPath = opts.arenaPath || 'C:/arenaproject/arena/ARENA';
+  for (const name of names) {
+    const res = await fetch(`/arena-local/${name}?arena=${encodeURIComponent(arenaPath)}`);
+    if (res.ok) return new Uint8Array(await res.arrayBuffer());
+  }
+  return null;
+}
+
+/**
+ * One SoundFile, decoded at its own rate. The context is made for the decode
+ * (buffers belong to a context) and reused, so every later trigger hands its
+ * buffer to the same graph.
  *
  * @param {string} filename upper-case 8.3, e.g. `SPLASH.VOC`
- * @param {string} arenaPath the dev door's `?arena=` path
+ * @param {{source?: object, arenaPath?: string}} [opts] `source` (a picked
+ *   folder) first, else the dev door's `?arena=` path
  * @returns {Promise<AudioBuffer|null>} `null` on any honest failure: no file,
  *   no decode, no context, no page
  */
-async function decodeOne(filename, arenaPath) {
+async function decodeOne(filename, opts = {}) {
   const key = filename.toUpperCase();
-  if (decoded.has(key)) return decoded.get(key);
+  // A picked folder and the dev door can be different installs; a clip decoded
+  // from one must never answer a request for the other.
+  const cacheKey = `${opts.source?.label ?? opts.arenaPath ?? ''}|${key}`;
+  if (decoded.has(cacheKey)) return decoded.get(cacheKey);
   let buffer = null;
   try {
-    const res = await fetch(`/arena-local/${key}?arena=${encodeURIComponent(arenaPath)}`);
-    if (res.ok) {
-      const voc = decodeVoc(new Uint8Array(await res.arrayBuffer()));
+    const bytes = await readFileBytes(key, opts);
+    if (bytes) {
+      const voc = decodeVoc(bytes);
       const audio = ensureContext();
       if (voc && audio) {
         // The decoder keeps a whole walk of blocks as segments at one rate; the
@@ -67,7 +105,7 @@ async function decodeOne(filename, arenaPath) {
   } catch (err) {
     state = { ...state, error: String(err?.message ?? err), file: key };
   }
-  decoded.set(key, buffer);
+  decoded.set(cacheKey, buffer);
   return buffer;
 }
 
@@ -76,13 +114,12 @@ async function decodeOne(filename, arenaPath) {
  * *once*, so this is enough: no loop, no stopping, one shot at a modest volume.
  *
  * @param {string} filename e.g. `SPLASH.VOC` from the level's `@SOUND` list
- * @param {{arenaPath?: string, volume?: number}} [opts]
+ * @param {{source?: object, arenaPath?: string, volume?: number}} [opts]
  * @returns {Promise<boolean>} whether the shot actually started
  */
 export async function playVocFile(filename, opts = {}) {
   if (!filename) return false;
-  const arenaPath = opts.arenaPath || 'C:/arenaproject/arena/ARENA';
-  const buffer = await decodeOne(filename, arenaPath);
+  const buffer = await decodeOne(filename, opts);
   if (!buffer?.parts?.length) return false;
   const audio = ensureContext();
   if (!audio) return false;
@@ -115,6 +152,64 @@ export async function playVocFile(filename, opts = {}) {
  *
  * @param {() => void} [on] called after a context that was suspended resumes
  */
+/** The sources of the narration on the air, so a skip can cut the voice with the picture. */
+let sequence = [];
+
+/** Stop whatever `playVocList` started. Safe when nothing is playing. */
+export function stopVocPlayback() {
+  for (const source of sequence) {
+    try { source.stop(); } catch { /* it had already ended */ }
+  }
+  sequence = [];
+}
+
+/**
+ * Speak a run of `.VOC` clips back to back — Arena's narration over a scene.
+ *
+ * A story beat is a sequence of clips (`SPEECH/<key>_00A.VOC`, `_00B`, `_01A`, …), not one
+ * file, so they are decoded first (the cache makes a replay free), then scheduled at their own
+ * lengths from a single start time. That is the same clock `STORY_SPEECH` measures, so the
+ * movie's narration length and the voice stay together.
+ *
+ * @param {string[]} files e.g. `['SPEECH/1500_00A.VOC', …]`
+ * @param {{arenaPath?: string, volume?: number}} [opts]
+ * @returns {Promise<boolean>} whether any clip was scheduled (false on no context, no file)
+ */
+export async function playVocList(files, opts = {}) {
+  if (!Array.isArray(files) || files.length === 0) return false;
+  stopVocPlayback();
+  const audio = ensureContext();
+  if (!audio) return false;
+  const buffers = await Promise.all(files.map((file) => decodeOne(file, opts)));
+  if (!buffers.some((buffer) => buffer?.parts?.length)) return false;
+  const volume = Math.max(0, Math.min(1, opts.volume ?? 0.6));
+  const start = audio.currentTime + 0.05;
+  let at = start;
+  const sources = [];
+  for (const buffer of buffers) {
+    if (!buffer?.parts?.length) continue;
+    for (const part of buffer.parts) {
+      const source = audio.createBufferSource();
+      source.buffer = part;
+      const gain = audio.createGain();
+      gain.gain.value = volume;
+      source.connect(gain).connect(audio.destination);
+      source.start(at);
+      at += part.duration;
+      sources.push(source);
+    }
+  }
+  sequence = sources;
+  state = {
+    ...state,
+    file: String(files[0]).toUpperCase(),
+    clips: files.length,
+    seconds: at - start,
+    blocked: audio.state === 'suspended',
+  };
+  return sources.length > 0;
+}
+
 export function awaitFirstGesture(on) {
   if (!ctx || ctx.state !== 'suspended') return;
   const wake = () => {

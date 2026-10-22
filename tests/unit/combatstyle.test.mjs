@@ -27,7 +27,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   DODGE, PARRY, attackPhase, attackProfile, hitSpark, resolveDefence, spendStamina,
-  staminaMax, stepStamina, telegraphReading,
+  staminaMax, stepStamina, syncStamina, telegraphReading,
 } from '../../src/game/combatStyle.js';
 
 /** A monster as the bestiary rolls one, with nothing but the fields this module reads. */
@@ -47,6 +47,28 @@ test('the stamina bar follows Endurance and level, and survives nonsense input',
   assert.equal(staminaMax(), 30);
   assert.ok(staminaMax({ endurance: NaN, level: NaN }) >= 10);
   assert.ok(staminaMax({ endurance: -500, level: -500 }) >= 10, 'never a negative bar');
+});
+
+test('the pool is fed by the character, not left on the defaults', () => {
+  // The scene's pool begins as `{endurance: 50, level: 1, stamina: undefined}`. Left alone it
+  // is a level-1 hero's bar forever; `syncStamina` is what makes the third well the player's.
+  const pool = { endurance: 50, level: 1, stamina: undefined, max: undefined, regenIn: 0 };
+  syncStamina(pool, { endurance: 80, level: 12 });
+  assert.equal(pool.endurance, 80);
+  assert.equal(pool.level, 12);
+  assert.equal(pool.max, staminaMax({ endurance: 80, level: 12 }));
+  assert.equal(pool.stamina, pool.max, 'the first sync starts the bar full');
+  // A level-up keeps the share the player was on rather than refilling it.
+  pool.stamina = pool.max / 2;
+  syncStamina(pool, { endurance: 80, level: 13 });
+  assert.equal(pool.max, staminaMax({ endurance: 80, level: 13 }));
+  assert.equal(pool.stamina, pool.max / 2);
+  assert.ok(pool.max > staminaMax({ endurance: 50, level: 1 }));
+  // Nonsense in the sheet cannot empty or overflow the bar.
+  syncStamina(pool, { endurance: NaN, level: NaN });
+  assert.equal(pool.max, staminaMax({ endurance: 50, level: 1 }));
+  assert.ok(pool.stamina >= 0 && pool.stamina <= pool.max);
+  assert.equal(syncStamina(null, { endurance: 80, level: 12 }), null);
 });
 
 test('a spend is refused atomically at the bottom of the bar', () => {

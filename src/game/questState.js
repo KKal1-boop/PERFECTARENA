@@ -21,9 +21,12 @@
  * @property {boolean} mapKnown     whether the current piece's dungeon is known
  * @property {boolean} mithrilKey   the key that opens the Jewel of Fire's cell
  * @property {boolean} hasKeyItem   the Jewel of Fire, in the finale
+ * @property {boolean} tharnSlain   Jagar Tharn has fallen — the last blow of the quest
  * @property {boolean} ended        the confrontation is over
  * @property {string[]} log         the journal, newest last
  * @property {string[]} visited     titles of the stages entered
+ * @property {number[]} dreamsSeen  `TEMPLATE.DAT` keys of Ria's dreams already played
+ * @property {number[]} ambushSeen  keys of Tharn's visions already played
  */
 
 /**
@@ -36,16 +39,20 @@ export function createQuestState() {
     pieces: 0,
     mapKnown: false,
     mithrilKey: false,
+    skeletonKey: false,
     hasKeyItem: false,
+    tharnSlain: false,
     ended: false,
     log: [],
     visited: [],
+    dreamsSeen: [],
+    ambushSeen: [],
   };
 }
 
 /** The events the machine understands. */
 export const QUEST_EVENTS = Object.freeze([
-  'enter', 'escaped', 'foundClue', 'foundPiece', 'staffAssembled', 'mithrilKey', 'jewelOfFire', 'won',
+  'enter', 'escaped', 'foundClue', 'foundPiece', 'staffAssembled', 'mithrilKey', 'jewelOfFire', 'tharnSlain', 'won',
 ]);
 
 /**
@@ -124,15 +131,24 @@ export function applyQuestEvent(state, event, ctx = {}) {
     }
     case 'jewelOfFire': {
       if (state.pieces < 8) return refuse(state, 'the Jewel is useless without the whole Staff');
-      if (!state.mithrilKey) return refuse(state, 'the cell is magically locked — the mithril key opens it');
+      if (!state.mithrilKey && !state.skeletonKey) return refuse(state, 'the cell is magically locked — the mithril key opens it');
       if (state.hasKeyItem) return refuse(state, 'the Jewel of Fire is already held');
       next.hasKeyItem = true;
       next.log.push('The Jewel of Fire is in hand. The Emperor\'s prison can be opened.');
       break;
     }
+    case 'tharnSlain': {
+      if (stage?.kind !== 'finale') return refuse(state, 'Jagar Tharn is not here');
+      if (!state.hasKeyItem) return refuse(state, 'the Jewel of Fire has not been taken yet');
+      if (state.tharnSlain) return refuse(state, 'Jagar Tharn has already fallen');
+      next.tharnSlain = true;
+      next.log.push('Jagar Tharn falls. The Emperor\'s prison has no keeper left.');
+      break;
+    }
     case 'won': {
       if (state.pieces < 8) return refuse(state, 'the Staff is not assembled');
       if (!state.hasKeyItem) return refuse(state, 'the Jewel of Fire is needed to free the Emperor');
+      if (!state.tharnSlain) return refuse(state, 'Jagar Tharn still stands between you and the Emperor');
       if (state.ended) return refuse(state, 'the quest is already over');
       next.ended = true;
       next.step = Math.max(0, stages.length - 1);
@@ -163,8 +179,9 @@ export function currentObjective(state, chain) {
   if (state.step === 0) return `Escape ${stage.title}.`;
   if (stage.kind === 'finale') {
     if (state.ended) return 'The Arena is at peace.';
-    if (!state.mithrilKey) return `Descend to the bottom of ${stage.title} and find the mithril key.`;
+    if (!state.mithrilKey && !state.skeletonKey) return `Descend to the bottom of ${stage.title} and find the mithril key.`;
     if (!state.hasKeyItem) return 'Carry the mithril key to the Jewel of Fire, and take it.';
+    if (!state.tharnSlain) return 'Jagar Tharn stands in the Jewel\'s chamber. He must fall before the Emperor can be freed.';
     return 'Touch the Staff of Chaos to the Jewel of Fire, and free the Emperor.';
   }
   if (!state.mapKnown) return `Learn where piece ${stage.piece} lies.`;
@@ -183,10 +200,13 @@ export function questLog(state, chain) {
     pieces: state.pieces,
     mapKnown: state.mapKnown,
     hasJewel: state.hasKeyItem,
+    tharnSlain: Boolean(state.tharnSlain),
     hasMithrilKey: state.mithrilKey,
     ended: state.ended,
     entries: state.log,
     visited: state.visited,
+    dreamsSeen: [...(state.dreamsSeen ?? [])],
+    ambushSeen: [...(state.ambushSeen ?? [])],
   };
 }
 
@@ -213,5 +233,9 @@ export function deserializeQuestState(saved) {
     log: Array.isArray(source.log) ? source.log.map(String) : fresh.log,
     visited: Array.isArray(source.visited) ? source.visited.map(String) : fresh.visited,
     mithrilKey: Boolean(source.mithrilKey),
+    skeletonKey: Boolean(source.skeletonKey),
+    tharnSlain: Boolean(source.tharnSlain),
+    dreamsSeen: Array.isArray(source.dreamsSeen) ? source.dreamsSeen.map(Number).filter(Number.isFinite) : fresh.dreamsSeen,
+    ambushSeen: Array.isArray(source.ambushSeen) ? source.ambushSeen.map(Number).filter(Number.isFinite) : fresh.ambushSeen,
   };
 }

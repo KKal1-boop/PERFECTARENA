@@ -360,6 +360,10 @@ export function createCharacter(opts) {
     maxSpellPoints: klass.spellPoints > 0 ? Math.round(klass.spellPoints * attributes[1]) : null,
     critical: klass.critical,
     gold: 0,
+    // A save-file-safe copy of the look chosen in character creation (`game/playerAppearance.js`).
+    // A character made before the visual creator existed has no field, and the scene falls back
+    // to their class's body; nothing here invents a look for them.
+    appearance: opts.appearance && typeof opts.appearance === 'object' ? { ...opts.appearance } : null,
     created: opts.creation ? { ...opts.creation } : null,
   };
   return character;

@@ -63,7 +63,10 @@ export const MONSTERS = Object.freeze([
   { id: 'medusa', name: 'Medusa', sprite: 'MEDUSA', hp: [250, 400], damage: [10, 50], xpRate: 75, xpBase: 25000, level: 22 },
   { id: 'vampire', name: 'Vampire', sprite: 'VAMPIRE', hp: [500, 500], damage: [10, 50], xpRate: 75, xpBase: 30000, level: 25 },
   { id: 'lich', name: 'Lich', sprite: 'LICH', hp: [750, 750], damage: [10, 75], xpRate: 100, xpBase: 50000, level: 30 },
-  { id: 'jagartharn', name: 'Jagar Tharn', sprite: 'THARN0', hp: [500, 500], damage: [0, 0], xpRate: 0, xpBase: 75000, level: 40 },
+  // UESP prints **"Spell Damage"** where the melee column would be: Tharn fights with his
+  // own six spells, and his bolt takes its wound from this range. The melee immunity is
+  // `game/bestiary.js`'s (`meleeImmune`), so the number is never a sword's.
+  { id: 'jagartharn', name: 'Jagar Tharn', sprite: 'THARN0', hp: [500, 500], damage: [10, 40], xpRate: 0, xpBase: 75000, level: 40 },
 ]);
 
 /** A monster by id or by the name UESP prints. @param {string} key */

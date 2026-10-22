@@ -235,6 +235,10 @@ export function finish(creation, random) {
     classId: creation.classId,
     attributes: creation.attributes,
     random,
+    // **The chosen look is the character's** (the visual creator's answer): a sprite id and
+    // the skin/hair that repaint it, saved with everything else so the third-person figure
+    // is the person the player built rather than their class's default armour.
+    appearance: creation.appearance ?? null,
     creation: {
       seed: creation.seed,
       questions: creation.asked.length,

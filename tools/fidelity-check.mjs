@@ -1,0 +1,37 @@
+import { launch } from '../tests/cdp.mjs';
+import assert from 'node:assert/strict';
+const port=Number(process.env.FIDELITY_PORT||64145);
+const page = await launch({port:9447});
+try {
+  await page.goto(`http://127.0.0.1:${port}/?interior=START.MIF&arena=C%3A%2FArenaProject%2Farena%2FARENA`);
+  await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2', {timeoutMs:60000});
+  await page.pressKey('KeyP',true);await page.pressKey('KeyP',false);
+  await page.waitFor('!!window.__debug.portrait() || !!window.__debug.portraitError()');
+  const state=await page.evalJs('({portrait:window.__debug.portrait(),error:window.__debug.portraitError(),html:document.getElementById("inventory").textContent})');
+  console.log(JSON.stringify(state));assert.ok(state.portrait);assert.ok(!state.error);
+  const layout=await page.evalJs('(()=>{const c=document.querySelector("#character-portrait"),r=c.getBoundingClientRect(),p=document.getElementById("inventory").getBoundingClientRect();return {width:r.width,height:r.height,panelWidth:p.width,left:p.left,right:p.right,viewport:innerWidth}})()');
+  assert.ok(layout.height>=390,JSON.stringify(layout));
+  assert.ok(layout.width>=290,JSON.stringify(layout));
+  assert.ok(layout.panelWidth>800,JSON.stringify(layout));
+  assert.ok(layout.left>=0 && layout.right<=layout.viewport,JSON.stringify(layout));
+  const point=await page.evalJs('(()=>{const c=document.querySelector("#character-portrait"),r=c.getBoundingClientRect(),h=window.__debug.portrait().head;return {x:r.left+(h.x+h.width/2)*r.width/c.width,y:r.top+(h.y+h.height/2)*r.height/c.height}})()');
+  await page.clickAt(point.x,point.y);
+  await page.waitFor(`window.__debug.portrait().face === ${(state.portrait.face+1)%10}`);
+  await page.screenshot('tests/shots/original-character-portrait.png');
+  await page.pressKey('KeyP',true);await page.pressKey('KeyP',false);
+  assert.equal(await page.evalJs('document.getElementById("inventory").classList.contains("on")'),false);
+  console.log('PASS: P opens, original assets compose, face click cycles, P closes');
+  assert.equal(await page.evalJs('document.getElementById("inventory").classList.contains("portrait-mode")'),false);
+  await page.pressKey('KeyP',true);await page.pressKey('KeyP',false);
+  await page.waitFor('!!document.querySelector("#character-portrait")');
+  await page.clickSelector('[data-panel="bag"]');
+  assert.equal(await page.evalJs('document.getElementById("inventory").classList.contains("portrait-mode")'),false);
+  await page.pressKey('KeyP',true);await page.pressKey('KeyP',false);
+  await page.waitFor('!!document.querySelector("#character-portrait")');
+  await page.send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:false});
+  const narrow=await page.evalJs('(()=>{const p=document.getElementById("inventory").getBoundingClientRect(),c=document.getElementById("character-portrait").getBoundingClientRect();return {left:p.left,right:p.right,width:c.width,height:c.height,scroll:document.documentElement.scrollWidth}})()');
+  assert.ok(narrow.left>=0 && narrow.right<=390 && narrow.scroll<=390,JSON.stringify(narrow));
+  assert.ok(Math.abs(narrow.width/narrow.height-152/200)<0.01,JSON.stringify(narrow));
+  console.log('PASS equipment navigation restores pack layout; enlarged portrait fits narrow viewport');
+  const errors=page.consoleMessages().filter(m=>m.type==='error');console.log('errors',errors);assert.deepEqual(errors,[]);
+}finally{page.closeBrowser();}

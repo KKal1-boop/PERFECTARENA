@@ -20,7 +20,8 @@
 // the same dungeon and the same creatures are in the same places.
 
 import { ArenaRandom } from './arenaRandom.js';
-import { rollMonster } from './combat.js';
+import { attackInterval, rollMonster } from './combat.js';
+import { humanLevel, humanLoot, humanShare, rollHuman } from './humans.js';
 import { MONSTERS, monsterById, rosterFor } from './monsters.js';
 
 /**
@@ -75,6 +76,9 @@ export function rosterWindow(roster, opts = {}) {
  * @param {number} [opts.depth]  the level's index inside the place, 0 for the level the
  *   player arrives on (it is what widens `rosterWindow` as the player descends)
  * @param {number} [opts.minCells]  the closest a monster may stand to the arrival
+ * @param {{row: number, col: number}} [opts.near]  keep the encounter around this cell — a
+ *   country job's own camp, rather than anywhere on the page
+ * @param {number} [opts.radius]  how far from `near` a monster may stand (cells); 0 = anywhere
  * @param {string[]} [opts.monsters]  **the level's own roster** — the monster ids its
  *   `.INF` names in its `@FLATS` `*ITEM` lines (`dungeonItems.monsterRosterFromInf`). A
  *   dungeon is *about* its creatures: `halls1.inf` names the rat through the lich, a
@@ -117,7 +121,12 @@ export function spawnEncounter(opts) {
         const nr = r + dr, nc = c + dc, index = nr * level.width + nc;
         if (nr < 0 || nc < 0 || nr >= level.depth || nc >= level.width || reachable.has(index)) continue;
         const cell = level.cells[index];
-        if (!cell || cell.floor?.chasm || (cell.solid && cell.kind !== 'door')) continue;
+        // **A tube is a way through** (the owner, 2026-10-19): a chasm cell under a wall is
+        // crawl space a player really uses, so the reachability flood crosses it instead of
+        // treating every pool and underpass as a sealed room. A plain wall is still a wall;
+        // a solid cell with a chasm floor is the tube.
+        const chasm = Boolean(cell?.floor?.chasm);
+        if (!cell || (!chasm && cell.solid && cell.kind !== 'door')) continue;
         reachable.add(index); queue.push(index);
       }
     }
@@ -148,23 +157,77 @@ export function spawnEncounter(opts) {
   if (!standable.length) return [];
 
   const far = standable.filter((c) => c.distance >= minCells);
-  const pool = far.length ? far : standable;
+  let pool = far.length ? far : standable;
+  // **A country camp is a place, not a page.** A wild job's quarry stands around the target
+  // cell the quest marked, and the player can find them by walking to it; without this the
+  // three wolves a hunt names could be anywhere in a 128×128 window.
+  const near = opts.near && Number.isFinite(Number(opts.near.row)) && Number.isFinite(Number(opts.near.col))
+    ? { row: Number(opts.near.row), col: Number(opts.near.col) } : null;
+  const radius = Math.max(0, Number(opts.radius) || 0);
+  if (near && radius > 0) {
+    const around = pool.filter((c) => Math.hypot(c.row - near.row, c.col - near.col) <= radius);
+    if (around.length) pool = around;
+  }
 
   const wanted = Math.max(0, Math.min(opts.count ?? 3, pool.length));
   const spawned = [];
-  // Draw without replacement, so two monsters never stand in the same cell.
+  // **Human enemies** (UESP's second bestiary section, D-67). They are drawn from the same
+  // cells as a creature, but not from the cells' own roster: UESP says a human may be *any*
+  // class and race, so a human's kind is rolled rather than looked up. `opts.humans` carries
+  // the player's level (the page's own level rule) and whether this is a quest dungeon; a
+  // caller that passes nothing gets the port's bestiary with no humans in it, exactly as
+  // before.
+  const humans = opts.humans ?? null;
+  const share = humans ? humanShare({ quest: Boolean(humans.questDungeon) }) : 0;
+  let pendingHuman = false;
+  // Draw without replacement, so two monsters never stand in the same cell — **and with room
+  // between them**. The owner, 2026-10-19: *"they need to be well spread around dungeons"*. The
+  // first version was uniform without replacement, which is not the same thing: a level whose
+  // standable cells are a few corridors drew its whole encounter in one room often enough to read
+  // as a pile, and the scene's `separateBodies` then only pushed them a shoulder apart.
+  //
+  // The rule is the draw's own: a cell is only eligible while it is more than `spread` cells from
+  // every cell already chosen. When the room runs out of room the spread is relaxed rather than
+  // the count cut, because an encounter of four is the level's own promise (`spawnEncounter`'s
+  // `count`) and standing close is worse than standing nowhere — but the second and third try keep
+  // as much distance as the level can give.
   const cells = pool.slice();
+  const spread = Math.max(0, Math.trunc(opts.spread ?? 3));
+  const chosen = [];
+  const farEnough = (cell, gap) => chosen.every((other) => Math.max(
+    Math.abs(other.row - cell.row), Math.abs(other.col - cell.col)) > gap);
   for (let i = 0; i < wanted; i++) {
-    const pick = random.nextBelow(cells.length);
-    const [place] = cells.splice(pick, 1);
+    let eligible = spread > 0 ? cells.filter((cell) => farEnough(cell, spread)) : cells;
+    if (!eligible.length && spread > 0) eligible = cells.filter((cell) => farEnough(cell, 1));
+    if (!eligible.length) eligible = cells;
+    const pick = random.nextBelow(eligible.length);
+    const place = eligible[pick];
+    cells.splice(cells.indexOf(place), 1);
+    chosen.push(place);
     // The kind is drawn from the **reachable window** of the level's own list (`rosterWindow`),
     // uniformly inside it: a level whose window holds six kinds fields those six, and depth and
     // danger are what widen the window. The *statistics* still scale with the danger rating
     // below, which is the original's own division of labour between a level's bestiary and its
     // difficulty.
-    const kind = roster[random.nextBelow(roster.length)];
-    const monster = rollMonster(kind, random, { level: Math.max(1, danger + random.nextBelow(3) - 1) });
+    // A group is drawn together ("humans met in groups"): when one roll says human and the
+    // group roll says so too, the next cell is a human as well.
+    const isHuman = pendingHuman || (share > 0 && random.nextBelow(100) < share * 100);
+    pendingHuman = false;
+    let monster;
+    let loot = null;
+    if (isHuman) {
+      const group = random.nextBelow(100) < 45;
+      const level = humanLevel({ playerLevel: humans.playerLevel ?? danger, questDungeon: Boolean(humans.questDungeon), group, random });
+      monster = rollHuman({ level, random, group, questDungeon: Boolean(humans.questDungeon) });
+      monster.nextAttack = attackInterval(monster) * (0.5 + random.nextBelow(100) / 100);
+      loot = humanLoot(monster, random);
+      if (group) pendingHuman = true;
+    } else {
+      const kind = roster[random.nextBelow(roster.length)];
+      monster = rollMonster(kind, random, { level: Math.max(1, danger + random.nextBelow(3) - 1) });
+    }
     spawned.push({
+      ...(loot ? { loot, human: true } : {}),
       monster,
       place: {
         row: place.row,
@@ -294,29 +357,130 @@ export function monsterCountFor(opts = {}) {
 export const HUNT_SECONDS = 60;
 
 /**
+ * How many of Tharn's minions arrive with his vision.
+ *
+ * The install's own text says they come — *"I will use the same dream bridge that she uses,
+ * sending my minions across time and space. Already they arrive"* (`TEMPLATE.DAT` 1392), *"my
+ * minions arrive"* (1396), *"my legions await"* (1399) — and says nothing about how many:
+ * `A.EXE`'s encounter table is not in this checkout (D11). Three is this project's number, and
+ * it is stamped as such: enough that the vision has a fight behind it, few enough that a
+ * level-2 character can answer it with the level's own low-tier creatures.
+ */
+export const AMBUSH_MINIONS = 3;
+
+/**
+ * How much faster than its own walk a roused creature comes, as a multiplier.
+ *
+ * **This project's rule** (the original's own roll is `A.EXE`'s, D11), and it exists because of the
+ * owner's report on 2026-10-17: *"it just tells you theres people around but they never get close
+ * and you dont rest"*. A roused creature used to keep its ordinary 2.6 m/s walk, so a wolf 90 m
+ * out in the country needed **35 seconds** to arrive and one at 200 m needed 77 — longer than the
+ * hunt itself, and far longer than a player waits before pressing `R` again. Measured on a live
+ * country page: four creatures roused, the nearest closing from 48 m to 2 m over 32 seconds and
+ * then standing still, the camp refused meanwhile. A hunt is a run.
+ */
+export const HUNT_RUN = 1.6;
+
+/**
+ * How long a roused creature may make no headway before the hunt is dropped, in seconds.
+ *
+ * A hunter whose way is barred (a wall between it and the sleeper, a lake, the courtyard of the
+ * ruin it spawned in) used to press at the obstruction until the deadline, staying "on its way"
+ * for a full minute and keeping a camp refused in the meantime — the *"they never get close"* half
+ * of the same report. A body that has not closed half a metre in four seconds has lost the trail.
+ */
+export const HUNT_STALL_SECONDS = 4;
+
+/** The headway that counts as progress, in world units (half a metre). */
+export const HUNT_PROGRESS = 0.5;
+
+/**
  * Rouse the level: whoever is alive in it starts hunting the sleeper.
  *
  * The mark is a deadline on the creature itself (`spawn.huntingUntil`), not a flag on the
  * level, so a creature killed on the way stops being a threat with the rest of it, and the
  * band it hunts in (`isHunting`) needs nothing else to know about the sleep.
  *
+ * **Only a creature that can actually reach the sleeper in the hold is roused**, and the answer
+ * says how far off the nearest one is. The owner's report needs both halves to be true at once:
+ * a count that names creatures which cannot arrive is a promise the game then breaks (*"it just
+ * tells you theres people around but they never get close"*), and a line with no distance gives a
+ * player nothing to wait for. A creature further than `reach` — or one whose hunt was already
+ * given up (`huntStalled`) — is not counted and not marked.
+ *
  * @param {object[]} spawns the scene's live spawns
  * @param {number} seconds the scene's own clock (`dbg.seconds`)
- * @param {{hold?: number}} [opts]
- * @returns {{roused: number}} how many creatures are now coming
+ * @param {{hold?: number, reach?: number, distanceOf?: (spawn: object) => number}} [opts]
+ * @returns {{roused: number, nearest: number|null, hold: number}} how many are coming, and how far
+ *   off the closest of them is (world units), or `null` when none is
  */
-export function stirTheLevel(spawns, seconds, { hold = HUNT_SECONDS } = {}) {
+export function stirTheLevel(spawns, seconds, { hold = HUNT_SECONDS, reach = Infinity, distanceOf = null } = {}) {
   const now = Number(seconds) || 0;
   const until = now + Math.max(0, Number(hold) || 0);
   let roused = 0;
+  let nearest = null;
   for (const spawn of spawns ?? []) {
     if (!spawn || spawn.down) continue;
     if ((spawn.monster?.health ?? 1) <= 0) continue;   // a corpse does not hear anything
+    // **A reach the body cannot cross is not a hunt.** The distance is the scene's own reading
+    // (`distanceOf`), or the spawn's `distance` when the scene has already stepped it.
+    const distance = Number(typeof distanceOf === 'function' ? distanceOf(spawn) : spawn.distance);
+    if (Number.isFinite(distance) && distance > reach) continue;
     // A deadline is never *shortened*: a creature already hunting keeps the later one.
     spawn.huntingUntil = Math.max(Number(spawn.huntingUntil) || 0, until);
+    spawn.huntStall = null;                            // a fresh hunt starts its own progress watch
     roused++;
+    if (Number.isFinite(distance) && (nearest === null || distance < nearest)) nearest = distance;
   }
-  return { roused };
+  return { roused, nearest, hold };
+}
+
+/**
+ * Has this hunter stopped making headway? Called once a frame by the scene's step.
+ *
+ * The watch is kept on the creature (`huntStall`): `{ at, from }`, the last time it was seen to
+ * close `HUNT_PROGRESS`, and the distance it was at then. A body that has not closed half a metre
+ * in `HUNT_STALL_SECONDS` has lost the trail; the scene drops its hunt and it stops being a
+ * promise. Answers **true** on the frame the hunt is dropped, so the caller can report it once.
+ *
+ * @param {object} spawn
+ * @param {number} distance world units, this frame
+ * @param {number} now the scene's own seconds
+ * @param {{stall?: number, progress?: number}} [opts]
+ * @returns {boolean}
+ */
+export function huntStalled(spawn, distance, now, { stall = HUNT_STALL_SECONDS, progress = HUNT_PROGRESS } = {}) {
+  if (!spawn || !Number.isFinite(distance)) return false;
+  const watch = spawn.huntStall;
+  if (!watch || distance <= watch.from - progress) {
+    spawn.huntStall = { at: Number(now) || 0, from: distance };
+    return false;
+  }
+  if ((Number(now) || 0) - watch.at < stall) return false;
+  spawn.huntStall = null;
+  spawn.huntingUntil = 0;
+  return true;
+}
+
+/**
+ * Is this creature still hearing a sleeper — a hunt a camp gave it that has not run out?
+ *
+ * **This is the half of `isHunting` that is about a *hunt*, as opposed to a creature's own
+ * band**, and the two are asked separately because they license different things: a creature
+ * inside its band may strike at what it sees (`interior.js`'s `spawn.sees`), while a roused
+ * creature *walks* toward the sleeper from anywhere in the level, seeing them or not. Without
+ * that distinction the level answered a camp with "4 of them are coming" and then never
+ * moved — measured on a country page 2026-10-17: four creatures roused, and their distances
+ * (41 m, 90 m, 129 m, 202 m) **byte-identical four seconds later**. The movement gate was
+ * `spawn.awake`, which is "inside my band and I can see you", so a creature beyond the band
+ * was marked as hunting and then skipped by the very step that would have brought it.
+ *
+ * @param {{huntingUntil?: number}|null|undefined} spawn
+ * @param {number} now the scene's own seconds
+ * @returns {boolean}
+ */
+export function isRoused(spawn, now) {
+  return (Number(spawn?.huntingUntil) || 0) > (Number(now) || 0);
 }
 
 /**
@@ -335,7 +499,7 @@ export function stirTheLevel(spawns, seconds, { hold = HUNT_SECONDS } = {}) {
  */
 export function isHunting(spawn, distance, now, { aggro = Infinity } = {}) {
   if (distance <= aggro) return true;
-  return (Number(spawn?.huntingUntil) || 0) > (Number(now) || 0);
+  return isRoused(spawn, now);
 }
 
 /** How many species this install has, for the tests and the HUD. */

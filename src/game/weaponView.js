@@ -11,10 +11,9 @@
 // indices out of Arena's own `A.EXE` data):
 //
 //   * **Eight weapon sheets.** Staff, the whole blade family (dagger through dai-katana),
-//     mace, flail, war hammer, war/battle axe, bows, fists. Six of the eight ship in this
-//     install: `FLAIL.CIF` and `BOW.CIF` are not in `GLOBAL.BSA`, so a flail or a bow has no
-//     first-person art here and the rig says so rather than drawing the wrong weapon
-//     (`WEAPON_SHEETS[family].file` is the name; `hasArt` is whether the install has it).
+//     mace, flail, war hammer, war/battle axe, bows, fists. All eight ship here.
+//     The executable names STAR.CIF for flails and ARROWHLF.CFA for bows;
+//     BOW.CIF and FLAIL.CIF were incorrect guesses, not missing assets.
 //   * **The states.** Sheathed (nothing drawn), unsheathing, sheathing, idle, and one per
 //     swing direction. The five-frame swings are `FORWARD` 25–29, `DOWN` 0–4, `RIGHT` 15–19,
 //     `LEFT` 10–14, `DOWN_RIGHT` 20–24, `DOWN_LEFT` 5–9; the fists sheet has the same shape at
@@ -80,7 +79,7 @@ export const FISTS_STATES = Object.freeze({
 /**
  * The bow sheet's states, as `ArenaWeaponUtils::BowAnimationStateInfos`. `firing` is one
  * frame held seven times as long, which is the original's own `timeScale` — kept here so the
- * table is complete, even though this install has no `BOW.CIF` to draw.
+ * table indexes the two frames of the original ARROWHLF.CFA.
  * @type {Readonly<Record<string, readonly number[]>>}
  */
 export const BOW_STATES = Object.freeze({
@@ -93,6 +92,33 @@ export const BOW_STATES = Object.freeze({
 
 /** How much longer than one frame a bow's firing frame is held (`1.0 / 7.0` in the original). */
 export const BOW_FIRING_SCALE = 7;
+
+/**
+ * Legacy substitute animation, retained for compatibility only; no weapon uses it.
+ * The states of **`ARROWS.CIF`**, previously mistaken for first-person weapon art.
+ *
+ * The owner, 2026-10-18: *"bow has no animation in first person"* — and the reason was the
+ * archive: `BOW.CIF` is not in it (measured: six of Arena's eight sheets ship). What *is* in it
+ * is the missile art the original flies, and its nine frames are placed on Arena's own screen
+ * in a **3×3 grid** (measured off the file's own headers): the top row at y≈44–49, the middle
+ * at 64–70, the bottom at 96–106, and each row left ≈110–127, centre ≈153–159, right ≈196–213.
+ * Read by position, the centre column is an arrow **leaving**: bottom-centre `7` (156,106),
+ * middle `4` (153,70), top `1` (159,44). That is the shot's animation — nocked low, then away.
+ *
+ * So a bow's first-person sequence is `7 → 4 → 1` on the install's own arrow art, held for
+ * `BOW_FIRING_SCALE` frames as the original's own bow table says. It is a documented stand-in:
+ * the art is Arena's, the *sequence* is read off the art's placements, and `rig.substitute`
+ * still tells the player that `BOW.CIF` is not in this install.
+ *
+ * @type {Readonly<Record<string, readonly number[]>>}
+ */
+export const ARROW_STATES = Object.freeze({
+  sheathed: Object.freeze([]),
+  unsheathing: Object.freeze([7]),
+  sheathing: Object.freeze([7]),
+  idle: Object.freeze([7]),
+  firing: Object.freeze([7, 4, 1]),
+});
 
 /** The six swings, in the order the state table names them. */
 export const SWING_DIRECTIONS = Object.freeze(['forward', 'down', 'right', 'left', 'downRight', 'downLeft']);
@@ -107,10 +133,10 @@ export const WEAPON_SHEETS = Object.freeze({
   staff: { file: 'STAFF.CIF', states: MELEE_STATES },
   blade: { file: 'SWORD.CIF', states: MELEE_STATES },
   mace: { file: 'MACE.CIF', states: MELEE_STATES },
-  flail: { file: 'FLAIL.CIF', states: MELEE_STATES },
+  flail: { file: 'STAR.CIF', states: MELEE_STATES },
   warhammer: { file: 'HAMMER.CIF', states: MELEE_STATES },
   axe: { file: 'AXE.CIF', states: MELEE_STATES },
-  bow: { file: 'BOW.CIF', states: BOW_STATES },
+  bow: { file: 'ARROWHLF.CFA', states: BOW_STATES },
   fists: { file: 'HAND.CIF', states: FISTS_STATES },
 });
 
@@ -126,7 +152,7 @@ export const WEAPON_SHEETS = Object.freeze({
  * @type {Readonly<Record<string, string>>}
  */
 export const FAMILY_OF_WEAPON = Object.freeze({
-  fists: 'fists', 'chain-gauntlets': 'fists', 'plate-gauntlets': 'fists',
+  fists: 'fists', 'leather-gauntlets': 'fists', 'chain-gauntlets': 'fists', 'plate-gauntlets': 'fists',
   staff: 'staff',
   dagger: 'blade', tanto: 'blade', shortsword: 'blade', wakizashi: 'blade',
   broadsword: 'blade', saber: 'blade', longsword: 'blade', katana: 'blade',
@@ -143,10 +169,50 @@ export function familyOfWeapon(id) {
   return FAMILY_OF_WEAPON[String(id ?? '').toLowerCase()] ?? 'fists';
 }
 
-/** Every weapon base whose family some install lacks art for — the honest list, for the HUD. */
+/**
+ * No stand-ins are needed: ACD.EXE's contiguous filename table names STAR.CIF
+ * and ARROWHLF.CFA, both present in GLOBAL.BSA. Keep the exported empty registry
+ * for callers of sheetFor; never silently substitute another weapon.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const WEAPON_SHEET_STAND_INS = Object.freeze({
+  // No substitutions: ACD.EXE names STAR.CIF and ARROWHLF.CFA.
+});
+
+/**
+ * The state table each stand-in sheet is indexed with, where the family's own table names
+ * frames of a *different* file.
+ *
+ * Empty now that every family uses its original animation.
+ *
+ * @type {Readonly<Record<string, Readonly<Record<string, readonly number[]>>>>}
+ */
+export const WEAPON_STATE_STAND_INS = Object.freeze({
+
+});
+
+/**
+ * The sheet a family is really drawn from, and whether that sheet is the family's own.
+ *
+ * @param {string} family
+ * @returns {{file: string, own: string, substitute: boolean}}
+ */
+export function sheetFor(family) {
+  const entry = WEAPON_SHEETS[family] ?? WEAPON_SHEETS.fists;
+  const standIn = WEAPON_SHEET_STAND_INS[family] ?? null;
+  return {
+    file: standIn ?? entry.file,
+    own: entry.file,
+    substitute: Boolean(standIn),
+    states: WEAPON_STATE_STAND_INS[family] ?? entry.states,
+  };
+}
+
+/** Every weapon base whose family neither the install nor a stand-in can draw — the honest list, for the HUD. */
 export function weaponsWithoutArt(missingFiles) {
   const gone = new Set([...missingFiles].map((n) => String(n).toUpperCase()));
-  return WEAPONS.filter((w) => gone.has(WEAPON_SHEETS[familyOfWeapon(w.id)].file)).map((w) => w.id);
+  return WEAPONS.filter((w) => gone.has(sheetFor(familyOfWeapon(w.id)).file)).map((w) => w.id);
 }
 
 /**
@@ -207,17 +273,19 @@ export function createWeaponRig(weaponId = 'fists', opts = {}) {
   let direction = null;
   /** A swing asked for while the weapon was still being drawn, played when it is up. */
   let pending = null;
+  /** **The table the frames are read from** — the family's own, or a stand-in's (`sheetFor`). */
+  const statesNow = () => sheetFor(family).states;
   /** @type {readonly number[]} */
-  let frames = WEAPON_SHEETS[family].states.sheathed;
+  let frames = statesNow().sheathed ?? [];
 
   const enter = (next) => {
     state = next;
     seconds = 0;
-    frames = WEAPON_SHEETS[family].states[next] ?? [];
+    frames = statesNow()[next] ?? [];
   };
 
   const secondsIn = (name) => {
-    const list = WEAPON_SHEETS[family].states[name] ?? [];
+    const list = statesNow()[name] ?? [];
     const scale = name === 'firing' ? BOW_FIRING_SCALE : 1;
     return (list.length / fps) * scale;
   };
@@ -233,7 +301,11 @@ export function createWeaponRig(weaponId = 'fists', opts = {}) {
   const rig = {
     get weapon() { return weapon; },
     get family() { return family; },
-    get file() { return WEAPON_SHEETS[family].file; },
+    get file() { return sheetFor(family).file; },
+    /** The family's own sheet, before any stand-in — `FLAIL.CIF` for a flail. */
+    get ownFile() { return sheetFor(family).own; },
+    /** True when `file` is a documented stand-in rather than the family's own art. */
+    get substitute() { return sheetFor(family).substitute; },
     get state() { return state; },
     get frame() { return frameNow(); },
     get drawn() { return frameNow() !== null; },
@@ -254,7 +326,7 @@ export function createWeaponRig(weaponId = 'fists', opts = {}) {
       // A family whose table has no such direction plays the nearest state it *does* have:
       // a bow swings nothing, it fires (its own state), and the sheet's frames are what the
       // caller loads either way. `direction` still reports what the player asked for.
-      const states = WEAPON_SHEETS[family].states;
+      const states = statesNow();
       const play = states[wanted]?.length ? wanted
         : states.forward?.length ? 'forward'
           : states.firing?.length ? 'firing' : 'down';
@@ -285,7 +357,7 @@ export function createWeaponRig(weaponId = 'fists', opts = {}) {
           if (seconds >= secondsIn('unsheathing')) {
             const wanted = pending;
             pending = null;
-            if (wanted) { state = wanted; seconds = 0; frames = WEAPON_SHEETS[family].states[wanted] ?? []; } else enter('idle');
+            if (wanted) { state = wanted; seconds = 0; frames = statesNow()[wanted] ?? []; } else enter('idle');
           }
           break;
         case 'sheathing':
@@ -425,7 +497,7 @@ export function placeWeapon(art, screen) {
  * @returns {number[]}
  */
 export function sheetIndices(family) {
-  const states = WEAPON_SHEETS[family]?.states;
+  const states = WEAPON_SHEETS[family] ? sheetFor(family).states : null;
   if (!states) return [];
   const seen = new Set();
   for (const frames of Object.values(states)) for (const i of frames) seen.add(i);

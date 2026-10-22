@@ -51,8 +51,8 @@ import { SkyRenderer, buildFallbackSkyPanorama } from '../engine/render/skyRende
 // the camera, so a whole storm costs one draw call and no per-frame CPU. Arena has always
 // had the four weather states — they are in the `.INF` *filename* — and until now a rainy
 // city was drawn under a clear sky because nothing in the scene read the letter.
-import { PRECIP_MAX_PARTICLES, PrecipitationRenderer } from '../engine/render/precipitation.js';
-import { buildArenaSky, precipitationMode, skyClimateOf } from '../game/arenaSky.js';
+import { LAB_COUNTS, PrecipitationRenderer } from '../engine/render/precipitation.js';
+import { buildArenaSky, precipitationMode, skyClimateOf, volcanoAzimuthFrom } from '../game/arenaSky.js';
 // The sun over Tamriel: the twin's own day/night law (`game/daylight.js`, DFU's
 // `SunlightManager`/`PlayerAmbientLight` carried 1:1). A town's clock was already here
 // (`game/livingWorld.js`) and its light was not — the same noon poured over a street at
@@ -65,6 +65,16 @@ import { requestLook } from '../engine/player/pointerLock.js';
 import { LookFilter } from '../engine/player/lookFilter.js';
 import { PITCH_LIMIT } from '../engine/player/mwCamera.js';
 import { escapeHtml } from '../engine/ui/escape.js';
+// **The interface, in the install's own paintings** (`game/arenaGui.js`): `P1.IMG`'s status
+// bar, `S2.IMG`'s command strip, the parchment every page is written on. Published to CSS as
+// variables, so the stylesheet draws Arena's screens and never a hand-built imitation.
+import { loadArenaGui } from '../game/arenaGui.js';
+// **The hotbar** (`game/hotbar.js`): ten cells, the digits, and the command or spell each one
+// carries.
+import { assignSlot, clearSlot, hotbarRows, slotFromCode, slotOf } from '../game/hotbar.js';
+// **The phone in hand** (`engine/ui/touchControls.js`): a stick, a look surface and a column of
+// buttons that press the game's own keys. It attaches only where the device reports a finger.
+import { attachTouchControls } from '../engine/ui/touchControls.js';
 import { fieldOfView } from '../engine/ui/viewSettings.js';
 import { lookScale, lookInvert } from '../engine/ui/lookSettings.js';
 import { ArenaData } from '../arena/arenaData.js';
@@ -75,59 +85,99 @@ import { exeReport, loadExeImage } from '../arena/exeData.js';
 import { exeTables, exeTableReport, splitBestiary } from '../arena/exeTables.js';
 import { monsterArtAudit, monsterSlotAudit } from '../game/monsterArt.js';
 import { ARENA_TEXTURE_ARCHIVE, CELL_SIZE, buildLevelMesh } from '../game/mifMesh.js';
-import { decodeLevel, openSettlementGate } from '../game/mifLevel.js';
+import { palaceChambers } from '../game/palaceFinale.js';
+import { drawCharacterPortrait } from '../game/characterPortrait.js';
+import { makeSpell, customSpell } from '../game/spellmaking.js';
+import { ARTIFACTS, artifactById, artifactSpell, useOrgnumsCoffer, canUseArtifact } from '../game/artifacts.js';
+import { equipmentCondition, wearEquipment, repairQuote, orderRepair, collectRepairs, enchantEquipment } from '../game/equipmentServices.js';
+import { decodeLevel, fillStairPair, openSettlementGate, wayOutCell } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
 import { CITY_BLOCKS_PER_SIDE, cityInfName, cityInfNames, cityTemplateName } from '../game/tables/cityBlocks.js';
-import { withGroundFloors } from '../arena/infFile.js';
+import { withGroundFloors, withGroundTreeFlats } from '../arena/infFile.js';
 import { cityTypeOf } from '../arena/cityDataFile.js';
 import { cityTemplateVariant, wildernessSeed } from '../arena/cityDataSeeds.js';
 import { blockIdsFromListing, rmdName } from '../arena/rmdFile.js';
-import { collectFlats, flatBaseY, flatRecordNames, flatSize, isTreeArt, SPRITE_SCALE } from '../game/flats.js';
+import { COMPASS_POINTS, compassReading } from '../game/compass.js';
+import { collectFlats, flatBaseY, flatGroundY, flatRecordNames, flatSize, isFolkArt, isTreeArt, SPRITE_SCALE } from '../game/flats.js';
 import {
-  CITY_ORIGIN, CITY_RING, WILD_CHUNK, WILD_WINDOW, buildWildernessWindow, generateWildernessIndices,
-  isCityCell, wildernessBlockLists, wildernessInfName, wildernessWindowOrigin,
-  readWildRequest,
+  WILD_CHUNK, WILD_WINDOW, buildWildernessWindow, wildernessBlockLists, wildernessInfNames,
+  wildernessWindowOrigin, readWildRequest,
 } from '../game/wilderness.js';
+// **One Tamriel, one grid of cells** (block B26): the country outside a settlement is no longer that
+// settlement's own private wilderness but the world's, so a gate leads *somewhere* and the next
+// town is the walk the map has always drawn. See `game/tamrielGrid.js` for the scale, why the
+// ground is `TERRAIN.IMG`, and what is the install's there and what is this project's.
+import {
+  BLOCKS_PER_PIXEL, CELLS_PER_PIXEL, atSettlementGate, blockHash, cityCellOfWorld, countryAt, footprintOf,
+  insideGateCell, isSeaCell, isSeaPixel, landwardOutsideGate, outsideGateCell, settlementAt, settlementInWindow, settlementOfBlock,
+  windowClimate, worldCellOfCity, youAreHere, pixelOfCell, WORLD_GRID_VERSION, migrateWildCell,
+} from '../game/tamrielGrid.js';
 // **Where a dungeon's door is, out in the country** — the rule behind the owner's *"STILL
 // EXITING A DUNGEON JUST SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*: the country is the
 // nearest settlement's own wilderness, the door is a ruin block in it, and which ruin is a
 // property of the dungeon's own seed. See `game/dungeonSurface.js` for what is the install's
 // and what is this project's rule.
-import { nearestCountry, ruinBlockFor, ruinDoorStand } from '../game/dungeonSurface.js';
+import { dungeonDoorBlock, nearestCountry, ruinBlockNear, ruinDoorStand } from '../game/dungeonSurface.js';
+// **The still people** — Arena's `KING`/`QUEEN`/`MAN`/`GUARD` art and the court a palace holds
+// (`game/staticFolk.js`): the owner's *"you still havent introduced the KING and QUEENS SPRITES
+// to use in palaces"* (2026-10-17).
+import { STATIC_FOLK, courtOf, isPalaceMap, isStillPersonArt, stillRoleFor } from '../game/staticFolk.js';
 import { START_INTERIOR } from '../game/startFlow.js';
 import { loadWorldMap } from '../game/worldMap.js';
-import {    LAST_LOCATION_KEY, loadCharacter, loadQuestState, saveCharacter, saveQuestState,
+import {    LAST_LOCATION_KEY, clearCellDreamPending, cellDreamPending, loadCharacter, loadLastLocation, loadQuestState, saveCharacter,
+    saveLastLocation, saveQuestState,
     loadRadiantState, saveRadiantState, lootStillEmpty, markLootTaken, loadRegard, saveRegard,
     loadGuildState, saveGuildState,
     loadWorldState, saveWorldState,
   } from '../game/save.js';
 import {
   doorStateAt, noteKill, setDoorState, setWorldClock, setWorldPlayer, visitPlace,
-  worldClock, worldPlayer, worldSummary,
+  worldClock, worldPlayer, worldSummary, setQuest,
 } from '../game/worldState.js';
-import { nameBanksFor, peopleArtFor } from '../game/provinceStyle.js';
+import { nameBanksFor, peopleArtFor, raceMixFor, styleOf } from '../game/provinceStyle.js';
+// **The races of Tamriel, in the install's own colours** (`game/raceSkin.js`, D-45): a province's
+// street is mostly its own race, drawn per paving stone, and a figure is Arena's own sheet with
+// that race's skin ladder written over the palette's six skin entries — the install ships one
+// human body and no per-race art, so this is the only honest way a Dunmer can look like one.
+import { khajiitCoatFor, khajiitCoatSpec, figureKindFor, hairForPerson, hairIndicesOf, parseSkinSpec, raceDraw, raceForPerson, raceKey, raceOfFigure, raceSheetKey, skinPaletteFor, skinSpec, catFrameRgba } from '../game/raceSkin.js';
+// **Arena's automap** (`game/automap.js`, ported from OpenTESArena's `AutomapUiMVC`): the level
+// the player is standing in, in the game's own automap colours and with its 3×3 arrow. It is the
+// one map that answers "where am I" inside a dungeon or a building, where `M` used to open the
+// continent.
+import { AUTOMAP_COLORS, AUTOMAP_LEGEND, automapDirection, automapMarker, automapSummary, buildAutomap } from '../game/automap.js';
+import { drawAutomap } from './automap.js';
+import { paletteForSheet } from '../game/spritePalette.js';
+// The dungeon's own pathfinding (`game/navFlow.js`): one breadth-first search from the player's
+// cell, read by every creature on the level (`stepMonsters`).
+import { buildFlow, retreatFrom, stepFrom } from '../game/navFlow.js';
 import { parseDfa } from '../arena/dfa.js';
 import { parseCfa } from '../arena/cfa.js';
 import { parseCif } from '../arena/cifFile.js';
 import { LAVA_FIELD, WATER_FIELD, parseRci, rciReport, rciTile } from '../arena/rciFile.js';
 import { surfaceKind, surfaceLabel, surfacePlanes, surfaceScroll } from '../game/chasmSurface.js';
 import { imageToUpload, toRgba } from '../arena/palette.js';
-import { dangerOf, isHunting, monsterCountFor, spawnEncounter, stirTheLevel } from '../game/encounters.js';
+import { AMBUSH_MINIONS, HUNT_RUN, HUNT_SECONDS, dangerOf, huntStalled, isHunting, isRoused, monsterCountFor, spawnEncounter, stirTheLevel } from '../game/encounters.js';
 // The country's own population — its bestiary and its travellers (B17a). Arena's wilderness
 // tables lived in `A.EXE`, which this checkout does not ship, so the tables are this project's
 // and the module says so; what it replaces is a country with nothing alive in it at all.
 import { WILD_FOLK_MAX, wildernessPopulation } from '../game/wildernessBestiary.js';
 import {
-  VIEWS as PEOPLE_VIEWS, fillTalkLine, folkCountFor, folkFromListing, greetingFor, personFighter,
-  placeTownsfolk, talkCorpus, topicsFor, viewFacing, viewFileFor,
+  VIEWS as PEOPLE_VIEWS, balanceHousehold, folkCountFor, folkFromListing, isFemalePerson, personFighter,
+  placeTownsfolk, viewFacing, viewFileFor,
 } from '../game/townsfolk.js';
+// **What a person says** — the keyed banks of `template.dat`, the personality their own art carries,
+// and the words this game can honestly fill (`game/dialogue.js`). The owner, 2026-10-19: *"you need
+// to also fix the dialogue npcs have. now its mostly random but it needs to be coherent with their
+// race, place and personality"*.
+import { dialogueBanks, greetingFor, speakerFor, topicsFor } from '../game/dialogue.js';
 import {
-  cityDoors, serviceGreeting, serviceGreetings, shopForInteriorFile, shopSignKinds,
+  SHOP_KINDS, cityDoors, serviceGreeting, serviceGreetings, shopForInteriorFile, shopSignKinds, wildDoors,
 } from '../game/shops.js';
 import { MONSTERS, monsterById } from '../game/monsters.js';
 import { LAYOUT_WALK_FRAMES, actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
 import { CombatFx, fitAttackToGround, insideAttack } from '../game/combatFx.js';
-import { fogForLevel, nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
+import { pushOutOfBodies } from '../game/bodyBlock.js';
+import { buildingWindowLights, fogForLevel, nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
 import { CombatFxPass } from '../engine/render/combatFxPass.js';
 import {
   DUNGEON_MONSTERS, goldFor, monsterRosterFromInf, pickupNote, pickupKinds, roleOfArt,
@@ -136,26 +186,38 @@ import {
 import {
   DOOR_CLOSE_SECONDS, DOOR_OPEN_SECONDS, FORCE_FAILED, HAND_FORCE_MAX, NEEDS_KEY,
   doorLine, doorMatrix, forceChance, keyOpens, lockAt, lockTable, openReason, placeKeys,
+  riddleAnswerMatches, riddleDoors,
 } from '../game/doors.js';
-import { rollMonster } from '../game/combat.js';import { attackPhase, attackProfile, DODGE, PARRY, HEAVY, chargeScale, resolveDefence, spendStamina, stepStamina,
+import { rollMonster } from '../game/combat.js';import { attackPhase, attackProfile, DODGE, PARRY, HEAVY, chargeScale, resolveDefence, spendStamina, stepStamina, syncStamina,
   payMonsterAttack, stepMonsterStamina, stepGuardStamina, wantsToFlee, staminaMax,
   STAGGER_SECONDS, poiseMax, poiseCost, applyPoise, foeReadsGuard, BAIT_PATIENCE,
 } from '../game/combatStyle.js';
 import { furnishRoom } from '../game/furnish.js';
-import { RANGED_IDS, boltAtPlayer, castFootwork, fireBolt, resolveBolt, stepBolt } from '../game/ranged.js';
+import { CAST_RANGE, RANGED_IDS, boltAtPlayer, castFootwork, fireBolt, resolveBolt, stepBolt } from '../game/ranged.js';
+// The player's own missile (`game/archery.js`): a bow that is a bow, not a club with a range.
+import { aimFromAngles, arrowAtMonster, isBow, looseArrow, stepArrow } from '../game/archery.js';
+// What each creature is besides its hit points: the immunity ladder, silver at a vampire,
+// a spider's hold, a lich's regeneration and the creatures whose bolts carry an element
+// (`game/bestiary.js`, all of it UESP's own bestiary page).
+import {
+  castFor, damageMultiplier, paralyses, regenerationOf, seesInvisible, transmitsDisease,
+} from '../game/bestiary.js';
 import {
   ATTRIBUTE_MAX, ATTRIBUTE_MAX_SOURCE, ATTRIBUTE_POINTS_SOURCE, HEALTH_GAIN_SOURCE, XP_SOURCE,
   applyLevel, pendingLevels, progressOf, rollAttributePoints,
 } from '../game/progression.js';
 import { ATTRIBUTES, classById as classOf } from '../game/character.js';
-import { HIT_FORMULA_NOTE, attackInterval, monsterAttack, monsterXp, resolveAttack } from '../game/combat.js';
+import { HIT_FORMULA_NOTE, attackInterval, attributeOf, monsterAttack, monsterXp, resolveAttack } from '../game/combat.js';
+import { humanLoot, rollHuman } from '../game/humans.js';
+import { corpseRows, takeCorpseLoot } from '../game/corpseLoot.js';
 import { BLOCK_NOTE, carried, guardDamage, weaponCarried } from '../game/inventory.js';
 import {
-  addToBag, armourRating, bagRows, createBag, dropFromBag, equipFromBag, itemById, itemNote,
-  itemsOfKind, priceOf, startingKit, useFromBag, weaponHeld,
+  addToBag, armourCoverage, armourOn, bagRows, carriedWeight, carryStatus, countInBag,
+  createBag, dropFromBag, equipFromBag, itemById, itemNote, itemsOfKind, maxCarryWeight, priceOf,
+  removeFromBag, startingKit, unequipItem, useFromBag, weaponHeld,
 } from '../game/items.js';
 import {
-  CASTING_NOTE, applySpell, buildSpellLibrary, canCast, costOf, knownSpellsOf, learnSpell,
+  CASTING_NOTE, LIGHT_SECONDS, applySpell, buildSpellLibrary, canCast, costOf, knownSpellsOf, learnSpell,
   spellFromLibrary, startingSpellsFor,
 } from '../game/spells.js';
 import { SPELL_FILES, parseSpellsFile } from '../arena/spellsFile.js';
@@ -169,31 +231,55 @@ import {
 } from '../game/livingWorld.js';
 import { createPathBook, pathLine, pointOnLine, townGrid } from '../game/townPaths.js';
 import { ArenaRandom } from '../game/arenaRandom.js';
-import { playerSpriteFile } from '../game/playerSprite.js';
+import { BACK_VIEW, playerSpriteFile } from '../game/playerSprite.js';
+// **The player's own chosen body** (`game/playerAppearance.js`): the visual creator's sprite,
+// skin and hair, and the five walk sheets plus the strike art they mean in the world.
+import { NPC_SPRITES, appearanceSkinSpec, appearanceAttack, appearanceWalkFile, normalizeAppearance, spriteById,
+} from '../game/playerAppearance.js';
 // The archive's other people families (`game/peopleKinds.js`), read off the same listing
 // the armoured roster comes from: the town's men and women, and the watch.
 import { peopleKindsFromListing, standInKindsFromListing, actionFile } from '../game/peopleKinds.js';
 import { ART_BASELINE, SCREEN, canRunUnlessDrawn, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
 import { DUNGEON_BLOCKS_INF, DUNGEON_BLOCKS_MIF, assembleDungeon, spawnCellFor } from '../game/dungeonPlan.js';
 import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
-import { buildQuestChain, stageMif } from '../game/questData.js';
+import { STAFF_PICKUP_LEVELS, CLUE_PICKUP_LEVELS, buildQuestChain, stageMif } from '../game/questData.js';
 import { applyQuestEvent, currentObjective } from '../game/questState.js';
+import { ENDING_MOVIES, PALACE_SCENE, storyScenesFor } from '../game/storyBeats.js';
+import { dueAmbush, dueCellDream, dueDream, storyMovie, storySpeaker, storyText, DEATH_TEXT, EMPEROR_THANKS, ETERNAL_CHAMPION, JEWEL_CRY } from '../game/storyScript.js';
+import { narrationFiles, narrationMs } from '../arena/storySpeech.js';
+import { dreamCaptions } from '../game/cutscene.js';
 import { beginNewGame } from './newGame.js';
 import {
   advanceDays, applyRadiantEvent, discoverLooseMifs, enterableDungeons, enterableFromListing,
-  handInAtPlace, handInWith, personOffer, radiantObjective, slayProgress,
+  handInAtPlace, handInWith, personOffer, radiantObjective, repairWildTargets, slayProgress,
 } from '../game/radiantQuests.js';
-import { noteRegard, peopleKnown, personId, regardOf, regardTally, standingOf, standingWord } from '../game/regard.js';
+import { friendsInPlace, noteRegard, peopleKnown, personId, regardOf, regardTally, standingOf, standingWord } from '../game/regard.js';
+// **A house in the city** — the king's deed, its price and the door it is written against
+// (`game/playerHouse.js`).
+import {
+  HOUSE_FRIENDS_REQUIRED, HOUSE_PRICE, houseDeed, houseOffer, isOwnedHouseDoor, pickHouseDoor,
+} from '../game/playerHouse.js';
+// **The fight's own voice** — swings, steel, wounds, spells and the small noises between
+// (`game/combatSound.js`). The cues are Arena's own `.VOC` clips out of the install's archive
+// (`SWISH`, `CLANK`, `BASH`, `EHIT`, `UHIT`, `ARROWFR`, `OPENDOOR`, …); the module's synth is
+// only the fallback for a cue the install has no file for.
+import { getSfxVolume, playSfx, setSfxLoader, setSfxVolume, sfxState, unlockSfx, warmSfxClips } from '../game/combatSound.js';
+// **Arena's own 320×200 picture**, toggled from the pause menu (`game/videoSettings.js`).
+import { retro320Enabled, retro320Frame, setRetro320 } from '../game/videoSettings.js';
 // The corpus the sibling install carries and this one does not (S30): Daggerfall's own
 // `NAMEGEN.DAT`, whose fragments build every race's names — a driver for the whole port's
 // "people have names" claim, degraded to no-name runs exactly as before without it.
-import { personName, parseNamegen } from '../game/names.js';
+import { nameForPerson, personName, parseNamegen } from '../game/names.js';
 // The install's own sound, finally: the greeting fanfare decoded and played once,
 // waiting for the page's autoplay law's first gesture if the browser refuses it cold.
 import { playFanfare, fanfareState } from '../game/fanfare.js';
+// **The install's own music** (2026-10-19): Arena's XMI songs, chosen by the place the player is
+// standing in (`game/arenaMusic.js` is the law and the reader, `game/musicPlayer.js` the player).
+import { cutsceneSong, interiorMusicKind, jingleFor, musicFor, nightMusicActive } from '../game/arenaMusic.js';
+import { getMusicVolume, musicState, playJingle, playMusic, setMusicVolume, stopMusic } from '../game/musicPlayer.js';
 // The level's own `*TRIG` cells, resolved against the level's `.INF` (`game/levelTriggers.js`):
 // prose and a `@SOUND` clip, played when their cell is walked onto.
-import { triggerTable, triggerEvent } from '../game/levelTriggers.js';
+import { triggerTable, triggerEvent, triggerRiddle } from '../game/levelTriggers.js';
 import { playVocFile, trigSoundState } from '../game/trigSound.js';
 import {
   GUILDS as GUILD_ROSTER, earnStanding, isMember as guildMemberOf,
@@ -258,6 +344,38 @@ const GATE_STEP = 3;
 const GATE_WALK_REACH = 3.2;
 
 /**
+ * The same reach in **cells**, for the world grid's own reading of the door.
+ *
+ * `atSettlementGate` (`game/tamrielGrid.js`) measures in cells because the country's side of the door
+ * has no level to measure feet against: the player is somewhere in the world, the gate is a cell of
+ * the settlement, and "how close" is a cell count. Two cells is deliberately tighter than the 3.2
+ * world units above (1.3 cells): the push is *aimed* at the gate, so a reach that swallows the whole
+ * street in front of the wall would let a stride at the masonry beside the opening cross it.
+ */
+const GATE_WALK_REACH_CELLS = 3;
+// **The picture a job's own thing wears.** A treasure pile from the install's own flats — the
+// same art its chests and caches use (`game/dungeonItems.js`), so the marker reads as a thing on
+// the floor rather than a UI glyph, and no new texture has to exist for it.
+const OBJECTIVE_MARKER_ART = 'TREASRE3.IMG';
+// **A person is a person, even when they are the objective.** The owner, 2026-10-19: the
+// captive a rescue job sends the player to should stand in the world as a figure, not as a
+// treasure pile. `MAN01.IMG` is the install's own standing man flat — the same art a town's
+// still people use — so a captive, a hermit and a missing scout read as somebody to reach.
+const PERSON_MARKER_ART = 'MAN01.IMG';
+// **How long a Levitation lasts** — see the clock in `step`. Arena's own duration is in `A.EXE`;
+// this one is stated here rather than guessed at silently.
+const LEVITATE_SECONDS = 30;
+
+/**
+ * The three kinds of place a `CITYDATA` record can name, as the file spells them.
+ *
+ * `parseCityData` writes this into every record's `kind` (`LOCATION_COUNTS` names the run of
+ * records each kind owns), and `cityRequestOf` reads it rather than re-deriving the kind from
+ * an index. Anything else — a dungeon, a record from a hand-built probe — is not a settlement.
+ */
+const SETTLEMENT_KINDS = new Set(['city', 'town', 'village']);
+
+/**
  * Where the **opening dungeon** stands, as a world-map pixel — the palace's own marker.
  *
  * `START.MIF` is the one dungeon `CITYDATA` has no record for: it is a bare map file, so it has
@@ -268,7 +386,7 @@ const GATE_WALK_REACH = 3.2;
  * to), and Arena's Imperial Dungeons lie under the palace. Stamped as this project's rule: the
  * original's own answer lives in `A.EXE` and is not in this checkout.
  */
-const OPENING_DUNGEON_POINT = Object.freeze({ x: 172, y: 106 });
+const OPENING_DUNGEON_POINT = Object.freeze({ x: 175, y: 99 });
 
 /**
  * DOM key codes the player holds, and how each of them drives the motor.
@@ -307,8 +425,12 @@ export function inputOf(keys, pressed, drawn = false) {
     // is `canRunUnlessDrawn`: with the blade out the stride is the walk, and the run comes
     // back when it is put away. Sheathing is a second long, so nothing is lost but the sprint.
     run: (keys.has('ShiftLeft') || keys.has('ShiftRight')) && canRunUnlessDrawn(drawn),
-    crouch: pressed.has('KeyC'),
-    sneak: keys.has('ControlLeft'),
+    // **`Ctrl` crouches, not `C`** — the owner, 2026-10-19: *"the command for crounching needs to be
+    // CTRL and not C because its overlapping with the cast menu"*. `C` is the spellbook's key
+    // (`openSpellbook`), and a player who reached for a crouch opened the cast panel instead. Both
+    // Controls are read, because a left-handed player reaches for either.
+    crouch: pressed.has('ControlLeft') || pressed.has('ControlRight'),
+    sneak: keys.has('ControlLeft') || keys.has('ControlRight'),
     autoRun: false,
   };
 }
@@ -327,12 +449,32 @@ const CHASM_ARCHIVE = 4;
 // landscape, the tree's for the woods) — that law is the one thing about a flat's size the whole
 // game shares, so it is not the scene's to keep. `SPRITE_SCALE` stays imported for the creature
 // sheets, the other 102-pixel art in the game.
+/**
+ * **What a death costs in gold** — the owner, 2026-10-22: *"you should lose 10% of your
+ * gold"*. Rounded down, so a purse of nine coins is not emptied by a rounding.
+ */
+const DEATH_GOLD_SHARE = 0.1;
 /** How close a blow lands, in world units. */
 const REACH = 3.0;
 /** How far away a monster notices the player, in world units. */
 const AGGRO = 34;
 /** How fast a monster closes, in world units per second, at its own level. */
 const MONSTER_SPEED = 2.6; // Ordinary pursuit is a deliberate walk; only committed charges lunge.
+/** How long a caster waits before its first bolt — about one step into the fight, not at once. */
+const CAST_FIRST_SECONDS = 0.9;
+// **A human's spell is a rarity, not a rotation.** Every human foe can cast (UESP's races and
+// classes), but the owner asked for it *very rarely*: the clock only runs in sight and in
+// casting range, and a fight that ends in under half a minute usually sees none. The spread is
+// deliberately wide so no two fighters in one room throw together.
+/** Seconds in sight before a human's first spell may come. */
+const HUMAN_SPELL_FIRST_SECONDS = 35;
+/** Seconds between a human's spells, at the least… */
+const HUMAN_SPELL_MIN_SECONDS = 45;
+/** …and the width of the extra wait drawn on top of that. */
+const HUMAN_SPELL_SPREAD_SECONDS = 75;
+// **Bodies take room.** The least two creatures may stand apart, centre to centre; a cell is
+// 2.5 m, so this is two shoulders and a hand's width, and a pack fans out instead of stacking.
+const MONSTER_BODY_GAP = 0.95;
 // A townsman coming at the player with a blade is a man running, not a monster charging: a
 // walking pace with a jog in it. (They were given `MONSTER_SPEED` and crossed the street at
 // a creature's sprint.)
@@ -345,21 +487,22 @@ const PERSON_CLEARANCE = 0.8;
 /** Seconds between the player's own blows. */
 const PLAYER_SWING = 0.55;
 /**
- * How far apart the finale's two chambers must be, in cells.
- *
- * The mithril key and the Jewel of Fire are in different rooms of the palace's bottom
- * level (UESP's walkthrough), so the key is placed in the deepest cell this far — or
- * further — from the Jewel's. Twelve cells of a 50-cell dungeon is across the map, and
- * on a level too small to satisfy it the two coincide rather than one being refused.
- */
-const FINALE_CHAMBER_GAP = 12;
-/**
  * How close a person has to be to be spoken to, in world units.
  *
  * A shade more than `REACH`, because a conversation should not require standing inside
  * somebody — and the person nearest the player is the one who answers.
  */
 const TALK_REACH = 4.0;
+/**
+ * **Where a conversation ends.** The owner, 2026-10-19: *"the speech gui should disappear once you
+ * get too far from who youre speaking to"*. The panel used to stay up for ever: a player could
+ * cross a square and still be reading a sentence from somebody a street away, with the person they
+ * had walked off from standing frozen, their face turned to a player who was gone. The close is
+ * deliberately **wider than the reach that opens the conversation** — a player who steps back one
+ * pace to look at something keeps their conversation, and one who walks off ends it. At 1.5× that
+ * is 6 m against the 4 m it takes to be heard in the first place.
+ */
+const OUT_OF_EARSHOT = TALK_REACH * 1.5;
 /**
  * Seconds a person takes to cross one cell, walking (`stepTownsfolk`).
  *
@@ -408,6 +551,10 @@ const TALK_FRAMES_PER_SECOND = 8;
  * drawn before it is cleared.
  */
 const FOLK_DIE_SECONDS = 1;
+// **How long a struck townsperson stays angry.** The ledger's own −45 is below `HOSTILE_AT`,
+// so without this a cut citizen went back to their shopping a frame later. Forty-five seconds
+// is long enough that walking off and coming back does not find them calmed.
+const FOLK_ANGER_SECONDS = 45;
 /**
  * How long the level's own trigger clips wait between one another.
  *
@@ -416,6 +563,11 @@ const FOLK_DIE_SECONDS = 1;
  * seconds between them keeps them what they are — the level's own far-off noises — instead
  * of a sting on every cell, which is what "I hear randomly the level up sound" was.
  */
+// How far outside the player's country window a radiant job's cell may sit and still be fielded
+// on the window's edge. A window slides in `WILD_CHUNK` steps, so the honest reach is one step
+// plus the camp's own spread; beyond that the player is not near the mark at all.
+const RADIANT_EDGE_REACH = WILD_CHUNK + 6;
+
 const TRIGGER_SOUND_COOLDOWN = 2;
 /** How loud those clips sit against the rest: ambience, not an event. GUESS, deliberately low. */
 const TRIGGER_SOUND_VOLUME = 0.35;
@@ -456,9 +608,9 @@ const DOOR_REACH = 2.6;
 /**
  * How far below the floor plane a player's feet have to be for water to *be* water.
  *
- * The bed of a chasm is `CHASM_DEPTH` (0.45 m) down, so standing in one means being below
- * the floor plane by about that much; the slop keeps a single frame of stepping down from
- * reading as land.
+ * A chasm's bed is below the floor plane by its own depth (`game/mifMesh.js`'s `CHASM_DEPTHS`:
+ * 1.2 m for a pit, 1.55 m for water, 1.0 m for lava), so standing in one means being below the
+ * floor plane by that much; the slop keeps a single frame of stepping down from reading as land.
  */
 const WATER_ENTER_DEPTH = 0.05;
 
@@ -492,7 +644,7 @@ const WADE_SPEED_SCALE = 0.5;
 const SPELL_RANGE = 24;
 
 /** The shop kinds a doorway can be — `teleportToDoor('tavern')` picks one by name. */
-const SHOP_KIND_NAMES = Object.freeze(['equipment', 'tavern', 'mages', 'temple', 'house', 'noble']);
+const SHOP_KIND_NAMES = Object.freeze(['equipment', 'tavern', 'mages', 'temple', 'house', 'noble', 'palace']);
 
 /**
  * The **least company** a building of each kind holds, so no interior is an empty room.
@@ -510,7 +662,13 @@ const SHOP_KIND_NAMES = Object.freeze(['equipment', 'tavern', 'mages', 'temple',
  * is inside, and adding a crowd the install did not name would be this port inventing a
  * shopkeeper's customers.
  */
-const BUILDING_FOLK = Object.freeze({ house: 3, noble: 3, temple: 4, mages: 3 });
+const BUILDING_FOLK = Object.freeze({
+  house: 3, noble: 3, temple: 4, mages: 3, palace: 5,
+  // **A crypt and a tower are lairs, not households.** Neither has a keeper: their population
+  // is the level's own `.INF` roster, and the scene fields it (`populate`'s `lair` law) — a
+  // townsman standing behind a tomb's counter was the shape of the first bug this fixes.
+  crypt: 0, tower: 0,
+});
 
 /**
  * The trades that wear the watch's own colours in a settlement's crowd.
@@ -642,9 +800,13 @@ async function readWorldRequest(data, params) {
   const wanted = params.get('location') ?? params.get('dungeon');
   if (!wanted && !wantedSeed) return null;
   const world = await loadWorldMap(data);
-  const place = wantedSeed
-    ? world.locations.find((l) => String(l.dungeonSeed) === String(wantedSeed))
-    : world.locations.find((l) => l.name.toLowerCase() === wanted.toLowerCase());
+  const provinceID = params.has('province') ? Number(params.get('province')) : null;
+  const place = params.has('placeId') && provinceID != null
+    ? world.byId(provinceID, params.get('placeId'))
+    : wantedSeed
+      ? world.locations.find((l) => String(l.dungeonSeed) === String(wantedSeed)
+        && (provinceID == null || l.provinceID === provinceID))
+      : world.byName(wanted, provinceID);
   if (!place) {
     throw new Error(wantedSeed
       ? `no Arena dungeon has the seed ${wantedSeed}`
@@ -655,7 +817,36 @@ async function readWorldRequest(data, params) {
     return { world, place, mapName: place.mif, cityRequest: null };
   }
 
-  const kind = cityTypeOf(place.index);
+  return { world, place, mapName: cityRequestOf(place).template, cityRequest: cityRequestOf(place) };
+}
+
+/**
+ * **The city request for a settlement record** — everything the generator needs, from the game's own
+ * records and nothing else.
+ *
+ * Lifted out of `readWorldRequest` when the world grid arrived (block B26) and needed a second
+ * caller: a country page builds the settlement that is **in its window**, which is not necessarily
+ * the settlement the page is *named* for (the player walked here from somewhere else), so "the
+ * request for this record" had to become a function rather than one branch of the URL reader. Both
+ * callers get the same answer, which is what keeps a city the same city however it was reached.
+ *
+ * @param {object} place  a `world.locations` settlement record
+ * @returns {{kind: string, climate: string, weather: string, coastal: boolean,
+ *   blocksPerSide: number, seed: number, infName: string, groundInfName: string, treeInfName: string|null, template: string}}
+ */
+export function cityRequestOf(place) {
+  // **The record's own kind, not its index within its kind.** `cityTypeOf` is the executable's
+  // `getCityType(localCityID)` and it expects the *province-local* id of Arena's flat 0…47
+  // location array: 0–7 city-states, 8–15 towns, 16–31 villages. `parseCityData` gives each
+  // record its **own** `index` (a city is 0…7, a town is another 0…7, a village 0…15) and its
+  // `kind`, so asking `cityTypeOf(place.index)` told every town it was a **city-state** and every
+  // village with an index under 8 the same, and every other village that it was a **town**:
+  // measured over the install's 288 settlements, 216 were built as `CITY*` skeletons with a 6×6
+  // grid and only 72 as `TOWN*`, and **no village in the game was a village** — Reich Gradkeep
+  // and the rest were walled city-states of four hundred doors. The record's own kind is the
+  // file's answer (`LOCATION_COUNTS` names them when the records are read); `cityTypeOf` stays
+  // as the fallback for a record built without one.
+  const kind = SETTLEMENT_KINDS.has(place.kind) ? place.kind : cityTypeOf(place.index);
   // **Two climates, and this is where the second one is used** (`game/provinceStyle.js`, B18/D-41).
   // `place.climate` is the *ground* — the country, the creatures and the sky, which is what the
   // wilderness window around this city will be (below and at `:1592`) — while `place.architecture`
@@ -676,7 +867,12 @@ async function readWorldRequest(data, params) {
     location: 'city',
     weather,
   });
-  const request = {
+  // Usually trees belong to the architecture INF. Summerset is the one explicit exception:
+  // keep its desert building art, but use temperate tree pictures from the matching city INF.
+  const treeInfName = place.settlementTreeClimate
+    ? cityInfName({ climate: place.settlementTreeClimate, location: 'city', weather })
+    : null;
+  return {
     kind,
     climate: place.climate,
     weather,
@@ -685,9 +881,9 @@ async function readWorldRequest(data, params) {
     seed: place.citySeed,
     infName: infs.infName,
     groundInfName: infs.groundInfName,
+    treeInfName,
     template: cityTemplateName({ type: kind, coastal: place.coastal, variant: cityTemplateVariant(place, place.coastal) }),
   };
-  return { world, place, mapName: request.template, cityRequest: request };
 }
 
 /**
@@ -743,11 +939,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // keep moving a player nobody can see. `dispose()` is that exit, and every
   // listener below is registered with the same `AbortSignal`.
   window.__arenaScene?.dispose?.();
-  const life = { alive: true, mapOpen: false, menuOpen: false, leaving: false, paused: false, abort: new AbortController() };
+  const life = { alive: true, mapOpen: false, menuOpen: false, automapOpen: false, leaving: false, paused: false, abort: new AbortController() };
   const signal = life.abort.signal;
+  // **Arena's 320×200 picture** (`game/videoSettings.js`). The renderer asks this once per
+  // world frame; the menu's tick only writes the setting, and the next frame is the picture.
+  // The projection in `paint` also reads it, so the world is framed at 320/200 rather than
+  // stretched from the window's aspect.
+  renderer.setRetroSource?.(retro320Frame);
+  // ── the automap's own life, declared before the first level ────────────────
+  //
+  // `loadLevel` reads the level's cells into an automap on every load, and the panel's own
+  // `M` is registered later — so these have to stand before the first `loadLevel` runs, exactly
+  // as the HUD's `player` and the quest's `radiant` do (the TDZ rule this file has paid for).
+  /** The current level's automap (`game/automap.js`'s `buildAutomap`), or null before a level. */
+  let automapMap = null;
+  /** Whether the automap panel is the page on screen. */
+  let automapOpen = false;
+  /** Whether *this* panel stopped the world (a pause somebody else owns is left standing). */
+  let automapPaused = false;
+  // **The song last asked for**, declared before the first `loadLevel` runs: the level load resets
+  // it so the new place's tune is asked for, and the frame loop's `updateMusic` is a no-op until
+  // the place moves. (A `let` further down the scene is in TDZ at the first load — measured as
+  // "Cannot access 'musicSong' before initialization".)
+  let musicSong = null;
+  /** Whether the palace's own arrival movie has played on this page (the beat is an arrival). */
+  let palaceMovieShown = false;
   window.__arenaScene = {
     dispose: () => {
       life.alive = false;
+      // A replaced scene takes its song with it; the next one asks for its own.
+      stopMusic();
       life.abort.abort();
       // A swap frees the last level's GL payloads. Every `loadLevel` since this
       // miss leaked the previous one: mesh VAOs/buffers plus these billboard batches
@@ -755,11 +976,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       releaseLevelPayloads(current);
     },
   };
+  // Leaving the page (a fast travel's navigation, a closed tab) stops the music at the door
+  // instead of letting the last level's song outlive the place it belonged to.
+  addEventListener('pagehide', () => stopMusic(), { signal });
 
   const data = new ArenaData(source, { onWarn: (m) => console.warn(`[arena] ${m}`) });
+  // **The fight reads the install's own clips** (`game/combatSound.js`): the same loose-then-
+  // `GLOBAL.BSA` door every other asset opens, so the swings and doors are Arena's bytes rather
+  // than the synth that stood in for them. Warmed now, because a level's first battle should not
+  // spend its first blows on the fallback.
+  setSfxLoader((name) => data.bytes(name));
+  void warmSfxClips();
   const worldRequest = await readWorldRequest(data, params);
   const cityRequest = worldRequest?.cityRequest ?? readCityRequest(params);
   const place = worldRequest?.place ?? null;
+  const world = worldRequest?.world ?? await loadWorldMap(data);
   // The wilderness is a *view* of the same settlement, so a wilderness page carries
   // the location's own parameters too (`?location=Daggerfall&wild`) and only adds
   // where in the country to stand.
@@ -772,6 +1003,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // click, fast travel) always arrive in the settlement itself — memory may only apply
   // when the player came here by walking into it, which is exactly the case below.
   const askedWild = readWildRequest(params);
+  if (askedWild?.cell) {
+    askedWild.cell = migrateWildCell(world, askedWild.cell, Number(params.get('grid')));
+    params.set('wild', `${askedWild.cell.row},${askedWild.cell.col}`);
+    params.set('grid', String(WORLD_GRID_VERSION));
+  }
   // **`?at=` is the explicit "be in the settlement" answer** — the gate crossing
   // (`crossGate`) and a fast-travel arrival both carry it, and both *keep* `location=`
   // because a settlement's page needs it. Without that test the guard below let the save's
@@ -782,17 +1018,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // already right and only the code was not.
   const rememberedWild = (() => {
     if (askedWild || params.has('at') || !params.has('location')) return null;
-    try {
-      const raw = localStorage.getItem(LAST_LOCATION_KEY);
-      if (!raw) return null;
-      const saved = JSON.parse(raw);
-      if (!saved?.wild || !Number.isFinite(saved.wild.row)) return null;
-      const wanted = (params.get('location') ?? '').toLowerCase();
-      if (typeof saved.name === 'string' ? saved.name.toLowerCase() === wanted : false) {
-        return { row: Math.round(saved.wild.row), col: Math.round(saved.wild.col) };
-      }
-      return null;
-    } catch { return null; }
+    const saved = loadLastLocation(world);
+    if (!saved?.wild) return null;
+    const wanted = (params.get('location') ?? '').toLowerCase();
+    // The cell is a **world cell** (B26): the same grid the map's own mark is drawn from
+    // (`game/tamrielGrid.js`), so remembering it remembers where in Tamriel the player was.
+    return saved.name.toLowerCase() === wanted ? { row: saved.wild.row, col: saved.wild.col } : null;
   })();
   const wildRequest = askedWild ?? (rememberedWild ? { cell: rememberedWild, climate: null, weather: null, seed: null, infName: null } : null);
   // ── a building the player walked into ──────────────────────────────────────
@@ -814,7 +1045,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // The world is loaded even when the page named a bare map file. A scene without
   // it cannot tell whether the dungeon it is standing in is the one the quest sent
   // the player to — and the opening dungeon, `START.MIF`, is exactly that case.
-  const world = worldRequest?.world ?? await loadWorldMap(data);
   const mapName = (params.get('interior') || params.get('mif') || worldRequest?.mapName
     || (cityRequest ? cityRequest.template : 'START.MIF')).toUpperCase();
   // Tell the world map where the player is, so its travel times are measured from
@@ -831,16 +1061,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // foot is kept for a boot whose page did NOT ask for the country (the remembered
       // wild below then answers), and cleared when the page boots into the wild directly,
       // because the level that then loads writes the fresh answer anyway.
-      const prior = (() => { try { return JSON.parse(localStorage.getItem(LAST_LOCATION_KEY) ?? 'null'); } catch { return null; } })();
+      const prior = loadLastLocation(world);
       const keepWild = rememberedWild
-        || (!params.has('wild') && prior && prior.name?.toLowerCase() === place.name.toLowerCase()
+        || (!params.has('wild') && prior && prior.name.toLowerCase() === place.name.toLowerCase()
           ? prior.wild ?? null : null);
-      localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
-        name: place.name,
+      saveLastLocation({
+        name: place.name, provinceID: place.provinceID, locationID: place.id,
         dungeon: place.kind === 'dungeon',
         seed: place.dungeonSeed ?? null,
         wild: keepWild,
-      }));
+        // **Whether this page *is* the country, not whether the record remembers a foot.** A city
+        // page keeps the saved cell (a bare `?location=Daggerfall` boot reopens the country on it,
+        // above) but the player is standing in the town — and the world map's own little dot reads
+        // *this* field to decide whether to draw the country mark or the settlement's icon. The two
+        // answers were one field for one turn of this block, and a player who walked back in at
+        // Daggerfall's gate was shown the wilderness they had just left.
+        country: Boolean(wildRequest),
+      });
     } catch { /* storage can be refused; it is only a convenience */ }
   }
 
@@ -909,6 +1146,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   let skyArt = null;
   /** The climate-and-seed the uploaded panorama belongs to (see `ensureSky`). */
   let skyKey = null;
+  /** Whether the last panorama carried Morrowind's volcano — the recompose key's own bit. */
+  let skyVolcano = false;
+  /** The bearing that panorama put Red Mountain on (0 = north, 0.25 = east). */
+  let skyVolcanoAzimuth = null;
   /** What is falling out of that sky: `'rain'`, `'snow'` or null (`game/arenaSky.js`). */
   let airWeather = null;
   /** The precipitation pass, built the first time a level actually has weather. */
@@ -924,8 +1165,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * the renderer stays — no horizon is better than a wrong one.
    *
    * @param {string} infName   the level's own `.INF`, which names its climate and weather
+   * @param {{volcano?: boolean, volcanoAzimuth?: number}} [opts]
+   *   `volcano`: this page is outdoors in Morrowind; `volcanoAzimuth`: its bearing to Red Mountain
    */
-  async function ensureSky(infName) {
+  async function ensureSky(infName, opts = {}) {
     const seed = Math.round((cityRequest?.seed ?? place?.citySeed ?? place?.dungeonSeed ?? 1) || 1);
     // The card the panorama is drawn from is the hour of the level's arrival — but the
     // clock moves on while the player is standing here, so a level that booted at ten
@@ -933,11 +1176,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // therefore carries the night bit, and `maybeRecomposeSky` calls this again when the
     // hour crosses the boundary.
     const night = isNight(clockNow().minutes);
-    const key = `${String(infName).toUpperCase()}|${seed}|${night ? 'n' : 'd'}`;
+    // **The volcano is part of the place's identity**, so it is part of the cache key: a page
+    // that crossed from Skyrim into Morrowind must compose a new horizon even when the climate
+    // letter and seed happen to match.
+    const volcano = Boolean(opts.volcano);
+    const volcanoAzimuth = volcano ? (opts.volcanoAzimuth ?? volcanoAzimuthNow()) : null;
+    // A degree is the resolution a player can see on a 1024-pixel panorama (2.8 px);
+    // carrying it in the key is what makes the mountain **move with the page** without
+    // rebuilding the whole horizon every frame a footstep moves the player.
+    const bearing = volcano ? Math.round(volcanoAzimuth * 360) % 360 : null;
+    const key = `${String(infName).toUpperCase()}|${seed}|${night ? 'n' : 'd'}|${volcano ? `v${bearing}` : '-'}`;
     if (key === skyKey) return skyArt;
     skyKey = key;
+    skyVolcano = volcano;
+    skyVolcanoAzimuth = volcanoAzimuth;
     try {
-      const built = await buildArenaSky(data, { infName, seed, night });
+      const built = await buildArenaSky(data, { infName, seed, night, volcano, volcanoAzimuth });
       if (built) {
         sky.setPanorama(built);
         const { climate, weather } = skyClimateOf(infName);
@@ -957,7 +1211,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const through = (current?.infName && current.openSky) ? current.infName : null;
     if (!through) return;
     const night = isNight(clockNow().minutes);
-    if (!skyArt || skyArt.night !== night || !skyKey) void ensureSky(through);
+    const bearing = skyVolcano ? Math.round(volcanoAzimuthNow() * 360) % 360 : null;
+    const moved = skyVolcano && bearing !== (skyVolcanoAzimuth == null
+      ? null : Math.round(skyVolcanoAzimuth * 360) % 360);
+    if (!skyArt || skyArt.night !== night || !skyKey || moved) {
+      void ensureSky(through, { volcano: skyVolcano, volcanoAzimuth: volcanoAzimuthNow() });
+    }
+  }
+
+  /**
+   * The page's own bearing to Red Mountain, from the world-map pixel the game gives it.
+   * A city is one pixel, a wilderness window another; either way the volcano shifts as the
+   * player moves through Morrowind. Outside the province the value is only a fallback and
+   * `volcano` is false, so it is never drawn.
+   */
+  function volcanoAzimuthNow() {
+    const pixel = current?.wild?.here?.pixel ?? place?.tamriel ?? place?.global ?? null;
+    return volcanoAzimuthFrom(pixel);
   }
   const lookFilter = new LookFilter();
   const keys = new Set();
@@ -965,17 +1235,154 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   const pressed = new Set();
   const cam = { yaw: 0, pitch: 0 };
   const identityMat = identity();
+  // ── THE ONE PANEL (index.html) ────────────────────────────────────────────────
+  //
+  // The scene used to paint two: this panel at the bottom left, and a **fight panel** at
+  // the bottom right (`#combat`) with the player's health, experience and the foe in front
+  // of them. The owner, 2026-10-17: *"use only the gui on the left ad not two guis but with
+  // the look of the one on the right and all the informations condensed"*. There is one
+  // box now — the fight panel's own look, in the left corner — carrying three **bands**,
+  // and the two writers below each own their own band rather than the whole element, so
+  // neither can wipe the other's rows off the screen:
+  //
+  //   * `#hud-place` — where the player is and what the level is (`loadLevel`'s own line),
+  //   * `#hud-fight` — the player, the foe and the flags (`updateCombatHud`),
+  //   * `#hud-quest` — the one marker that follows the walk: what the quest wants, how far and
+  //     which way (updated every frame by `updateQuestMarker`, so it needs no keypress),
+  //   * `#hud-here`  — what is in reach: doors, loot, people (`updateObjectiveHud`).
   const hud = document.getElementById('hud');
+  const hudPlace = document.getElementById('hud-place');
+  const hudFight = document.getElementById('hud-fight');
+  const hudQuest = document.getElementById('hud-quest');
+  const hudHere = document.getElementById('hud-here');
+  // ── the status bar and the hotbar (Arena's own `P1.IMG` / `S2.IMG`) ────────
+  const hotbarEl = document.getElementById('hotbar');
+  const sbHealth = document.getElementById('sb-health');
+  const sbHealthBar = document.getElementById('sb-health-bar');
+  const sbStamina = document.getElementById('sb-stamina');
+  const sbStaminaBar = document.getElementById('sb-stamina-bar');
+  const sbSpell = document.getElementById('sb-spell');
+  const sbSpellBar = document.getElementById('sb-spell-bar');
+  const sbGold = document.getElementById('sb-gold');
+  const sbLevel = document.getElementById('sb-level');
+  const sbHotbarHint = document.getElementById('sb-hotbar-hint');
+  /** The paintings `game/arenaGui.js` found in this install, once they have loaded. */
+  let guiArt = null;
+  /** The touch layer, on a phone. */
+  let touchLayer = null;
+  // ── the compass (`game/compass.js`) ──────────────────────────────────────────
+  // Eight points once, then only the facing one's class and the bearing's text change — the
+  // HUD's own law (write a band, never the element) applied to the one reading that moves every
+  // frame the player looks around. It exists because the owner had no way to say which way they
+  // faced in the country: *"i have o compass to orient me in the wild"*.
+  const compassPoints = document.getElementById('compass-points');
+  const compassFace = document.getElementById('compass-face');
+  const compassSpans = [];
+  if (compassPoints) {
+    // **Eight spans, not eight more every journey.** A travel (`goInPlace`) boots a *new scene*
+    // into the same page, and this loop used to `append` to the panel the previous scene had
+    // already filled: the strip grew N NE E SE S W NW again for every door, stair and gate, until
+    // the labels ran across the whole HUD — the owner's *"every time you travel the N NE E SE S
+    // ect ect doubles untill it covers in a line all the screen"*. The panel is rebuilt, not
+    // added to, so one page always has exactly the eight points and one yellow one.
+    compassPoints.replaceChildren();
+    for (const point of COMPASS_POINTS) {
+      const span = document.createElement('span');
+      span.textContent = point;
+      compassPoints.append(span);
+      compassSpans.push(span);
+    }
+  }
+  /** The headings last written, so a still camera touches no DOM. */
+  const compassWrote = { heading: null, point: null };
+  /**
+   * Write the compass for the camera's current heading, if it changed.
+   *
+   * Rounded to the degree (`compassReading`), which is a change at most a few dozen times per
+   * turn of the head rather than sixty times a second — and it is the honest resolution of the
+   * strip, whose points are 45° apart.
+   */
+  function updateCompass() {
+    if (!compassFace) return null;
+    const reading = compassReading(cam?.yaw ?? 0);
+    const heading = Math.round(reading.heading) % 360;
+    if (heading === compassWrote.heading && reading.index === compassWrote.point) return reading;
+    if (compassWrote.point !== reading.index) {
+      compassSpans[compassWrote.point]?.classList.remove('at');
+      compassSpans[reading.index]?.classList.add('at');
+      compassWrote.point = reading.index;
+    }
+    compassWrote.heading = heading;
+    compassFace.textContent = `${reading.point} ${heading}°`;
+    dbg.compass = { ...reading, heading };
+    return reading;
+  }
 
   /** Everything about the currently-loaded level. */
   let current = null;
+  let monsters = [];
+  /** Jagar Tharn, once the Jewel has summoned him (`beginTharnDuel`). */
+  let tharnSpawn = null;
+  /** One summon at a time: `refreshObjective` and the pickup can both ask in the same frame. */
+  let tharnSummoning = false;
+  // **Is this level a place with creatures in it?** A shop, a tavern or a palace hall has people
+  // and no bestiary; Tharn's vision belongs to a monster encounter, so it waits for a level this
+  // is false on (`populate` sets it, because `inhabited` lives in that function's own scope).
+  let levelInhabited = false;
   const dbg = { frame: 0, painted: 0, seconds: 0, shotReady: false, reloaded: 0, notice: null, figures: 0 };
 
   /**
-   * The wilderness block grid, once per page (see `wildernessGrid`).
-   * @type {{seed: number, indices: Uint8Array, categories: string[], counts: Record<string, number>, blocks: number}|null}
+   * The country's own block lists, once per page (see `countryLists`).
+   * @type {{lists: Record<string, number[]>, blocks: number}|null}
    */
-  let wildGrid = null;
+  let countryCache = null;
+
+  /** Every settlement's own ground in the world, once per page (see `worldFootprints`). */
+  let footprintCache = null;
+
+  /**
+   * **Every dungeon's own door block**, once per page: `"blockRow,blockCol"` → the dungeon.
+   *
+   * The world grid draws a block from where it is, so without this a dungeon's `CITYDATA` pixel
+   * has no ruin in it and the door has to be hunted for nearby (`ruinBlockNear`) — which is how
+   * the owner came out of a dungeon a kilometre from the icon they had walked to (2026-10-17:
+   * *"DUNGEONS ARE NOT WHERE THEY ARE SUPPOSED TO BE ON THE MAP WHEN YOU EXIT A DUNGEON YOURE
+   * FAR FROM WHERE YOU SHOULD BE"*). `game/dungeonSurface.js`'s `dungeonDoorBlock` answers the
+   * block from the dungeon's own pixel; this map is what makes that block **draw a ruin** when
+   * the window is built, so the door stands where the map says it does.
+   * @type {Map<string, {name: string, seed: number, location: object}>|null}
+   */
+  let dungeonBlockCache = null;
+
+  /** The dungeon door blocks of this world (see `dungeonBlockCache`). */
+  function dungeonDoorBlocks() {
+    if (dungeonBlockCache) return dungeonBlockCache;
+    const map = new Map();
+    for (const location of world?.locations ?? []) {
+      if (location.kind !== 'dungeon' || !location.global) continue;
+      const block = dungeonDoorBlock({
+        place: location,
+        // A door in the sea is no door: the pixel's own `TERRAIN.IMG` byte is the finest reading
+        // the map has, and a dungeon record is on land in Arena's own data.
+        accept: (blockRow, blockCol) => !isSeaPixel(world.worldTerrain.indices, {
+          x: Math.floor(blockCol / BLOCKS_PER_PIXEL),
+          y: Math.floor(blockRow / BLOCKS_PER_PIXEL),
+        }),
+      });
+      if (!block) continue;
+      map.set(`${block.blockRow},${block.blockCol}`, {
+        name: location.name, seed: location.dungeonSeed >>> 0, location,
+      });
+    }
+    dungeonBlockCache = map;
+    return map;
+  }
+
+  /** The `.RMD` a block of country is drawn from — the dungeon list for a ruin, by the block's own hash. */
+  function countryBlockId(blockRow, blockCol, lists) {
+    const list = lists?.dungeon?.length ? lists.dungeon : lists?.normal;
+    return list?.length ? list[blockHash(blockRow, blockCol) % list.length] : 0;
+  }
 
   /** Set while a wilderness window slide is under way, so it happens once (see `maybeSlideWilderness`). */
   let sliding = false;
@@ -1036,6 +1443,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   let townsfolk = [];
   /**
+   * **The people who never move** — the still figures the level's own `.INF` paints
+   * (`game/staticFolk.js`'s `STILL_ROLES`): the innkeeper, the armourer at his anvil, a temple's
+   * priest, a guild's wizard, a palace's king and its watch, a tavern's drinkers.
+   *
+   * A separate list from `townsfolk` on purpose: a still person is drawn by the **scenery** pass
+   * (one picture, or a `.DFA`'s own animation) and not by the live-billboard pass, so counting
+   * them as townsfolk would make `state().figures` and `state().townsfolk` disagree. They are
+   * people to every seam that speaks to one — `personNear`, `talk`, `nearestPerson` — and to no
+   * seam that walks one.
+   *
+   * @type {object[]}
+   */
+  let stillPeople = [];
+  /**
    * The `0xB` **doors of this level** — a door leaf each, with its own mesh, its own
    * slice of the collider and its own lock (`game/doors.js`).
    *
@@ -1051,6 +1472,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @type {object[]}
    */
   let loot = [];
+  /** Whether this level's quest thing has been taken — survives `refreshObjective`'s rebuild. */
+  let objectiveTaken = false;
+  /** When the current Levitation runs out (`LEVITATE_SECONDS` after it was cast). */
+  let levitatingUntil = 0;
+  /** Whether the player has already been warned that it is fading. */
+  let levitationWarned = false;
   /** The person being spoken to, or null. */
   let talking = null;
   /**
@@ -1120,18 +1547,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
-   * The wilderness's block grid for a settlement seed, built once per page.
+   * The country's own block lists: every `.RMD` the install ships, graded once per page.
    *
-   * Every `.RMD` the install ships is decoded (they are cached per name), graded by
-   * `classifyBlock` and sorted into the five categories, and the grid is drawn from
-   * the seed in the original's draw order — so the country is the same country every
-   * time the page loads, and two settlements never share it.
+   * The same reading the per-settlement grid always made (`classifyBlock` over the records
+   * themselves), and now the **only** thing the world's country needs from the archive: which of the
+   * install's places is open country, which is a village, a ruin, a building or a colonnade. *Where*
+   * each of those stands is the block's own position rather than a seed's draw
+   * (`game/tamrielGrid.js`'s `countryAt`), which is what makes the country the same country for
+   * every visitor and continuous across every border.
    *
-   * @param {number} seed
-   * @returns {Promise<{seed: number, indices: Uint8Array, categories: string[], counts: Record<string, number>, blocks: number}>}
+   * @returns {Promise<{lists: Record<string, number[]>, blocks: number}>}
    */
-  async function wildernessGrid(seed) {
-    if (wildGrid && wildGrid.seed === seed) return wildGrid;
+  async function countryLists() {
+    if (countryCache) return countryCache;
     const ids = blockIdsFromListing((await data.bsa()).names());
     /** @type {Map<number, object>} */
     const blocks = new Map();
@@ -1143,33 +1571,184 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       }
     }
     const { lists } = wildernessBlockLists(blocks);
-    const drawn = generateWildernessIndices(seed, lists);
-    // `categories` comes along with the grid: it is what says *which* blocks are the country's
-    // ruins, which is what a dungeon's door is decided against (`game/dungeonSurface.js`).
-    wildGrid = { seed, indices: drawn.indices, categories: drawn.categories, counts: drawn.counts, blocks: blocks.size };
-    return wildGrid;
+    countryCache = { lists, blocks: blocks.size };
+    return countryCache;
   }
 
   /**
-   * The settlement's gate, in wilderness coordinates.
+   * **Every settlement's own ground in the world**, once per page.
    *
-   * The `.MIF` header's own start point is the foot of the gate — the cell the city
-   * page arrives on — and a city cell is the wilderness cell beside it, because the
-   * settlement's 128 cells sit at `CITY_ORIGIN` in the wilderness grid (the same
-   * arithmetic `reviseCityQuarter` cuts the quarters with).
+   * A settlement's footprint is its own level's size centred on its world-map pixel, and the size is
+   * the *skeleton's* — a village is 105 cells, a town 106 to 124 and a city up to 128 (measured over
+   * the install's 17 records) — so each is read from the `.MIF` the settlement will be built from.
+   * Seventeen files, each read once, and cached by template name.
    *
+   * @returns {Promise<{settlement: object, footprint: object}[]>}
+   */
+  async function worldFootprints() {
+    if (footprintCache) return footprintCache;
+    /** @type {Map<string, {width: number, depth: number}>} */
+    const sizes = new Map();
+    /** @type {{settlement: object, footprint: object}[]} */
+    const list = [];
+    for (const settlement of world.settlements()) {
+      const request = cityRequestOf(settlement);
+      let size = sizes.get(request.template);
+      if (!size) {
+        try {
+          // A `.MIF`'s own pair is `width` × **`height`** — its *decoded level* is the one that
+          // speaks `{width, depth}` (`decodeLevel`'s `levelDepth`). Reading `skeleton.depth` here is
+          // what put Daggerfall's own ground at a hundred and twenty-eight cells wide and **zero**
+          // deep, which no window ever held, so the wall outside its gate was never in the country.
+          const skeleton = await data.mif(request.template);
+          size = { width: skeleton.width, depth: skeleton.height };
+        } catch (err) {
+          data.warn(`${request.template}: ${err.message}`);
+          size = { width: WILD_WINDOW, depth: WILD_WINDOW };
+        }
+        sizes.set(request.template, size);
+      }
+      list.push({ settlement, footprint: footprintOf(settlement.tamriel ?? settlement.global, size) });
+    }
+    footprintCache = list;
+    return list;
+  }
+
+  /**
+   * The settlement whose own level a window holds, **built and ready to be cut into it**.
+   *
+   * At most one, and that is a property of the world's scale rather than of this function
+   * (`game/tamrielGrid.js`'s header, and the check over the install's own 288 records in
+   * `tests/unit/tamrielgrid.test.mjs`). A window that holds no settlement — most of the country,
+   * now — builds nothing at all, which is the difference between the old country page (which built
+   * its city whether the player was beside it or a mile away) and this one.
+   *
+   * @param {number} originRow @param {number} originCol
+   * @returns {Promise<{settlement: object, footprint: object, request: object, built: object, gates: object[]}|null>}
+   */
+  async function buildSettlementForWindow(originRow, originCol) {
+    const footprints = await worldFootprints();
+    const entry = footprints.find((f) => f.settlement === settlementInWindow(footprints, originRow, originCol));
+    if (!entry) return null;
+    const request = cityRequestOf(entry.settlement);
+    const skeleton = await data.mif(request.template);
+    status(`building ${entry.settlement.name} · ${request.kind} for this window`);
+    const built = await buildCityLevel({
+      data,
+      mif: skeleton,
+      blocksPerSide: request.blocksPerSide,
+      seed: request.seed,
+    });
+    // The gate, read off the city's own outermost line exactly as the city page reads it
+    // (`mifLevel.openSettlementGate`), so the two halves of the door agree about which opening in
+    // which wall they are — which is what makes walking out and walking back in one journey.
+    //
+    // **The law reads a *decoded* level, and `built.level` is not one.** `buildCityLevel` answers
+    // the assembled planes (`game/cityPlan.js`), which is exactly what the window's own copy needs
+    // (`reviseCityInto`) and not what a cell rule needs: `openSettlementGate` opens with
+    // `if (!cells?.length) return []`, so the first version of this asked a level with no `cells`,
+    // was told "no gate", and the country was left with a hole in the settlement's wall that no
+    // rule knew about — measured on Reich Gradkeep, walking north out of the country at the gate
+    // passed **through** the wall into a city that was not there (`gateAtPlayer` never answered, so
+    // the crossing never fired). The decode is the same one the city page makes of its own level,
+    // with the settlement's own architecture `.INF` and the same `mapType`, so the two pages read
+    // one opening in one wall; it costs one pass over the settlement's own cells (~20 ms), and only
+    // on the pages that hold a settlement at all.
+    const decoded = decodeLevel(built.level, await data.inf(request.infName), {
+      width: built.level.width,
+      depth: built.level.depth,
+      mapType: 'city',
+      // Not an arrival: this level is read for its wall line, and never stood on. The city page
+      // is the one that decides where a player comes in (`startPoints`, above).
+      startPoints: [],
+    });
+    const gates = openSettlementGate(decoded);
+    return {
+      settlement: entry.settlement, footprint: entry.footprint, request, built, gates,
+      // The illustrated gate posts are part of the way through (`openSettlementGate`), and a
+      // country window holds the same cells: this is the list `markCountryGates` marks in the
+      // window's own copy of the settlement.
+      gateArt: decoded.gateArtCells ?? [],
+    };
+  }
+
+  /**
+   * **What a block of the world is** — one reading, used by the window, the ruin rule and every
+   * question a test asks about the country.
+   *
+   * Three answers and no guesses: a **city's own ground** when a settlement's footprint reaches the
+   * block (the block's cells are then that city's, cut in by `reviseCityInto`), the **sea** when the
+   * block's own pixel of `TERRAIN.IMG` is sea, and otherwise a piece of **country** drawn from the
+   * block's own position and its pixel's biome (`game/tamrielGrid.js`).
+   *
+   * @param {{settlement: object, footprint: object}[]} footprints
+   * @param {Record<string, number[]>} lists
+   * @param {Map<object, object>} cities  the settlements already built this page (may be empty)
+   * @returns {(blockRow: number, blockCol: number) => object}
+   */
+  function worldBlockAt(footprints, lists, cities) {
+    return (blockRow, blockCol) => {
+      const owner = settlementOfBlock(footprints, blockRow, blockCol);
+      if (owner) {
+        const built = cities.get(owner) ?? null;
+        return built
+          ? { kind: 'city', city: built.built.level, footprint: built.footprint, settlement: owner, category: 'city' }
+          : { kind: 'city-unbuilt', settlement: owner, category: 'city' };
+      }
+      const pixel = {
+        x: Math.floor(blockCol / BLOCKS_PER_PIXEL),
+        y: Math.floor(blockRow / BLOCKS_PER_PIXEL),
+      };
+      if (isSeaPixel(world.worldTerrain.indices, pixel)) return { kind: 'sea', category: 'sea' };
+      // **A dungeon's own block is its ruin** (the owner's *"dungeons are not where they are
+      // supposed to be on the map"*): the block the dungeon's `CITYDATA` pixel names is drawn
+      // from the ruin list rather than from open country, so the door the player climbs out of is
+      // inside the block the map's icon stands in — and, because the block is a function of the
+      // dungeon's own seed (`dungeonDoorBlock`), two dungeons on one pixel are two doors.
+      const dungeon = dungeonDoorBlocks().get(`${blockRow},${blockCol}`);
+      if (dungeon) {
+        // **Open country, not a house.** The ruin list's blocks are buildings — walls, a roof, a
+        // door — so the dungeon's mouth stood in a full house the player could walk into. The
+        // owner, 2026-10-17: *"dungeon entrances are full buildings instead, dungeon entrances
+        // should be a PNG not a building"*. The ground under the entrance is ordinary country;
+        // the mouth itself is the install's own `WDUNGDR1.IMG` flat, placed at the door cell
+        // below, and the door is entered by standing at it.
+        const drawn = countryAt({
+          blockRow, blockCol, lists, climate: world.worldClimateAt(pixel),
+          forceCategory: 'normal',
+        });
+        return { kind: 'rmd', id: drawn.id, category: 'dungeon', dungeon };
+      }
+      const drawn = countryAt({ blockRow, blockCol, lists, climate: world.worldClimateAt(pixel) });
+      return { kind: 'rmd', id: drawn.id, category: drawn.category };
+    };
+  }
+
+  /**
+   * **The world cell a page with no named cell arrives on** — the settlement's own gate foot.
+   *
+   * The `.MIF` header's first start point is where the city page puts the player and where its gate
+   * is, so the country's fallback arrival is the same place in the world grid
+   * (`footprint.row0 + row`): standing in the gateway, on the wall's own line, with the country on
+   * one side and the city's street on the other. A settlement whose skeleton has no start point —
+   * or a page for a place that is not a settlement at all (a dungeon's country) — arrives at the
+   * middle of its own pixel instead.
+   *
+   * @param {object|null} footprint
    * @returns {{row: number, col: number}}
    */
-  function settlementGateCell() {
-    const centre = {
-      row: CITY_ORIGIN + Math.floor(mif.depth / 2),
-      col: CITY_ORIGIN + Math.floor(mif.width / 2),
-    };
-    const start = mif.startPoints?.[0];
-    // `MIFUtils::ARENA_UNITS`: 128 Arena units to a cell, and the header's pair is
-    // (x, y) in level terms, which is (col, row) to the rest of the game.
-    if (!start) return centre;
-    return { row: CITY_ORIGIN + Math.floor(start.y / 128), col: CITY_ORIGIN + Math.floor(start.x / 128) };
+  function homeCellOf(footprint) {
+    if (footprint) {
+      const start = mif.startPoints?.[0];
+      const row = start ? Math.floor(start.y / 128) : Math.floor(footprint.depth / 2);
+      const col = start ? Math.floor(start.x / 128) : Math.floor(footprint.width / 2);
+      return {
+        row: footprint.row0 + Math.min(footprint.depth - 1, Math.max(0, row)),
+        col: footprint.col0 + Math.min(footprint.width - 1, Math.max(0, col)),
+      };
+    }
+    const pixel = place?.tamriel ?? { x: 175, y: 99 };
+    return { row: pixel.y * CELLS_PER_PIXEL + 128, col: pixel.x * CELLS_PER_PIXEL + 128 };
   }
 
   /**
@@ -1250,15 +1829,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         renderer.uploadTexture(ARENA_TEXTURE_ARCHIVE, image.frames ? `${name}#${frame.index}` : name,
           imageToUpload(frame.indices, image.width, image.height, image.palette ?? palette));
       }
-      const size = flatSize(image.width, image.height, name);
+      // The record's own `F:` size flag, when a map uses one (`arena/infFile.js`); this install's
+      // `.INF`s use none, and a name with two records takes the larger of their flags.
+      const modifier = list.reduce((most, flat) => Math.max(most, flat.modifier ?? 1), 1);
+      const size = flatSize(image.width, image.height, name, { modifier });
+      // **The floor under a flat is the cell's, not the level's** (`flats.js`'s `flatGroundY`): a
+      // flat the map painted on a raised block (a platform, a crate, a step) stands on the block's
+      // own top. Based on `level.floorY` alone, the hay and grass of a camp stood at floor level and
+      // read as floating in the middle of the block (or buried in it).
       const centers = list.map((flat) => [
         (flat.row + 0.5) * CELL_SIZE,
-        flatBaseY(flat.yOffset ?? 0, { height: size.h, floorY, ceilingY }),
+        flatBaseY(flat.yOffset ?? 0, {
+          height: size.h,
+          floorY: flatGroundY(level.cells[flat.row * level.width + flat.col], { floorY, cellSize: CELL_SIZE }),
+          ceilingY,
+        }),
         (flat.col + 0.5) * CELL_SIZE,
       ]);
       batches.push({
         batch: renderer.createBillboardBatch(ARENA_TEXTURE_ARCHIVE, image.frames ? `${name}#0` : name, size, centers, { dynamic: false }),
-        name, frames: image.frames?.length ?? 1,
+        name, frames: image.frames?.length ?? 1, size,
         count: list.length,
         hanging: list.filter((flat) => (flat.yOffset ?? 0) < 0).length,
       });
@@ -1460,22 +2050,33 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /**
    * Free one level's GL payloads — the mesh, every door leaf's mesh, the scenery and
-   * loot billboard batches, and the creature sprite sets.
+   * loot billboard batches, and (unless the caller keeps them) the creature sprite sets.
    *
    * Called (a) by `dispose()` when the scene is replaced and (b) by `loadLevel` *after*
    * the new level is fully built, just before `current` is re-pointed — never before,
    * because the async build between teardown and re-assignment lets paints run against
    * a live-reading `current` whose geometry is already freed.
+   *
+   * **`keepFigures` is the country's slide** (D-60): a window that moves is not a level the
+   * player left, so the people and the creatures standing on it keep their art. Freeing it
+   * there was the reported *"you cant see yourself enemies and npcs in the wilderness it looks
+   * like sprites are invisible in the wilderness"* — `spriteSets` was cleared while the carried
+   * actors still named those sheets, and the player's own third-person batch was destroyed with
+   * them, so every figure vanished on the first slide and never came back. `populate` is the one
+   * place that replaces a crowd's art, and it still frees the old sets itself.
    * @param {object|null} level  a `current` record, or null
+   * @param {{keepFigures?: boolean}} [opts]
    */
-  function releaseLevelPayloads(level) {
+  function releaseLevelPayloads(level, { keepFigures = false } = {}) {
     if (!level) return;
     if (level.mesh) renderer.destroyMesh(level.mesh);
     for (const leaf of level.leaves ?? []) if (leaf.mesh) renderer.destroyMesh(leaf.mesh);
     for (const batch of level.sceneryBatches ?? []) renderer.destroyBillboardBatch(batch);
     for (const record of level.lootBatches ?? []) if (record.batch) renderer.destroyBillboardBatch(record.batch);
+    if (keepFigures) return;
     for (const set of spriteSets.values()) {
       if (set.batch) renderer.destroyBillboardBatch(set.batch);
+      if (set.mirrorBatch) renderer.destroyBillboardBatch(set.mirrorBatch);
       for (const batch of set.frameBatches?.values() ?? []) renderer.destroyBillboardBatch(batch);
     }
     spriteSets.clear();
@@ -1484,8 +2085,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /**
    * Load one level of the map: decode, mesh, upload textures, rebuild collision.
    * @param {number} index
+   * @param {{keepFigures?: boolean}} [opts]  keep the people's and the creatures' art alive
+   *   across the swap — true for the country's own slide, false for a level the player left
    */
-  async function loadLevel(index) {
+  async function loadLevel(index, { keepFigures = false } = {}) {
     // A generated dungeon's level is assembled here, out of the install's own pieces, and
     // then takes the rest of this function's path unchanged — it is a level like any other
     // by the time the decoder sees it.
@@ -1515,7 +2118,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let infName = mifLevel.info.toUpperCase();
     let city = null;
     let settlement = null;
-    if (cityRequest) {
+    /** The settlement whose own ground a **country** window holds, if any (see `worldBlockAt`). */
+    let country = null;
+    /**
+     * Where the country window stands in the world — `{row, col}` of its first cell.
+     *
+     * Kept **outside** the wild branch because the gate has to be marked in the same load: the
+     * marker used to read `current.wild`, and on a page's first level `current` is still null
+     * (or the page that came before), so the settlement's opening was never marked in the window
+     * — the owner's *"i still cant go out of cities because there is a wall in front of the
+     * gate"*, measured as `gateway: []` on the country page outside Daggerfall while the same
+     * city page had its two. A `?wild=` page that slides the window keeps this correct too,
+     * because it is this load's own origin and not the previous page's.
+     */
+    let wildOrigin = null;
+    // **A country page does not build the settlement it is named for** (block B26). It used to: every
+    // wilderness window was the page's own location's city, whether the player was beside its wall or
+    // a province away, and the city's own ground was cut into the window's middle four blocks. The
+    // world grid instead builds the settlement whose own ground the window *holds* — at most one, and
+    // usually none (`buildSettlementForWindow`) — so the country outside a city is the country and
+    // nothing else, and a page far from any town builds no city at all.
+    if (cityRequest && !wildRequest) {
       status(`building ${mapName} · ${cityRequest.kind} seed ${cityRequest.seed}`);
       settlement = await buildCityLevel({
         data,
@@ -1523,11 +2146,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         blocksPerSide: cityRequest.blocksPerSide,
         seed: cityRequest.seed,
       });
-      if (!wildRequest) {
-        city = settlement;
-        voxels = city.level;
-        infName = cityRequest.infName;
-      }
+      city = settlement;
+      voxels = city.level;
+      infName = cityRequest.infName;
     }
 
     // ── the wilderness ─────────────────────────────────────────────────────────
@@ -1547,6 +2168,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let levelWidth = mifLevel.width ?? mif.width;
     let levelDepth = mifLevel.depth ?? mif.height;
     let wild = null;
+    // Set only when the wilderness scenery INF differs from its ground INF; applied after loading
+    // the scenery INF so its trees remain while its floors borrow the country's own textures.
+    let wildGroundInfName = null;
     let gateCell = null;
     let standCell = null;
     /**
@@ -1565,17 +2189,51 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      */
     let wildRuin = null;
     if (wildRequest) {
-      const seed = wildRequest.seed ?? place?.wildernessSeed ?? cityRequest?.seed ?? 20232;
-      const grid = await wildernessGrid(seed);
+      // **The country is the world** (block B26). There is no per-settlement grid any more: the
+      // blocks of a window are the world's own (`game/tamrielGrid.js`), a settlement stands where
+      // its world-map pixel says, and the ground and the scenery are the biome of the pixel the
+      // player is on. Everything below reads that one grid.
+      const lists = (await countryLists()).lists;
+      const footprints = await worldFootprints();
+      /** @type {Map<object, object>} */
+      const cities = new Map();
+      const blockAt = (blockRow, blockCol) => worldBlockAt(footprints, lists, cities)(blockRow, blockCol);
+      // Where the settlement the player came *from* stands, so a page with no named cell arrives
+      // outside its gate rather than in the middle of the world.
+      const home = footprints.find((f) => f.settlement === place) ?? null;
       const ruinSeed = params.has('ruin') ? Number(params.get('ruin')) : null;
       if (Number.isFinite(ruinSeed)) {
-        const ruin = ruinBlockFor(grid.categories, ruinSeed);
+        // **The dungeon's own door block**: its `CITYDATA` pixel, the same one the world map puts
+        // the icon on. The owner, 2026-10-17: *"DUNGEONS ARE NOT WHERE THEY ARE SUPPOSED TO BE ON
+        // THE MAP WHEN YOU EXIT A DUNGEON YOURE FAR FROM WHERE YOU SHOULD BE"* — the walk
+        // (`ruinBlockNear`, kept below as the fallback) could put the door 1.28 km from the icon.
+        // The door block is the block `worldBlockAt` draws a ruin for, so the two agree by
+        // construction; the fallback is the old walk, for a dungeon whose pixel is all sea.
+        //
+        // **`place` here is the country's settlement, not the dungeon**: the exit's URL names a
+        // settlement and a `?ruin=<seed>`, and the first version of this block asked the
+        // *settlement's* pixel for the dungeon's door — measured on Stonekeep by the suite's new
+        // pixel check: door (103,96) against the icon (107,92), four pixels of country out. The
+        // seed is the dungeon's own, so the record is looked up by it (`dungeonSeed` is unique per
+        // dungeon: it is derived from the record and its province).
+        const ruinPlace = (world?.locations ?? []).find((location) => location.kind === 'dungeon'
+          && (location.dungeonSeed >>> 0) === (ruinSeed >>> 0)) ?? place;
+        const own = dungeonDoorBlock({
+          place: ruinPlace,
+          accept: (blockRow, blockCol) => blockAt(blockRow, blockCol).category === 'dungeon',
+        });
+        const ruin = own ?? ruinBlockNear({
+          blockRow: Math.round((ruinPlace?.tamriel?.y ?? 0) * BLOCKS_PER_PIXEL),
+          blockCol: Math.round((ruinPlace?.tamriel?.x ?? 0) * BLOCKS_PER_PIXEL),
+          isRuin: (blockRow, blockCol) => blockAt(blockRow, blockCol).category === 'dungeon',
+        });
         if (ruin) wildRuin = { seed: ruinSeed, block: { blockRow: ruin.blockRow, blockCol: ruin.blockCol }, cell: { row: ruin.row, col: ruin.col } };
       }
-      // Where the window is. `?wild=row,col` names a cell; without one the player
-      // arrives at the settlement's own start point — the foot of its gate, the same
-      // cell the city page arrives on, because both places share one grid.
-      gateCell = settlementGateCell();
+      // The settlement's gate, in world cells — the arrival a bare `?wild` means, and the same
+      // cell the city page's own gate says is outside it. Computed from the footprint rather than
+      // from a decoded level: the gate's own test happens on the page that holds the city
+      // (`gateAtPlayer`), which is the one place both halves of the door have to agree.
+      gateCell = home ? homeCellOf(home.footprint) : null;
       // **The world remembers where it left them.** When `readWildRequest` did *not*
       // hand in a cell (a bare `?wild` with no coordinates, or the remembered-cell boot
       // above), the save's own answer wins over the gate — that is the whole point of a
@@ -1583,44 +2241,102 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const remembered = wildRequest.cell
         ? null
         : (() => {
-          try {
-            const saved = JSON.parse(localStorage.getItem(LAST_LOCATION_KEY) ?? 'null');
-            const cell = saved?.wild && Number.isFinite(saved.wild.row)
-              ? { row: Math.round(saved.wild.row), col: Math.round(saved.wild.col) }
-              : null;
-            const same = typeof saved?.name === 'string' && place?.name
-              && saved.name.toLowerCase() === place.name.toLowerCase();
-            return same ? cell : null;
-          } catch { return null; }
+          const saved = loadLastLocation(world);
+          return saved?.wild && place?.name && saved.name.toLowerCase() === place.name.toLowerCase()
+            ? saved.wild
+            : null;
         })();
       // **The ruin beats the gate, and an explicit cell beats both.** A page booted by a
       // dungeon's exit carries `?ruin=` and no cell, so the player stands at the ruin the
       // dungeon's door is in — the way back down — while a page that names a cell (`?wild=12,34`,
       // the gate crossing, a slide of the window) still lands exactly there, and the save's
       // remembered cell answers a bare `?wild`.
-      const at = wildRequest.cell ?? wildRuin?.cell ?? remembered ?? gateCell;
+      const explicit = wildRequest.cell ?? wildRuin?.cell ?? remembered ?? null;
       const cameFromMemory = Boolean(remembered);
-      const origin = wildernessWindowOrigin(at.row, at.col);
-      status(`wilderness · seed ${seed} · blocks ${grid.counts.normal ?? 0} normal + ${grid.counts.village ?? 0} village + ${grid.counts.dungeon ?? 0} ruins`);
+      let at = explicit ?? gateCell ?? homeCellOf(home?.footprint);
+      let origin = wildernessWindowOrigin(at.row, at.col);
+      wildOrigin = origin;
+      // **The ground this window stands on** (`game/tamrielGrid.js`): the biome of the pixel at the
+      // window's own centre, which is what makes the country's trees, rocks, ground textures and sky
+      // the right ones for wherever in Tamriel the player has walked to. One INF per page, and a page
+      // is 128 cells (320 m) — small enough that the biome does not change inside one.
+      let climate = youAreHere(world, at.row, at.col).climate;
+      // The settlement whose own ground this window holds, built **only** when it really holds one:
+      // most of the country is country.
+      let built = await buildSettlementForWindow(origin.row, origin.col);
+      // **A settlement's door is its own gate, not the `.MIF` header's start point.** A bare
+      // `?wild`/`?location=X&wild` used to arrive at `homeCellOf`, which reads the skeleton's first
+      // start point through `mif` — the *page's* map. On a country page that is the settlement's
+      // skeleton, whose start point is the gate for a 128-cell city and the middle of the village
+      // for a 124-cell one. Measured on Reich Gradkeep: the page landed the player at (64,64), the
+      // window's centre, with the village's whole east wall between them and its gate. The window
+      // now asks the settlement it has just built for the opening (`openSettlementGate`), walks
+      // outward from it until the ground is land rather than sea (`landwardOutsideGate`), and — if
+      // that gate is outside the window the first origin chose — moves the window to hold it.
+      if (!explicit && built?.gates?.length) {
+        const gate = landwardOutsideGate(
+          built.footprint, built.gates[0],
+          (row, col) => !isSeaCell(world.worldTerrain.indices, row, col),
+        );
+        if (gate.row !== at.row || gate.col !== at.col) {
+          const next = wildernessWindowOrigin(gate.row, gate.col);
+          gateCell = gate;
+          at = gate;
+          if (next.row !== origin.row || next.col !== origin.col) {
+            origin = next;
+            wildOrigin = origin;
+            climate = youAreHere(world, at.row, at.col).climate;
+            built = await buildSettlementForWindow(origin.row, origin.col);
+          }
+        }
+      }
+      if (built) { cities.set(built.settlement, built); country = built; }
+      const windowBlocks = blockAt;
+      status(`the country · ${climate} · window ${origin.row},${origin.col}`
+        + `${built ? ` · ${built.settlement.name}'s wall is in it` : ''}`);
       wild = await buildWildernessWindow({
         data,
-        indices: grid.indices,
         originRow: origin.row,
         originCol: origin.col,
-        city: settlement?.level ?? null,
+        blockFor: (blockRow, blockCol) => {
+          const answer = windowBlocks(blockRow, blockCol);
+          if (answer.kind === 'city') return { kind: 'city', city: answer.city, footprint: answer.footprint };
+          if (answer.kind === 'sea') return { kind: 'sea' };
+          if (answer.kind === 'rmd') return { kind: 'rmd', id: answer.id };
+          return { kind: 'empty' };
+        },
         onWarn: (m) => console.warn(`[wilderness] ${m}`),
       });
       voxels = wild.level;
       levelWidth = WILD_WINDOW;
       levelDepth = WILD_WINDOW;
-      infName = wildRequest.infName
-        ?? wildernessInfName({ climate: cityRequest?.climate ?? 'temperate', weather: cityRequest?.weather ?? 'clear' });
+      // Carried on the window's own record, so the HUD, the debug seam and the map all read the
+      // country's own biome rather than re-deriving one (`windowClimate` is a reading of the grid).
+      wild.climate = climate;
+      const here = youAreHere(world, at.row, at.col);
+      wild.here = here;
+      wild.weather = here.weather;
+      // Ground and trees do not always come from the same climate. Morrowind has desert ground
+      // with mountain wilderness scenery; Elsweyr has temperate ground with desert scenery. Each
+      // province's optional wildernessArchitecture is independent of the settlement architecture,
+      // so other provinces (including Summerset) keep their current wilderness unchanged.
+      const provinceStyle = styleOf({ provinceID: here.provinceID, name: '', terrainClimate: climate });
+      const wildernessClimate = provinceStyle.wildernessArchitecture ?? climate;
+      const wildernessNames = wildernessInfNames({
+        ground: climate, scenery: wildernessClimate, weather: wildRequest.weather ?? here.weather ?? 'clear',
+      });
+      infName = wildRequest.infName ?? wildernessNames.infName;
+      wildGroundInfName = wildRequest.infName ? null : wildernessNames.groundInfName;
       // The player arrives at the cell that was chosen — the gate when the page named
       // none — in the window's own coordinates, which is the same cell of the same
       // grid either way.
       standCell = { row: at.row - origin.row, col: at.col - origin.col };
       // Debug: where the memory put the player, so a mismatch is readable on the spot.
       if (cameFromMemory) dbg.wildFromMemory = { at, after: remembered };
+      dbg.wild = {
+        at, origin, climate, seaBlocks: wild.seaBlocks, cityBlocks: wild.cityBlocks,
+        settlement: built?.settlement.name ?? null,
+      };
     }
 
     // **The country's floors under the city's architecture** (B18/D-41): the settlement is built
@@ -1629,7 +2345,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // architecture's, and two INFs whose floor tables differ in length are left alone (the merge
     // says so rather than shifting an index).
     let inf = await data.inf(infName);
-    if (cityRequest?.groundInfName) {
+    // A country page ordinarily uses one INF for both ground and scenery. For the two provinces
+    // whose wilderness styles differ, `wildernessInfNames` selects a scenery INF and this same
+    // floor-table merge keeps the ground climate under its trees.
+    if (!wildRequest && cityRequest?.groundInfName) {
       const countryInf = await data.inf(cityRequest.groundInfName);
       const mixed = withGroundFloors(inf, countryInf);
       inf = mixed.inf;
@@ -1637,6 +2356,55 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // `cityRequest` for every other per-level fact, and a fresh name inside this 9 900-line
       // closure is exactly where the D-34 scope mistake hid.
       cityRequest.groundFloors = { from: cityRequest.groundInfName, merged: mixed.merged, reason: mixed.reason };
+      // Summerset opts into a separate tree-art climate. Merge only tree pictures at matching flat
+      // indices; desert walls, props, and temperate ground textures stay as selected above.
+      if (cityRequest.treeInfName) {
+        const treeInf = cityRequest.treeInfName === cityRequest.groundInfName
+          ? countryInf
+          : await data.inf(cityRequest.treeInfName);
+        const treeMixed = withGroundTreeFlats(inf, treeInf);
+        inf = treeMixed.inf;
+        cityRequest.settlementTreeFlats = {
+          from: cityRequest.treeInfName,
+          merged: treeMixed.merged,
+          replaced: treeMixed.replaced,
+          reason: treeMixed.reason,
+        };
+      }
+    } else if (wildRequest && wildGroundInfName) {
+      // Same mixed-style rule as a settlement: keep the scenery INF's flats (trees, rocks and
+      // bushes), but replace its @FLOORS entries with the country's ground textures.
+      const groundInf = await data.inf(wildGroundInfName);
+      const mixed = withGroundFloors(inf, groundInf);
+      inf = mixed.inf;
+      wild.groundFloors = { from: wildGroundInfName, merged: mixed.merged, reason: mixed.reason };
+    }
+    // **The half of the stairway the archive does not draw** (D-53). A crypt's deeper storey is
+    // real — `WCRYPT1…8.MIF` level 1 carries its own `*LEVELUP` cell and its own roster (23
+    // species in `crypt2.inf`, seven creatures fielded) — but the floor above has **no down
+    // stair**, so nothing a player can do reaches it. The pair is read from the data's own
+    // half (`mifLevel.fillStairPair`): the lower level's up-stair cell, this level's wall beside
+    // it, this level's own `*LEVELDOWN` art. Only a **lair** is treated so: a shop's unused
+    // upper floor is not a place the file intends anybody to go, and stamping stairs into one
+    // would invent a building rather than complete a pair. Stamped as this project's rule —
+    // Arena's own placements are in `A.EXE` (D11).
+    if (!wildRequest && !cityRequest && !generated && mif.levels[index + 1]) {
+      const kind = shopForInteriorFile(mapName)?.kind ?? null;
+      if (kind === 'crypt' || kind === 'tower') {
+        try {
+          const below = mif.levels[index + 1];
+          const belowInf = await data.inf(below.info);
+          const filled = fillStairPair({
+            map1: voxels.map1, inf, belowMap1: below.map1, width: levelWidth, belowInf,
+          });
+          if (filled) {
+            voxels = { ...voxels, map1: filled.map1 };
+            dbg.stairFill = { map: mapName, level: index, at: filled.at };
+          }
+        } catch (err) {
+          data.warn(`${mapName} level ${index}: no stair pair with level ${index + 2} — ${err.message}`);
+        }
+      }
     }
     const level = decodeLevel(voxels, inf, {
       width: levelWidth,
@@ -1669,7 +2437,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // against the art and only the push rule crossed (`maybeWalkThroughGate`, D-27).
     // `openSettlementGate` marks the opening `gateway: true` — drawn as it always was, in nobody's
     // collision soup — and only a settlement has one, so a dungeon's arches are untouched.
-    const gates = cityRequest || wildRequest ? openSettlementGate(level) : [];
+    // **Only a city's own level** (B26): the openings are read off the settlement's outermost line,
+    // and a window's outermost line is the window's, not a city's. A country page reads the gate of
+    // the settlement it holds instead (`buildSettlementForWindow`), and marks those same cells here
+    // (`markCountryGates`).
+    const gates = cityRequest && !wildRequest ? openSettlementGate(level) : [];
     if (gates.length) {
       data.warn(`gate open: ${gates.map((g) => `${g.axis} at ${g.row},${g.col}`).join(' ')}`);
     }
@@ -1677,8 +2449,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // this cannot be written onto `current` here — it is `null` until then, and the first version
     // of this block did exactly that and killed the page at boot: *"Cannot set properties of null
     // (setting 'gateway')'"*). The marking itself is already on the level's own cells, which is
-    // what `walkableWorld` and the mesher read.
-    const gatewayCells = gates;
+    // what `walkableWorld` and the mesher read. **The country marks the same opening** (B26): a
+    // window that holds a settlement's wall holds its gateway voxel too, and that voxel is *solid*
+    // art unless it is marked — which is what would have made the door walkable from the street side
+    // and a wall from the country side.
+    const countryGateCells = country ? markCountryGates(level, country, wildOrigin) : [];
+    // A city page's gate art is already marked on the level by `openSettlementGate`; this list is
+    // the seam's own report (and the boundary pass's exception list).
+    const cityGateArt = cityRequest && !wildRequest ? (level.gateArtCells ?? []) : [];
+    const gatewayCells = [...gates, ...cityGateArt, ...countryGateCells];
     // A generated dungeon chooses its own arrival on the *decoded* level — the pieces'
     // header point when it opens onto the level, the largest walkable region's middle when
     // it does not (see `dungeonPlan.spawnCellFor`, and why a fixed centre cell is no good).
@@ -1715,10 +2494,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const built = buildLevelMesh(level, {
       cellSize: CELL_SIZE,
       upperStoreys: Boolean(cityRequest) || Boolean(wildRequest),
+      // **The map's own edge** (`mifMesh.js`'s boundary pass). A dungeon's `.MIF` stops at its own
+      // last cell with no wall around it — the whole outer ring of every quest dungeon is walkable
+      // open air — which is the owner's *"walls … are vertical and lead off the map"* and why a
+      // player can walk out of the world. The wall is built from the level's own art here. A
+      // **country** page is the one level that must stay open: its window is a slice of an endless
+      // grid and the scene re-centres the world when the player walks across the band (D-36), so a
+      // wall around it would fence the country in.
+      boundaryWalls: !wildRequest,
     });
-    // The shops whose doors are on this level. A city is the only place they exist: a
-    // `0xA` edge in a dungeon is a fence, a gate or a brazier.
-    const doors = city ? cityDoors({ level, city, inf, blocksPerSide: cityRequest.blocksPerSide }) : [];
+    // The doors whose building this level is. **A city and the country both have them** —
+    // the city's are `cityDoors` (its `*MENU` table), the country's are `wildDoors` (the
+    // wilderness INF's table, which is a different law on the same art) — and everywhere
+    // else there is none: a `0xA` edge in a dungeon is a fence, a gate or a brazier.
+    const doors = city ? cityDoors({
+      level, city, inf,
+      blocksPerSide: cityRequest.blocksPerSide,
+      // The settlement itself, so the palace rule can read its kind and seed (every city-state
+      // has a court; a village does not).
+      settlement: cityRequest.settlement ?? place ?? null,
+    }) : (wild ? wildDoors({ level, inf, blocks: wild.blocks }) : []);
 
     // ── the doors themselves ───────────────────────────────────────────────────
     //
@@ -1729,12 +2524,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // doors in `39300577.MIF`'s first level, none of them openable.
     const locks = lockTable(voxels);
     const leafSpots = built.doors.map((entry) => {
-      const lockLevel = lockAt(locks, entry.row, entry.col);
+      const palaceSeal = /^IMPPAL/i.test(mapName) && index === 3 && entry.row === 24 && entry.col === 21;
+      const lockLevel = palaceSeal ? 25 : lockAt(locks, entry.row, entry.col);
       const saved = doorStateAt(worldMemory, memoryKey(index), entry);
       const open = saved?.open ? 1 : 0;
-      return { ...entry, lockLevel: saved?.lockLevel ?? lockLevel,
+      return { ...entry, lockLevel: saved?.lockLevel ?? lockLevel, questSeal: palaceSeal,
         locked: saved?.locked ?? lockLevel > 0, open, target: open, mesh: null };
     });
+    // **The install's own riddle doors.** Every Staff-piece dungeon ships riddles in its `.INF`
+    // and a `TRIG` cell in front of the door each one seals (measured over all sixteen, 2026-10-21:
+    // `halls3`'s answer is 108, `elden2`'s is time, `labrnth2`'s are Mogrus and Kanen). The port
+    // read the riddle as a line of prose and then let the door be forced, which is the owner's
+    // *"puzzles … that are not working"*. This tags those leaves: a riddle door is opened by its
+    // answer, never by a key or a shove, and the panel beside it knows what to ask.
+    // The level's own `*TRIG` cells (the raw level's list is what they name). Read here, above
+    // the doors, because a riddle sign is what makes its door a riddle door.
+    const triggerCells = triggerTable(mifLevel);
+    const riddleTable = [];
+    for (const trigger of triggerCells.values()) {
+      const riddle = triggerRiddle(inf, trigger);
+      if (!riddle) continue;
+      const targets = riddleDoors({ level, trigger, locks });
+      const leaves = targets.map((target) => leafSpots.find((leaf) => leaf.row === target.row && leaf.col === target.col))
+        .filter(Boolean);
+      if (!leaves.length) continue;
+      for (const leaf of leaves) {
+        leaf.riddle = { textIndex: trigger.textIndex, answers: riddle.answers };
+        leaf.riddleSolved = false;
+      }
+      riddleTable.push({ trigger, riddle, leaves });
+    }
     // The keys for a level's sealed doors, on the player's own side of them.
     const placedKeys = placeKeys({ level, doors: leafSpots, spawn: level.spawn });
     if (leafSpots.length) {
@@ -1768,6 +2587,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (!leaf.target && leaf.collider.indices.length) collider.addMesh(leaf.id, leaf.collider.positions, leaf.collider.indices, identity());
     }
     const motor = new PlayerMotor(collider, { speed: 34, running: 20, swimming: 20 });
+    // ── the climb is switched on ────────────────────────────────────────────────
+    //
+    // **One flag, and without it the owner's whole complaint stands.** The engine's ledge climb
+    // (`motor.js`'s `_ledgeStep`/`_ledgeProbe`) is a capability the *host* turns on, exactly as
+    // `waterWalking` is — off, a scene steps and falls as it always did. The engine half shipped
+    // with the deeper chasm beds (`mifMesh.js`: a pit 1.2 m, water 1.55 m, lava 1.0 m, against the
+    // motor's own 0.5 m step) and the scene half was missing, so every one of those beds was a
+    // hole with no way out of it: the owner's *"the ability to climb is needed"*, and worse than
+    // the shallow chasms it replaced. The probe reads the collider the scene has just built.
+    motor.ledgeClimbing = true;
+    // …and **the level's own edge is not a ledge**: the haul asks this before it latches, so a
+    // chasm beside the outer wall cannot carry the player over it and out of the map. Only a
+    // walkable cell of the level just loaded is ground; a cell of air, a wall or a chasm is not.
+    motor.canStandAt = (x, z) => {
+      if (!current?.level) return false;
+      return walkableCell(Math.floor(x / CELL_SIZE), Math.floor(z / CELL_SIZE));
+    };
 
     // ── where the player really starts ──────────────────────────────────────────
     //
@@ -1845,6 +2681,30 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // carry one and what art each names; one static billboard batch per picture draws
     // every copy of it.
     const scenery = collectFlats(level, inf);
+    // **The dungeon's mouth is the install's own ruin entrance.** The owner, 2026-10-19: *"at the
+    // moment all dungeon entaraces use the sprite of a door instead of the AR-sprite-NDENT1 ...
+    // they should all use this sprite"*. `NDENT1.IMG` (127×100) is Arena's illustrated dungeon
+    // entrance — the arched mouth in a rock face — and it replaces the 64×64 `WDUNGDR1.IMG` door
+    // flat everywhere a ruin's way down is drawn. It stands at the ruin's own cell, in the
+    // window's local coordinates (`wild.originRow/originCol`), so the page draws it where the
+    // entrance is and not at the window's corner.
+    if (wildRuin?.cell && wild?.originRow != null) {
+      const row = wildRuin.cell.row - wild.originRow;
+      const col = wildRuin.cell.col - wild.originCol;
+      if (row >= 0 && col >= 0 && row < level.depth && col < level.width) {
+        const name = 'NDENT1.IMG';
+        let list = scenery.byName.get(name);
+        if (!list) scenery.byName.set(name, list = []);
+        const flat = { row, col, flatIndex: -1, name, on: 'floor', yOffset: 0, itemIndex: null, dungeonMouth: true };
+        list.push(flat);
+        scenery.flats.push(flat);
+        // The door **is the mouth**: with the block drawn as open country there is no arch for
+        // `ruinDoorStand` to find, so the cell the picture stands on is the doorway and the spot
+        // a player stands to use it (`ruinDoorCells` answers it).
+        wildRuin.mouth = { row, col };
+        dbg.dungeonMouth = { row, col, name };
+      }
+    }
     // ── the furniture ────────────────────────────────────────────────────────
     // A decoded interior carries its `.INF`'s own thin few flats; now the room is dressed
     // too. `game/furnish.js` puts Arena's own flat art on the floor by family (tables,
@@ -1865,12 +2725,266 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       list.push({ row: prop.row, col: prop.col, flatIndex: -1, name: prop.name, on: 'floor', yOffset: 0, itemIndex: null, furniture: true });
       scenery.flats.push({ row: prop.row, col: prop.col, flatIndex: -1, name: prop.name, on: 'floor', yOffset: 0, itemIndex: null });
     }
+    // ── the people the map itself paints ─────────────────────────────────────
+    //
+    // **The room's own still company** (`game/staticFolk.js`'s `STILL_ROLES` is the census).
+    // A building's `.INF` names who stands in it, and the numbers are the install's own: measured
+    // 2026-10-18 with `.scratch/placedpeople.mjs` (every level of every shipped interior, its own
+    // `.INF`), `TAVERN1.MIF`'s upper floor places `BARTEND.DFA`, `MUSIC1/2.DFA` and eight
+    // `MAN`/`WOMAN` drinkers; `EQUIP1.MIF` places `SMITH.DFA` (the armourer at his anvil, nine
+    // animation frames); `TEMPLE1.MIF` `PREST1.DFA`; `MAGE1.MIF` `WIZZ1.DFA`; and `PALACE1.MIF`
+    // `KING.IMG` with **fourteen** `GUARD1M.IMG` beside him.
+    //
+    // **They were read and then thrown away.** A flat carrying an `*ITEM` number is a thing the
+    // map placed (`game/dungeonItems.js`), so the scenery pass kept item flats out of its batch
+    // and the loot pass only draws pickups — the people in between were drawn by neither. The
+    // owner: *"the innkeeper the priest the king and the guards in the palaces that i cant find in
+    // perfectarena"*. They are scenery flats (one picture, `DFA`-animated) **and** people (talkable,
+    // named), so they are collected here once and used for both: the scenery pass draws them, and
+    // `personNear`/`talk`/`nearestPerson` read `stillFolk`.
+    const spawns = spawnsFromFlats(scenery);
+    /** @type {object[]} */
+    const stillFolk = [];
+    const stillArtOwned = new Map();
+    // **Whose palace, and which guard stands in it.** The owner, 2026-10-19: *"not all the
+    // palaces should have AR-sprite-GUARD1D.png the places where is not desertic should have
+    // AR-sprite-GUARD1M.png"*. Arena ships both stills (`GUARD1D.IMG`, `GUARD1M.IMG`) and the
+    // palace maps that happen to place the desert one (`PALACE3`, `PALACE5`) are picked by a
+    // city's seed, not its country — so a Skyrim palace could stand a desert watch at its door.
+    // The land is the law: a palace whose climate is not `desert` draws the `M` guard in place
+    // of the `D` one. The climate comes from the settlement the door belonged to, which is the
+    // same `back` reading the court's titles use.
+    const palaceClimate = (() => {
+      if (!isPalaceMap(mapName)) return null;
+      const back = String(params.get('back') ?? '').replace(/^\?/, '');
+      let backName = null;
+      try { backName = back ? new URLSearchParams(back).get('location') : null; } catch { backName = null; }
+      const seat = place ?? fromPlace
+        ?? (world?.locations ?? []).find((location) => location.name === backName) ?? null;
+      return seat?.climate ?? 'temperate';
+    })();
+    for (const flat of scenery.flats) {
+      const role = stillRoleFor(flat.name);
+      if (!role) continue;
+      // The watch's day/dusk art is the land's, not the map's (see `palaceClimate`).
+      const art = palaceClimate && palaceClimate !== 'desert' && flat.name === 'GUARD1D.IMG'
+        ? 'GUARD1M.IMG' : flat.name;
+      if (!stillArtOwned.has(art)) stillArtOwned.set(art, await data.has(art));
+      // Art this install does not ship is not a person standing in the room; the palace's
+      // `KNIGHT` record is the case that exists in the data and not in `GLOBAL.BSA`.
+      if (!stillArtOwned.get(art)) continue;
+      const person = {
+        file: art,
+        art,
+        role: role.role,
+        description: role.label,
+        keeper: role.keeper,
+        still: true,
+        place: {
+          row: flat.row, col: flat.col,
+          x: (flat.row + 0.5) * (level.cellSize ?? 1),
+          y: level.floorY ?? 1,
+          z: (flat.col + 0.5) * (level.cellSize ?? 1),
+        },
+        home: { row: flat.row, col: flat.col },
+      };
+      stillFolk.push(person);
+    }
+
+    // ── the court ────────────────────────────────────────────────────────────
+    //
+    // The owner, 2026-10-17: *"all main cities and not villages need to have palaces with
+    // conts/JARLS"*, and, in the same breath, *"you still also havent introduced the KING and
+    // QUEENS SPRITES to use in palaces"*. The install ships the court as **stills** — `KING.IMG`,
+    // `QUEEN.IMG`, `PRINCE.IMG` and `PRINCESS.IMG` (`game/staticFolk.js` is the census) — and a
+    // still is exactly what the scenery pass draws: one billboard, sized by its own art, at a
+    // cell. So the ruler and their consort are placed the same way a table or a brazier is, in
+    // the deepest reachable chamber of the palace, which is this project's own reading of where
+    // a throne room is (`S22`, the rule that already puts a Staff piece in the deepest cell).
+    // A figure whose art the install does not ship is simply not drawn: `loadScenery` warns and
+    // moves on, so a partial install is a quieter palace and not a blank one.
+    /** @type {{art: string, label: string, role: string, row: number, col: number}[]} */
+    const court = [];
+    if (isPalaceMap(mapName) && level.cells?.length) {
+      // **Whose court this is.** A palace opened through a city door arrives as `?interior=` with
+      // the city in its `back` URL, so the page's own `place` is empty — the settlement the door
+      // belonged to is what the label needs (`the count` in High Rock, `the jarl` in Skyrim), and
+      // the `back` URL is where this page keeps it. A palace with no readable city is a
+      // city-state's hall all the same: the door rule puts palaces in cities and nowhere else.
+      const backLocation = (() => {
+        try {
+          const back = String(params.get('back') ?? '').replace(/^\?/, '');
+          return back ? new URLSearchParams(back).get('location') : null;
+        } catch { return null; }
+      })();
+      const courtPlace = place
+        ?? (world?.locations ?? []).find((location) => location.name === backLocation)
+        ?? { kind: 'city' };
+      const deep = deepestCell(level);
+      const standable = (row, col) => {
+        const cell = level.cells[row * level.width + col];
+        return Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+      };
+      if (deep && standable(deep.x, deep.z)) {
+        // **A cell each.** The first version collected at most two cells and stepped through
+        // them with `index % spots.length`, so the heir was drawn on top of the ruler: a king with
+        // two heads and no prince. Four neighbours are enough for the three figures.
+        const spots = [{ row: deep.x, col: deep.z }];
+        for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+          if (!standable(deep.x + dr, deep.z + dc)) continue;
+          if (spots.some((s) => s.row === deep.x + dr && s.col === deep.z + dc)) continue;
+          spots.push({ row: deep.x + dr, col: deep.z + dc });
+          if (spots.length >= 4) break;
+        }
+        const figures = courtOf(courtPlace);
+        let next = 0;
+        figures.forEach((figure) => {
+          // **The map's own king is the king.** `PALACE1…5.MIF` place `KING.IMG` themselves, so
+          // adding one at the deepest cell stood two kings in the throne room. When the room
+          // already paints a figure, that figure is the court's — its cell, its art and its own
+          // province title — and only the roles the map does not paint are placed here.
+          const already = stillFolk.find((person) => person.art === figure.art && !person.court);
+          if (already) {
+            already.court = figure.role;
+            already.description = figure.label;
+            court.push({ art: already.art, label: figure.label, role: figure.role, row: already.place.row, col: already.place.col });
+            return;
+          }
+          const spot = spots[next++] ?? spots[spots.length - 1];
+          let list = scenery.byName.get(figure.art);
+          if (!list) scenery.byName.set(figure.art, list = []);
+          const flat = { row: spot.row, col: spot.col, flatIndex: -1, name: figure.art, on: 'floor', yOffset: 0, itemIndex: null };
+          list.push(flat);
+          scenery.flats.push(flat);
+          stillFolk.push({
+            file: figure.art,
+            art: figure.art,
+            role: figure.role,
+            description: figure.label,
+            keeper: false,
+            still: true,
+            court: figure.role,
+            place: {
+              row: spot.row, col: spot.col,
+              x: (spot.row + 0.5) * (level.cellSize ?? 1),
+              y: level.floorY ?? 1,
+              z: (spot.col + 0.5) * (level.cellSize ?? 1),
+            },
+            home: { row: spot.row, col: spot.col },
+          });
+          court.push({ ...figure, row: spot.row, col: spot.col });
+        });
+      }
+    }
+
+    // ── the tavern's still company ────────────────────────────────────────────
+    //
+    // The owner: *"there are a lot of missing sprites … static npcs in the original game that were
+    // not ported … AR-sprite-MAN01.png … that are sitting at the tavern"*. A tavern's own `.INF`
+    // names one `BARTEND.DFA`, so the room held its keeper and an empty floor; the install ships
+    // the patrons (`MAN01…04`, `WOMAN01…04` — `game/staticFolk.js`) as stills, and a still is
+    // what this pass draws. Two to four of them at the room's own seed, on its own open floor,
+    // clear of the door, the furniture and anything the map already stands on.
+    const patrons = stillFolk
+      .filter((person) => /^(?:MAN|WOMAN)\d{2}\.(?:IMG|DFA)$/.test(person.art))
+      .map((person) => ({ art: person.art, label: person.description, role: person.role, row: person.place.row, col: person.place.col }));
+    // **The map's own drinkers are the patrons** (`TAVERN1.MIF` places eight of them), and the
+    // seeded top-up is only for a tavern whose `.INF` really paints none — otherwise the room held
+    // the map's people *and* four invented ones standing in the same corner.
+    if (patrons.length < 2 && shopForInteriorFile(mapName)?.kind === 'tavern' && level.cells?.length) {
+      const tavernSeed = Math.round((cityRequest?.seed ?? place?.citySeed ?? 1) || 1);
+      const busy = new Set([
+        ...scenery.flats.map((flat) => `${flat.row},${flat.col}`),
+        ...(leafSpots ?? []).map((leaf) => `${leaf.row},${leaf.col}`),
+        ...furnishing.props.map((prop) => `${prop.row},${prop.col}`),
+      ]);
+      const free = openFloorCells(level).filter((cell) => !busy.has(`${cell.row},${cell.col}`));
+      const folk = STATIC_FOLK.townsfolk;
+      const want = 2 + (tavernSeed % 3);
+      // **A stride, not the first cells.** `openFloorCells` is row-major, so its first free
+      // entries are one corner of the room — three patrons against the north wall, in a heap.
+      const stride = Math.max(1, Math.floor(free.length / Math.max(1, want * 6)));
+      let pick = tavernSeed % stride;
+      for (let n = 0; n < want && pick < free.length; n++) {
+        const spot = free[pick];
+        pick += stride;
+        const figure = folk[(tavernSeed + n * 3) % folk.length];
+        let list = scenery.byName.get(figure.art);
+        if (!list) scenery.byName.set(figure.art, list = []);
+        const flat = { row: spot.row, col: spot.col, flatIndex: -1, name: figure.art, on: 'floor', yOffset: 0, itemIndex: null };
+        list.push(flat);
+        scenery.flats.push(flat);
+        const person = {
+          file: figure.art, art: figure.art, role: figure.role, description: figure.label,
+          keeper: false, still: true, invented: true,
+          place: {
+            row: spot.row, col: spot.col,
+            x: (spot.row + 0.5) * (level.cellSize ?? 1),
+            y: level.floorY ?? 1,
+            z: (spot.col + 0.5) * (level.cellSize ?? 1),
+          },
+          home: { row: spot.row, col: spot.col },
+        };
+        stillFolk.push(person);
+        patrons.push({ art: figure.art, label: figure.label, role: figure.role, row: spot.row, col: spot.col });
+      }
+    }
+
+    // What the room's still folk are, for the debug seam (`state().court`, `state().patrons`) and
+    // for a suite that has to see the king standing in his own hall rather than trust a file list.
+    // **Their drawn size is measured, not assumed** — the owner's *"GUARDS AND KINGS ARE WAY TOO
+    // BIG"* is a fact about a number, so the number is reported beside the figure.
+
     // Interactive items/actors are drawn by their live systems, not duplicated forever
-    // in the static scenery pass after being taken or killed.
+    // in the static scenery pass after being taken or killed. **A still person is both**: their
+    // flat is the picture of them (drawn here) and their record is a person to speak to
+    // (`stillFolk` below), so their art stays in the pass.
     const sceneryOnly = { ...scenery, byName: new Map([...scenery.byName]
-      .map(([name, list]) => [name, list.filter((flat) => flat.itemIndex == null)])
+      .map(([name, list]) => [name, list.filter((flat) => flat.itemIndex == null || isStillPersonArt(flat.name))])
       .filter(([, list]) => list.length)) };
     const sceneryBatches = await loadScenery(sceneryOnly, level);
+    const drawnSizes = new Map(sceneryBatches.map((batch) => [batch.name, batch.size]));
+    for (const figure of court) {
+      const size = drawnSizes.get(figure.art);
+      if (size) { figure.height = size.h; figure.width = size.w; }
+    }
+    for (const figure of patrons) {
+      const size = drawnSizes.get(figure.art);
+      if (size) { figure.height = size.h; figure.width = size.w; }
+    }
+    // **Only the people whose art really loaded are people.** A record the install names and does
+    // not ship (`KNIGHT` in `IMPPAL1`) cannot be spoken to because there is nobody there.
+    const stillPlaceName = whereAmI()?.place ?? place?.name ?? fromPlace?.name ?? null;
+    const shopHere = shopForInteriorFile(mapName);
+    const stillFolkSnapshot = stillFolk.slice();
+    stillFolk.length = 0;
+    for (const person of stillFolkSnapshot) {
+      if (!drawnSizes.has(person.art)) continue;
+      const size = drawnSizes.get(person.art);
+      person.height = size.h;
+      person.width = size.w;
+      person.world = { x: person.place.x * CELL_SIZE, y: person.place.y * CELL_SIZE, z: person.place.z * CELL_SIZE };
+      person.regardId = personId(stillPlaceName, person.home);
+      person.talkTurn = 0;
+      person.line = null;
+      // A building's trade is its keeper's: the smith behind the counter sells, the priest heals,
+      // the barkeep rents the room (`game/shops.js`'s own banks).
+      if (person.keeper && shopHere) {
+        person.shop = shopHere.kind ?? null;
+        person.shopName = shopHere.name ?? null;
+        person.guild = guildForShop(shopHere.kind) ?? null;
+        person.bank = shopHere.bank ?? null;
+      }
+      stillFolk.push(person);
+    }
+    stillPeople = stillFolk;
+    dbg.court = court;
+    dbg.patrons = patrons;
+    dbg.stillFolk = stillFolk.map((person) => ({
+      art: person.art, label: person.description, role: person.role,
+      cell: { row: person.place.row, col: person.place.col },
+      height: person.height ?? null, keeper: Boolean(person.keeper),
+    }));
 
     // ── what the map left lying about ──────────────────────────────────────────
     //
@@ -1880,20 +2994,86 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // level thirty and the palace's first level thirty-one knights. They are picked up
     // with `E` and drawn as billboards of their own art, like the scenery — one more
     // reason the art has to be readable; animated DFA loot uses the original frames.
-    const spawns = spawnsFromFlats(scenery);
+    // (`spawns` is read above, where the still people are collected: the same records are
+    // the room's people and its pickups, and one read of the table is what keeps them one
+    // reading rather than two that could disagree.)
     const lootSpots = [];
     for (const pickup of spawns.pickups) {
       // Both static IMG and animated DFA pickups use their own original art.
       const art = pickup.art ?? '';
       // Original key flats have no lock metadata. Bind them to the level's locks;
       // otherwise the saved pack gets lock:0 and the key opens absolutely nothing.
-      const lock = pickup.kind === 'key' ? Math.max(0, ...leafSpots.map(leaf => leaf.lockLevel)) : undefined;
-      lootSpots.push({ ...pickup, ...(lock !== undefined ? { lock } : {}), drawn: /\.(IMG|DFA)$/.test(art), taken: false });
+      // A floor key's ward is the level's own **ordinary** locks: a riddle door (255, 90, …) and
+      // the palace's quest seal are opened by their own mechanic, never by one of these.
+      const keyDoors = pickup.kind === 'key'
+        ? leafSpots.filter((leaf) => !leaf.riddle && !leaf.questSeal && leaf.lockLevel > 0)
+          .sort((a, b) => b.lockLevel - a.lockLevel)
+        : [];
+      const keyDoor = keyDoors[0] ?? null;
+      const lock = pickup.kind === 'key'
+        ? Math.max(0, ...keyDoors.map((leaf) => leaf.lockLevel))
+        : undefined;
+      lootSpots.push({ ...pickup, ...(lock !== undefined ? { lock } : {}),
+        ...(keyDoor ? { door: { row: keyDoor.row, col: keyDoor.col } } : {}),
+        drawn: /\.(IMG|DFA)$/.test(art), taken: false });
     }
     for (const spot of placedKeys) {
       const existingKey = lootSpots.find(l => l.kind === 'key' && l.row === spot.row && l.col === spot.col);
-      if (existingKey) existingKey.lock = Math.max(existingKey.lock ?? 0, spot.lock);
+      if (existingKey) {
+        // **A key the map already drew is still the key `placeKeys` placed.** It used to keep
+        // only the lock number and lose the door it was put there for, so the pack said "a key
+        // for a lock of level 3" and the player had no way to know which of the level's doors
+        // that was — the other half of *"the keys still not work as intended"*. The door comes
+        // from `placeKeys` with the lock.
+        existingKey.lock = Math.max(existingKey.lock ?? 0, spot.lock);
+        existingKey.door ??= spot.door ?? null;
+      }
       else lootSpots.push({ ...spot, kind: 'key', itemIndex: 1, name: 'a key', drawn: true, taken: false, placed: true });
+    }
+    // **The owner's chest** (`game/playerHouse.js`). A bought house is empty of people and
+    // keeps a chest of the owner's own, which is storage rather than a one-time find: `E` at
+    // it opens the two-list page (`openHomeChest`), and its contents are `player.homeChest`.
+    const ownsThisHouse = ownedHouseHere();
+    const chestAt = ownsThisHouse ? homeChestCell(level, spawn) : null;
+    dbg.homeChest = {
+      owned: ownsThisHouse,
+      spawn: spawn ? { x: spawn.x, z: spawn.z } : null,
+      at: chestAt, city: player?.house?.city ?? null, door: entryCell,
+    };
+    // **The mirror on the wall** (`NOB_C3.IMG`, the AR-sprite-NOB C3 flat). The owner,
+    // 2026-10-21: *"add a mirror wall inside the house that if you click you can change your
+    // third person character again like in character creation"*. It is placed on the first
+    // standable cell against a wall near the chest, drawn as the install's own noble-house
+    // mirror, and `E` (or a click on it) opens the same body chooser the creator used.
+    let mirrorAt = null;
+    if (ownsThisHouse) {
+      const room = [];
+      for (let row = 1; row < level.depth - 1; row++) {
+        for (let col = 1; col < level.width - 1; col++) {
+          const cell = level.cells[row * level.width + col];
+          if (!cell || cell.solid || cell.floor?.chasm) continue;
+          if (cell.kind === 'entity' || (cell.entityFlatIndex ?? -1) >= 0) continue;
+          const walled = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dr, dc]) => {
+            const beside = level.cells[(row + dr) * level.width + (col + dc)];
+            return beside?.solid;
+          });
+          if (walled) room.push({ row, col });
+        }
+      }
+      mirrorAt = room[(room.length - 1) >> 1] ?? null;
+    }
+    if (ownsThisHouse && mirrorAt && !lootSpots.some((spot) => spot.mirror)) {
+      lootSpots.push({
+        row: mirrorAt.row, col: mirrorAt.col, kind: 'mirror', art: 'NOB_C3.IMG',
+        name: 'the mirror', drawn: true, taken: false, mirror: true,
+      });
+    }
+    dbg.houseMirror = mirrorAt ? { ...mirrorAt, art: 'NOB_C3.IMG', owned: ownsThisHouse } : null;
+    if (ownsThisHouse && chestAt && !lootSpots.some((spot) => spot.homeChest)) {
+      lootSpots.push({
+        row: chestAt.row, col: chestAt.col, kind: 'chest', art: 'CHESTC.IMG', name: 'your chest',
+        itemIndex: 7, drawn: true, taken: false, homeChest: true,
+      });
     }
     // ── what this visit already took ───────────────────────────────────────────
     // A dungeon's chests, bodies and keys come back when the world has moved on
@@ -1903,7 +3083,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const lootKey = `${mapName}#${index}`;
     const emptied = lootStillEmpty(lootKey, radiant.day ?? 0);
     for (const spot of lootSpots) {
-      if (emptied.has(`${spot.row},${spot.col}`)) spot.taken = true;
+      // The owner's chest is not on the loot ledger: it is a piece of furniture in a room the
+      // player owns, and its contents are the character's own (`player.homeChest`).
+      if (!spot.homeChest && emptied.has(`${spot.row},${spot.col}`)) spot.taken = true;
     }
     const lootBatches = await loadLoot(lootSpots, level);
     // What this level's `.INF` says may live in it. `monsterRosterFromInf` is the map's
@@ -1913,7 +3095,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
     // The outdoor levels get Arena's own horizon rather than the bare gradient: the
     // climate's sky, the install's clouds in it and the install's mountains on the line.
-    if (openSky) await ensureSky(infName);
+    if (openSky) {
+      // Morrowind is province 3 in `CITYDATA.64`'s own order (`game/provinceStyle.js`), and the
+      // volcano belongs to its outdoor pages only: **all Morrowind towns, villages and wilderness**,
+      // never a shop's interior or a dungeon below it.
+      const provinceID = place?.provinceID ?? fromPlace?.provinceID ?? null;
+      const volcano = provinceID === 3 && outside;
+      await ensureSky(infName, { volcano, volcanoAzimuth: volcano ? volcanoAzimuthNow() : undefined });
+    }
     // ── the weather, in the air ────────────────────────────────────────────
     //
     // `openSky` is what makes a level outdoors at all, and only an outdoor level can have
@@ -1939,10 +3128,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // swap-crash in the disposal audit). This is where palace descents stopped leaking
     // their geometry for the life of the page.
     const previous = current;
-    releaseLevelPayloads(previous);
-    // The level's own `*TRIG` cells (the raw level's list is what they name), and a
-    // clean *fired* set: a new level says its own things again.
-    const triggerCells = triggerTable(mifLevel);
+    releaseLevelPayloads(previous, { keepFigures });
+    // A clean *fired* set: a new level says its own things again. (`triggerCells` is read above,
+    // where the riddle doors are tagged.)
     firedTriggers = new Set();
     // A new level's arrival cell is not something the player *walked onto*: the first step
     // of the level records where they stand, and only a step into a different cell fires.
@@ -1964,17 +3152,106 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       triggers: triggerCells, gateway: gatewayCells,
       spawn, cam, city, doors, shopKinds: city ? shopSignKinds(inf) : null,
       wild, scenery, sceneryBatches, standCell, wildRuin, sampler, surfaces,
-      leaves: leafSpots, loot: lootSpots, lootBatches,
+      // ── the door in the wall, in whichever direction this page is (B26) ──────────
+      // A **city page** answers with its own gate cells (the level's own `current.gates`) and the
+      // settlement's coordinates *are* its cells, so `cityFootprint` is the level's rectangle at
+      // zero. A **country page** answers with the settlement whose own ground the window holds —
+      // `country.gates` and `country.footprint` — which is nothing at all on most of the country,
+      // and the crossing is the same rule read from the other side (`gateAtPlayer`).
+      gates,
+      // **The settlement's own rectangle in the world** — cells, not the level's own coordinates. A
+      // city page's cells are its own, so the level's rectangle is the same shape at `0,0`; what
+      // matters here is *where* that rectangle stands, which is its world-map pixel (`place.global`),
+      // and that is what `worldCellOfCity` needs to answer "which world cell is the gate". A page with
+      // no location at all (`?city`, the dev door) is not in the world and keeps the origin.
+      cityFootprint: place?.tamriel
+        ? footprintOf(place.tamriel, { width: mif.width, depth: mif.height })
+        : { row0: 0, col0: 0, width: mif.width, depth: mif.height },
+      country,
+      leaves: leafSpots, riddles: riddleTable, loot: lootSpots, lootBatches, objectiveMarker: null,
       spawns, roster, peopleSpots: spawns.people, furniture: furnishing.props.length,
-      lightSources: sceneLightSources(scenery.flats.map((flat) => ({ ...flat,
-        baseY: flatBaseY(flat.yOffset ?? 0, { height: 1, floorY: level.floorY * CELL_SIZE,
-          ceilingY: (level.floorY + 1) * CELL_SIZE }) + 0.8 })), doors, CELL_SIZE),
+      // **The level's own fire, then a town's windows.** A street's lanterns wait for dark
+      // (`sceneLightSources`'s `outdoor`), and every building in a city gets its windows lit at
+      // night from the mass behind its own door (`buildingWindowLights`) — the owner's *"at night
+      // in cities the lamps and the windows of the houses should have a light not the front of the
+      // inns"*. A dungeon has doors and no buildings, so it gets the fire and nothing else (its
+      // own torches and braziers are flats, and they burn all day).
+      lightSources: [
+        ...sceneLightSources(scenery.flats.map((flat) => ({ ...flat,
+          baseY: flatBaseY(flat.yOffset ?? 0, { height: 1, floorY: level.floorY * CELL_SIZE,
+            ceilingY: (level.floorY + 1) * CELL_SIZE }) + 0.8 })), doors, CELL_SIZE,
+        { outdoor: Boolean(cityRequest) || Boolean(wildRequest) }),
+        ...(city ? buildingWindowLights(level, doors, { cellSize: CELL_SIZE }) : []),
+      ],
     };
+    // **The level's own automap, read once per load** (`game/automap.js`): every cell's mark in
+    // Arena's automap palette, and the counts the panel reports. A city and the country carry one
+    // too — it costs one 128² pass — but `M` keeps meaning Tamriel there (`automapEligible`).
+    automapMap = buildAutomap(current.level);
+    dbg.automapDrawn = null;
+    // **The place's song starts with the level** (`game/arenaMusic.js`). After `current` is the
+    // new level, so the context read is this level's, not the one being replaced.
+    musicSong = null;
+    updateMusic();
+    // **A settlement greets the player with its own tune** (`jingleFor`): the `[Jingle]` records
+    // are 2–15 seconds, so they are an arrival, not the street's ambience (which is the weather's
+    // song above). A desert land hears the `ARAB*` three.
+    // **Not on the way back out of a shop.** The reference plays a settlement's jingle only on
+    // the wilderness→city crossing (`MapLogic.cpp`: "Only play jingle when going wilderness to
+    // city"); a page that comes back from a building carries `?enter=`, and greeting the player
+    // again on every doorstep was the reported "town music is different in the original".
+    if (city && !entryCell && !params.has('nojingle')) {
+      const seat = { city: true, kind: cityRequest?.kind ?? place?.kind ?? 'city',
+        // The **land's own letter** (`D` is desert) or the world record's word: the first cut
+        // compared a `D` against `desert` and every desert heard the temperate three.
+        desert: skyClimateOf(cityRequest?.infName ?? infName).climate === 'D'
+          || String(cityRequest?.climate ?? place?.climate ?? '').toLowerCase() === 'desert' };
+      const jingle = jingleFor(seat);
+      // The **request** is recorded even when the page's autoplay law holds the cue (a headless
+      // browser with no gesture), so the debug seam can say which tune the settlement asked for.
+      dbg.jingleRequested = jingle;
+      void playJingle(jingle, {
+        arenaPath: source?.arenaPath ?? params.get('arena') ?? 'C:/arenaproject/arena/ARENA',
+        // The tune replaces the street's weather song while it plays; this is how the ambience
+        // comes back afterwards, instead of both playing at once.
+        onEnd: () => {
+          // A tune that was cut short by a movie or by leaving must not put the street's song
+          // back over the film (or over the next place).
+          if (moviePlaying || !life.alive || life.leaving) return;
+          musicSong = null;
+          updateMusic();
+        },
+      });
+    }
+    // **Tharn's own words on the palace's first floor**, once the finale is the live stage: the
+    // install's `1447`, where he says he has watched the player blunder to this place and waits
+    // below. `quest`/`chain` are declared below the first `loadLevel` (the TDZ rule this file has
+    // paid for), so the state is read through its own loader here rather than through the later `let`.
+    if (!palaceMovieShown && index === 0 && /^IMPPAL/i.test(String(mapName))
+      && loadQuestState().step >= 9) {
+      palaceMovieShown = true;
+      const state = loadQuestState();
+      // **His last answer comes first** (`1399`, the eighth piece): the palace is the next
+      // encounter, so the vision he owes after Dagoth-Ur is played here rather than lost — the
+      // adventure path goes from the last piece straight to the palace, where the ambush is
+      // otherwise skipped in favour of `1447`. The ledger is written through the loader because
+      // `quest` is declared below this point (the TDZ the comment above records).
+      const owed = dueAmbush(state);
+      if (owed) {
+        saveQuestState({ ...state, ambushSeen: [...(state.ambushSeen ?? []), owed] });
+        void playStoryScene(owed).then(() => playStoryScene(PALACE_SCENE.textKey));
+      } else {
+        void playStoryScene(PALACE_SCENE.textKey);
+      }
+    }
     if (hud) {
       const what = city
         ? `${cityRequest.kind} · seed ${cityRequest.seed} · ${city.stats.stamped}/${city.slots.length} blocks`
         : wild
-          ? `wilderness · blocks ${wild.blocks.join(', ')}${wild.missing.length ? ` · ${wild.missing.length} missing` : ''}`
+          // **The country says what country it is** (B26): the biome of the cell, the wall that is in
+          // the window (if any), and the blocks the window is made of. It used to say `wilderness`,
+          // which is true of every one of the 4 096 cells per pixel and therefore says nothing.
+          ? `the country · ${wild.climate ?? climate}${country ? ` · outside ${country.settlement.name}` : ''} · blocks ${wild.blocks.join(', ')}${wild.missing.length ? ` · ${wild.missing.length} missing` : ''}`
           : `level ${index + 1}/${levelCount}`;
       // The level's own line, kept on `current` so the objective can be appended to it
       // whenever it changes — including the frame after this one, when the quest has
@@ -1984,31 +3261,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         `${mapName} · ${what} · ${infName}\n`
         + `${levelWidth}×${levelDepth} cells · ${built.stats.quads} quads · ${built.materials.length} materials · ${uploaded} textures`
         + `${scenery.flats.length ? ` · ${scenery.flats.length} flats in ${sceneryBatches.length} batches` : ''}`
-        + `${surfaces.length ? ` · ${surfaces.map((s) => `${s.cells} ${surfaceLabel(s.kind)} cells in ${s.quads.length} planes`).join(' + ')}` : ''}\n`
-        + 'WASD move · Shift run · Space jump · E take / enter / gate · F strike · V view · M world map';
-      hud.textContent = current.hudBase;
+        + `${surfaces.length ? ` · ${surfaces.map((s) => `${s.cells} ${surfaceLabel(s.kind)} cells in ${s.quads.length} planes`).join(' + ')}` : ''}`;
+      // The place band: where the player is, and what the level they stand in is made of.
+      // It is painted in the panel's own dim ink (the fight band below it carries the
+      // numbers a player looks at every second), and the movement keys are on the fight
+      // band's one control line rather than repeated here.
+      hudPlace.innerHTML = `<span class="hint">${escapeHtml(current.hudBase).replace(/\n/g, '<br>')}</span>`;
     }
-    // **The wild lands in the save.** A wilderness window writes its absolute cell into
-    // the last-location record, so a page load lands the player on the countryside cell
-    // they *stood on* rather than at the gate or in the middle of a city block — the whole
-    // point of a persistent world. A city page clears the field so a later, different
-    // settlement cannot read a stale cell.
-    const wildFoot = wild && place
-      ? {
-        row: (standCell?.row ?? 0) + (wild.originRow ?? 0),
-        col: (standCell?.col ?? 0) + (wild.originCol ?? 0),
-      }
-      : null;
-    try {
-      if (!entryCell) {
-        localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
-          name: place?.name ?? mapName,
-          dungeon: Boolean(wildRequest) && false,
-          seed: place?.dungeonSeed ?? null,
-          wild: wildFoot,
-        }));
-      }
-    } catch { /* storage can be refused; the map's fallback applies */ }
+    // **The wild lands in the save**, as a **world cell** (B26): a page load lands the player on the
+    // country cell they *stood on* rather than at a gate or in the middle of a city block, and — since
+    // the cell is the world's own — the same record says *where in Tamriel* that was. A page inside a
+    // settlement clears it, so a later, different settlement cannot read a stale cell.
+    if (!entryCell) rememberLastLocation();
     visitPlace(worldMemory, memoryKey(index), city ? 'settlement' : entryCell ? 'building' : 'dungeon', radiant.day ?? 0);
     saveWorldState(worldMemory);
     updateObjectiveHud();
@@ -2024,14 +3288,79 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // docs/PROGRESS.md), and the same rule fixes it: everything the first `loadLevel` can read
   // is declared before it, whatever the file's own reading order would prefer.
   let radiant = loadRadiantState();
+  // A country job from an older save is pulled back beside its anchor (see
+  // `repairWildTargets`), so walking the last leg is short whatever version wrote the job.
+  if (repairWildTargets(radiant, world)) saveRadiantState(radiant);
   // The guild ledger loads with the side work, for the same TDZ reason: the talk panel
   // reads it while the first level is still building (defects 7/15/25's rule again).
   let guilds = loadGuildState();
   const worldMemory = loadWorldState();
+  // Capture the arrival once. Reading the mutable saved clock on every frame fed elapsed
+  // scene time back into itself each time rememberClock() saved it.
+  const forcedClock = params.has('clock') && params.get('clock') !== '' ? Number(params.get('clock')) : NaN;
+  let clockBaseMinutes = Number.isFinite(forcedClock)
+    ? ((Math.trunc(forcedClock) % 1440) + 1440) % 1440
+    : worldClock(worldMemory)?.minutes ?? 600;
+  let clockBaseDay = Math.max(1, radiant.day ?? 1, worldClock(worldMemory)?.day ?? 1);
+  let clockBaseSeconds = 0;
   // Include location/door identity: many towns share an interior map, not a front door.
   const memoryKey = (index) => `${place?.name ?? fromPlace?.name ?? 'map'}:${mapName}#${index}`
     + (cityRequest ? `:city=${cityRequest.seed}` : '')
     + (entryCell ? `:entry=${entryCell.row},${entryCell.col}` : '');
+  /**
+   * **Where the player is, into the save** — the one writer.
+   *
+   * The map, the journal and the next page load all read this one record
+   * (`game/save.js`'s `loadLastLocation`), and it now answers two questions the old one could not:
+   * the player's **world cell** when they are in the country (not the settlement they left, and not
+   * `CITY_ORIGIN`-relative), and **whether they are in the country at all**. The owner's own report is
+   * the second half: *"there is no way for me to see a little dot on the entire map that says \"you
+   * are here\" … when im in the wilderness it says im in a city but im not"*.
+   *
+   * Called on every level load and again when the map is opened — opening the map used to **overwrite**
+   * this record with the page's own `?location=` name alone, which is exactly how a player standing in
+   * a field came to be told they were in Daggerfall.
+   *
+   * @returns {object|null} what was written
+   */
+  function rememberLastLocation() {
+    if (!current) return null;
+    const cell = current.wild ? worldCellNow() : null;
+    const here = cell ? youAreHere(world, cell.row, cell.col) : null;
+    const record = {
+      name: here?.nearest?.name ?? place?.name ?? fromPlace?.name ?? mapName,
+      dungeon: cell ? false : place?.kind === 'dungeon',
+      seed: cell ? null : place?.dungeonSeed ?? null,
+      provinceID: here?.nearest?.provinceID ?? place?.provinceID ?? fromPlace?.provinceID,
+      locationID: here?.nearest?.id ?? place?.id ?? fromPlace?.id,
+      wild: cell,
+      country: Boolean(cell),
+    };
+    try { saveLastLocation(record); } catch { /* storage can be refused; the map's fallback applies */ }
+    dbg.lastLocation = record;
+    return record;
+  }
+
+  /**
+   * **The world cell the player is standing on**, whichever kind of page this is.
+   *
+   * One answer for the whole game (B26): a **city's** cells are its own (`worldCellOfCity` places them
+   * in the world), a **country** window's are the world's slid by its origin, and an interior or a
+   * dungeon is nowhere in the world at all — which is exactly what `null` means here. The debug seam,
+   * the save and the map's own mark all read this rather than each keeping its own arithmetic.
+   *
+   * @returns {{row: number, col: number}|null}
+   */
+  function worldCellNow() {
+    const feet = current?.motor?.pos;
+    if (!feet) return null;
+    const row = Math.round(feet[0] / CELL_SIZE - 0.5);
+    const col = Math.round(feet[2] / CELL_SIZE - 0.5);
+    if (current.city) return worldCellOfCity(current.cityFootprint, row, col);
+    if (current.wild) return { row: row + current.wild.originRow, col: col + current.wild.originCol };
+    return null;
+  }
+
   function rememberDoor(leaf) {
     setDoorState(worldMemory, memoryKey(current.index), leaf,
       { open: leaf.target > 0, locked: leaf.locked, lockLevel: leaf.lockLevel });
@@ -2071,6 +3400,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return result;
   }
 
+  // ── the player, and the fight ──────────────────────────────────────────────
+  //
+  // **Loaded before the first level is built.** The loader reads the character while it
+  // assembles the room — a bought house checks the deed to place its chest, `populateShop`
+  // reads their bag — and the original order loaded the level first, so a house page arrived
+  // without its own chest and every shop's first load saw a player who did not exist yet. The
+  // rest of the fight's setup (spawns, the HUD) is below; only the character has to be here.
+  player = loadCharacter() ?? placeholderPlayer();
+  if (player.levitating) {
+    // A levitation does not survive the page: the spell's flag is written into the saved
+    // character, and only the one that moves the body is dropped here, because the body that
+    // arrives is standing on the ground.
+    player = { ...player, levitating: false };
+    saveCharacter(player);
+  }
+
   await loadLevel(startIndex);
 
   // ── where a player who walked in leaves by ─────────────────────────────────
@@ -2095,7 +3440,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // `?wild=row,col` the same way, in the window's own coordinates: the cell named is
   // a *wilderness* cell, and the window's origin moves to hold it.
   const wildStand = current.standCell;
-  if (!doorStand && wildStand) standNear(wildStand.row, wildStand.col);
+  let wildStood = !doorStand && wildStand ? standNear(wildStand.row, wildStand.col) : null;
+  // **A gate's line is where a gate arrives** (the owner, 2026-10-18: *"when from the wilderness
+  // you enter a city … there is a wall if you continue to go forward"*). A coastal gate's seaward
+  // side can be water, so `standNear` answered null and the old fallback put the player on the
+  // nearest *anything* — measured on Daggerfall: (71,65) for an opening at (72,63), one row and
+  // two cells off the door, so walking on met the wall beside it and the way back was a diagonal
+  // nobody would guess. If the window holds a settlement, the fallback walks the opening's own
+  // line outward and takes the first cell a body can stand on there.
+  if (!wildStood && wildStand && current.country?.gates?.length) {
+    wildStood = standOnGateLine(wildStand);
+  }
+  if (wildRequest) {
+    // **Where a country page meant to stand the player, and whether it could.** The wilderness
+    // arrival used to be read as "the level's own centre" whenever the named cell was refused,
+    // and a slide that lands in the middle of a new window is the player being moved a block
+    // sideways without being told. Reported because a browser suite cannot see intent.
+    dbg.wildArrival = {
+      at: wildStand ? { row: wildStand.row, col: wildStand.col } : null,
+      worldAt: wildStand
+        ? { row: wildStand.row + (current.wild?.originRow ?? 0), col: wildStand.col + (current.wild?.originCol ?? 0) }
+        : null,
+      cell: wildStand ? (() => {
+        const cell = current.level?.cells?.[wildStand.row * current.level.width + wildStand.col];
+        return cell ? { kind: cell.kind, solid: Boolean(cell.solid), chasm: cell.floor?.chasm ?? null } : null;
+      })() : null,
+      stood: wildStood,
+      spawn: { row: current.spawn?.x ?? null, col: current.spawn?.z ?? null },
+      origin: [current.wild?.originRow ?? null, current.wild?.originCol ?? null],
+    };
+  }
   // **A page that names no cell asks the world where the player was standing** (`worldState`'s
   // `player`, written by `rememberClock`). The guard is the one D-32 taught: an explicit arrival —
   // `?at=` from a gate crossing, a fast travel or a stair, a remembered wilderness cell, a ruin's
@@ -2147,16 +3521,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // simulate argonians”). A province asks for them by key (`provinceStyle.js`'s `PEOPLE_ART`), so
   // they cost nothing anywhere the table does not name them.
   const standIns = standInKindsFromListing(rosterNames);
-  const talkLines = talkCorpus(library.talkTemplates);
+  /** The stand-in figures by their own key, for the races drawn *as* a figure (`raceSkin.RACE_FIGURE`). */
+  const standInByKey = new Map(standIns.map((kind) => [kind.key, kind]));
+  // **The banks themselves**, read once from `template.dat`'s own keys: the personality
+  // introductions (100…129), the rumours (159/185), the jokes (363), a province's oaths
+  // (364+race), a tavern's drinkers (1430), and the hundred trades (262/263+).
+  const speech = dialogueBanks(library.talkTemplates);
   questReady = true;
 
   // ── the player, and the fight ──────────────────────────────────────────────
   //
-  // This scene now knows who is walking through it. Before this, a character could be
-  // created and then never be anything: the dungeon had no idea whether a level-1
-  // Acrobat or a level-20 warrior had come in. Health, Strength, Luck, Agility and the
-  // class's critical chance all read off the saved character (see `game/combat.js`).
-  player = loadCharacter() ?? placeholderPlayer();
+  // The character itself was loaded above, before the first level (`game/combat.js` reads
+  // Health, Strength, Luck, Agility and the class's critical chance off it), and the loader
+  // has already used that record while it built the room.
   // **A character with no weapon is unarmed, not issued a longsword.** This line used to hand
   // every weaponless character a phantom longsword, which made Arena's own opening impossible in
   // this port: a new prisoner's hands are empty (their class weapon is in the pack, `startingKit`)
@@ -2167,8 +3544,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // perfectarena is always the dagger animation". The fight already reads an absent weapon as
   // fists (`combat.js`'s `resolveAttack`), and so do the HUD's two readers.
   if (!player.material) player.material = 'steel';
-  /** @type {import('../game/encounters.js').SpawnedMonster[]} */
-  let monsters = [];
+  // Monsters are initialized before the first HUD update in loadLevel.
   /**
    * A spawn's own number, handed out the first time `__debug.combat()` reads the array.
    *
@@ -2188,12 +3564,34 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @type {object[]}
    */
   const bolts = [];
+  /**
+   * The player's arrows in flight (`game/archery.js`). One rule governs them: the shaft flies
+   * straight from the crosshair, and the **wound is rolled when it lands** — `resolveAttack`,
+   * the same call a sword makes — so a bow's reach is the only thing that differs from a blade.
+   */
+  const arrows = [];
   /** The world map overlay while it is open, or null. */
   let mapScene = null;
   /** @type {Map<string, {file: string, cfa: object, size: object, batch: object, capacity: number}>} */
   const spriteSets = new Map();
   let playerSet = null;
+  /** The five shipped angles of the player's chosen body, and the side the eye is on. */
+  const playerSets = new Map();
+  let playerFacing = 0;
+  /** The look the player's sheets were loaded from, for the debug seam and the HUD. */
+  let playerLook = null;
   let swingCooldown = 0;
+  /**
+   * **How long until the vitals are written again.** The bar used to be rewritten only when
+   * something else asked for the HUD (`updateCombatHud`), so a roll spent 12 points of stamina
+   * and the bar went on saying 30/30 until the next event — the owner's report that stamina
+   * "is not working" beside the roll's own "Too winded to roll". The pool was always right;
+   * the well was stale. Three quarters of a second is the slowest a bar can lag and still read
+   * as a bar, so the tick is a twelfth of a second and the page's own cost is a few nodes.
+   */
+  let statusBarIn = 0;
+  /** One death at a time: the scene is replaced once Ria's farewell has played. */
+  let falling = false;
   let kills = 0;
   let xp = Number(player.xp ?? 0);
   /**
@@ -2225,6 +3623,47 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     chargePulse: 0,
   };
   const combatFx = new CombatFx();
+  // **Arena's own particle art** (`game/combatFx.js`'s records, drawn here). `SPPARTS.RCI` is
+  // the install's 9×9 spell spark and `BLOODEXP.CFA` its five-frame blood explosion; the effects
+  // pass (`engine/render/combatFxPass.js`) is a flat-colour program with no texture unit, so the
+  // sprites go through the same billboard pass every other piece of Arena art uses. Loaded once
+  // with the level's figures and torn down with them.
+  let sparkBatch = null;
+  let sparkSize = null;
+  /** `BLOODEXP.CFA` loaded as the crowd's loader loads a figure. */
+  let bloodSet = null;
+  const FX_SPRITE_CAPACITY = 192;
+
+  /**
+   * Load the two particle sheets the install ships.
+   *
+   * A missing file is a missing effect, not a crash: `SPPARTS.RCI` is loose in the install and
+   * `BLOODEXP.CFA` is in the archive, so the picked-folder and dev doors both answer them, and
+   * an install that does not is simply drawn with no spray.
+   */
+  async function ensureArenaParticles() {
+    if (!bloodSet) {
+      try { bloodSet = await loadSpriteSet('BLOODEXP.CFA', 8); } catch { bloodSet = null; }
+    }
+    if (!sparkBatch) {
+      try {
+        const bytes = await data.bytes('SPPARTS.RCI');
+        if (bytes?.length) {
+          const field = parseRci(bytes, 'SPPARTS.RCI');
+          const palette = await data.palette();
+          renderer.uploadTexture(CREATURE_ARCHIVE, 'SPPARTS.RCI',
+            imageToUpload(field.indices, field.width, field.height, palette));
+          // A spark is 9 pixels of Arena's own field, at the figure scale: about 40 cm.
+          sparkSize = { w: field.width * SPRITE_SCALE, h: field.height * SPRITE_SCALE };
+          sparkBatch = renderer.createBillboardBatch(CREATURE_ARCHIVE, 'SPPARTS.RCI', sparkSize,
+            [...Array(FX_SPRITE_CAPACITY)].map(() => [0, -1000, 0]), { dynamic: true });
+        }
+      } catch (err) {
+        data.warn(`spark sprites: ${err.message}`);
+        sparkBatch = null;
+      }
+    }
+  }
   const atmosphere = new SceneAtmosphere();
   let sceneLightsEnabled = true;
   let atmosphereEnabled = true;
@@ -2237,6 +3676,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * picture and not just a line of text in the HUD.
    */
   let attackSet = null;
+  /** The strike sheet's own attack frames (the watch/BABE layout), or null for a whole-sheet blow. */
+  let attackFrames = null;
   /** Seconds left of the swing animation, and how long it lasts in all. */
   let swingAnim = 0;
   const SWING_ANIM_SECONDS = 0.45;
@@ -2246,6 +3687,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * uses (0.3 for a heavy, 0.15 for a knock) — because this is presentation, not data.
    */
   let screenShake = 0;
+  // **A hold is a clock, not a flag** (a spider's venom, a medusa's spell, a lizard man's
+  // bite — UESP's own bestiary lines, `bestiary.js`'s `paralyses`). While it runs the player
+  // neither walks nor swings; `Free Action`, the potion of Purification and a Knight's own
+  // immunity all answer it.
+  let heldUntil = 0;
+  /** The light boost last written to the renderer, so a frame without a light costs nothing. */
+  let playerLightShown = 0;
+  /** Fractional carries for the per-second buffs (regeneration, a disease's drain). */
+  let buffCarry = 0;
+  let afflictCarry = 0;
   /** Whether the held heavy's "armed" notice has fired for the current hold. */
   let chargeFullShown = false;
   /**
@@ -2273,6 +3724,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   let weaponOnScreen = null;
   /** Where the player's feet were last frame, so a still figure can stand still. */
   let lastFeet = null;
+  /** Where the feet stood before this frame's step — the body rule's own fallback (`pushPlayerFromPeople`). */
+  let feetBeforeStep = { x: 0, z: 0 };
   /** Seconds of lava the player has stood in since the last point of damage. */
   let lavaBurned = 0;
   let view = params.get('view') === 'third' ? 'third' : 'first';
@@ -2345,13 +3798,185 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return level.cells[row * level.width + col] ?? null;
   }
 
-  /** Can something stand here? The same test the player's spawn uses. */
+  /**
+   * **Is this door standing open?** The leaf's own clock is the answer, the same one the
+   * latch and the collider use: a leaf whose target is 1 and which has swung past half way is
+   * a hole in the wall. A shut one is a wall.
+   */
+  function doorOpenAt(row, col) {
+    for (const leaf of current?.leaves ?? []) {
+      if (leaf.row === row && leaf.col === col) return leaf.target > 0 && leaf.open > 0.55;
+    }
+    return false;
+  }
+
+  /**
+   * Can something stand here? The same test the player's spawn uses.
+   *
+   * **A door cell is not a wall.** `decodeLevel` marks every door `solid: true` because the
+   * leaf starts shut, and the player's collider takes the leaf's own triangles out of the world
+   * when it opens — but this test only ever read the cell, so every walking body in a dungeon
+   * treated an open doorway as stone. That is the reported *"they can't pass through open
+   * doors"*: the player walked in through a door the monster behind it could not follow them
+   * through. The leaf's state decides it now, so a body and the player agree about the opening.
+   */
   function walkableWorld(x, z) {
     const cell = cellAtWorld(x, z);
+    if (!cell) return false;
+    if (cell.floor?.chasm) return false;
     // **A gateway is walkable whatever its byte says** (the owner: *"city gates should have no
     // collision"*). It is the same flag the mesher keeps out of the collision soup, so a body and
     // the player agree about the opening.
-    return Boolean(cell) && (!cell.solid || Boolean(cell.gateway)) && !cell.floor?.chasm;
+    if (!cell.solid || cell.gateway) return true;
+    if (cell.kind === 'door') {
+      const row = Math.round(x / CELL_SIZE - 0.5);
+      const col = Math.round(z / CELL_SIZE - 0.5);
+      return doorOpenAt(row, col);
+    }
+    return false;
+  }
+
+  /** How wide a creature's body is, in metres — a shoulder either side of its centre. */
+  const MONSTER_BODY_RADIUS = 0.42;
+
+  /**
+   * Can a **body** stand on this point, rather than its centre alone?
+   *
+   * `walkableWorld` is a test of a point, and a creature is not one: the owner, 2026-10-19, on
+   * enemies that *"can get so close to walls that they nearly disappear into the wall running
+   * away"*. The sprite is a billboard a metre wide and the cell grid is 2.5 m, so a centre that is
+   * legal can leave half the figure inside the stone. Four points at `MONSTER_BODY_RADIUS` are
+   * tested as well as the centre; a body that fails one of them is refused the step and slides
+   * along the wall instead.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @param {number} [radius]
+   * @returns {boolean}
+   */
+  function walkableBody(x, z, radius = MONSTER_BODY_RADIUS) {
+    if (!walkableWorld(x, z)) return false;
+    if (!(radius > 0)) return true;
+    return walkableWorld(x + radius, z) && walkableWorld(x - radius, z)
+      && walkableWorld(x, z + radius) && walkableWorld(x, z - radius);
+  }
+
+  /**
+   * **The flow field toward the player**, rebuilt when they change cell or every
+   * `NAV_REBUILD_SECONDS`.
+   *
+   * One search serves every creature on the level, which is why this is a scene-side cache and not
+   * a per-monster path: a dungeon of 10 000 cells is one array walk, and a hundred creatures then
+   * read one byte each (`game/navFlow.js`). The rebuild on the clock is what keeps a door the
+   * player has just opened in the grid — a stale field is a creature still treating the doorway as
+   * stone.
+   */
+  const NAV_REBUILD_SECONDS = 0.5;
+  let navField = null;
+  function navFlowFor(feet) {
+    const level = current.level;
+    if (!level?.width || !level?.depth) return null;
+    const row = Math.round(feet[0] / CELL_SIZE - 0.5);
+    const col = Math.round(feet[2] / CELL_SIZE - 0.5);
+    if (navField && navField.level === level && navField.goalRow === row && navField.goalCol === col
+      && dbg.seconds - navField.builtAt < NAV_REBUILD_SECONDS) return navField;
+    const flow = buildFlow({
+      width: level.width,
+      depth: level.depth,
+      goal: { row, col },
+      walkable: (r, c) => walkableBody((r + 0.5) * CELL_SIZE, (c + 0.5) * CELL_SIZE),
+    });
+    navField = { ...flow, level, builtAt: dbg.seconds };
+    dbg.nav = { goal: { row, col }, reached: flow.reached, width: flow.width, depth: flow.depth };
+    return navField;
+  }
+
+  /** The cell a body is standing in, in the level's own indices. */
+  function bodyCell(x, z) {
+    return { row: Math.round(x / CELL_SIZE - 0.5), col: Math.round(z / CELL_SIZE - 0.5) };
+  }
+
+  /**
+   * The world point of the next cell the field says to walk to, or null when there is no route.
+   *
+   * A cell whose own test refuses is still allowed to *hold* a creature (a monster shoved into a
+   * doorway by `separateBodies` can be a centimetre inside the leaf's cell), so the lookup is made
+   * on the body's rounded cell and a missing answer simply leaves the caller with its old direct
+   * steering.
+   */
+  function navStepPoint(x, z, feet) {
+    const flow = navFlowFor(feet);
+    if (!flow) return null;
+    const { row, col } = bodyCell(x, z);
+    const step = stepFrom(flow, row, col);
+    if (!step) return null;
+    return { x: (row + step.dRow + 0.5) * CELL_SIZE, z: (col + step.dCol + 0.5) * CELL_SIZE };
+  }
+
+  /**
+   * **Walk a creature toward a point without letting it into the wall.**
+   *
+   * The axis-slide the chase always used, on `walkableBody` rather than the point test, and it
+   * answers whether the body moved at all — which is what tells a flight it is boxed in.
+   *
+   * @returns {boolean}
+   */
+  function moveBodyToward(spawn, tx, tz, move) {
+    const dx = tx - spawn.world.x;
+    const dz = tz - spawn.world.z;
+    const distance = Math.hypot(dx, dz) || 1;
+    const nx = spawn.world.x + (dx / distance) * move;
+    const nz = spawn.world.z + (dz / distance) * move;
+    // **It stops at the player's chest, not inside it.** The player is a body on this floor as
+    // well, and the walk into the player's space is the other half of the same report (an enemy
+    // that could be walked through could also walk through the player). A creature closes to its
+    // own swing's reach and no further; its blow is a reach test, so nothing about fighting
+    // changes — only the last 40 cm of the approach.
+    const feet = feetOf();
+    const gap = MONSTER_BODY_RADIUS + PLAYER_RADIUS;
+    let moved = false;
+    if (walkableBody(nx, spawn.world.z) && Math.hypot(nx - feet[0], spawn.world.z - feet[2]) >= gap) {
+      spawn.world.x = nx; moved = true;
+    }
+    if (walkableBody(spawn.world.x, nz) && Math.hypot(spawn.world.x - feet[0], nz - feet[2]) >= gap) {
+      spawn.world.z = nz; moved = true;
+    }
+    return moved;
+  }
+
+  /** **A body is not a point.** Two creatures that walk the same metre stand in each other's
+   * chest. Every step above slides a monster through the cell grid but never past its
+   * neighbours, so a pack that woke together converged on one spot and read as one sprite
+   * (the reported *"enemies overlap each other"*). Bodies are pushed apart after the step, on
+   * the same walkability test, so a press into a wall does not shove anyone into stone. */
+  function separateBodies() {
+    if (monsters.length < 2) return;
+    const gap = MONSTER_BODY_GAP;
+    for (let i = 0; i < monsters.length; i++) {
+      const a = monsters[i];
+      if (a.monster.health <= 0) continue;
+      for (let j = i + 1; j < monsters.length; j++) {
+        const b = monsters[j];
+        if (b.monster.health <= 0) continue;
+        let dx = b.world.x - a.world.x;
+        let dz = b.world.z - a.world.z;
+        let distance = Math.hypot(dx, dz);
+        if (distance >= gap) continue;
+        // Exactly coincident is its own case: no axis to push along, so split them on x.
+        if (distance < 1e-4) { dx = 1; dz = 0; distance = 0; }
+        const push = (gap - distance) / 2;
+        const nx = dx / (distance || 1);
+        const nz = dz / (distance || 1);
+        const ax = a.world.x - nx * push;
+        const az = a.world.z - nz * push;
+        const bx = b.world.x + nx * push;
+        const bz = b.world.z + nz * push;
+        if (walkableWorld(ax, a.world.z)) a.world.x = ax;
+        if (walkableWorld(a.world.x, az)) a.world.z = az;
+        if (walkableWorld(bx, b.world.z)) b.world.x = bx;
+        if (walkableWorld(b.world.x, bz)) b.world.z = bz;
+      }
+    }
   }
 
   /**
@@ -2483,7 +4108,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       },
       archAt: (row, col) => ((rawMap1At(row, col) & 0xf000) >> 12) === 0x9,
     });
-    if (!answer) return null;
+    if (!answer) {
+      // **The mouth is the door.** A dungeon's block is open country now (the entrance is the
+      // install's `WDUNGDR1.IMG` flat, not a building), so there is no arch in it for
+      // `ruinDoorStand` to answer with — the picture's own cell is the doorway, and standing on
+      // it ("in the proximity", the owner's words) is what goes down.
+      if (!ruin.mouth) return null;
+      const at = gridCell(ruin.mouth);
+      return { door: at, stand: at, yaw: 0, open: 0, built: 0, arch: false };
+    }
     return {
       door: gridCell(windowCell(answer.door.row, answer.door.col)),
       stand: gridCell(windowCell(answer.stand.row, answer.stand.col)),
@@ -2508,6 +4141,60 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!standNear(at.row, at.col, 3)) return null;
     dbg.ruinDoor = { door: answer.door, stand: answer.stand, yaw: answer.yaw, open: answer.open, arch: answer.arch };
     return { row: at.row, col: at.col, yaw: answer.yaw, door: answer.door };
+  }
+
+  /**
+   * The cell a player stands on to use a **stair** — orthogonally beside it, if any.
+   *
+   * `standNear` searches outwards by rings and answers a *diagonal* first, which is fine for an
+   * arrival but wrong for "which paving is at this stair": a diagonal is 3.5 m from the cell's
+   * centre and `DOOR_REACH` is 2.6, so a test (or a person) told to stand on it is not at the
+   * stair at all. The four sides first, then the wider search.
+   */
+  function standBeside(row, col) {
+    for (const [dr, dc] of [[0, 1], [1, 0], [0, -1], [-1, 0]]) {
+      const hit = standAt(row + dr, col + dc);
+      if (hit) return hit;
+    }
+    return standNear(row, col, 2);
+  }
+
+  /**
+   * **The first ground on a settlement gate's own line**, for an arrival the named cell refused.
+   *
+   * A gate's outside is not always field: Daggerfall's east opening faces the sea, and the boot's
+   * named cell was water, so `standNear`'s spiral put the player one row and two cells off the
+   * opening. Walking on from there met the wall *beside* the gate and the way back in was a
+   * diagonal nobody would guess (the owner, 2026-10-18: *"there is a wall if you continue to go
+   * forward"*). This walks the opening's own line outward — one step, then two, then three, then
+   * the arch itself — and takes the first cell a body can stand on, so the door is always straight
+   * ahead or straight behind.
+   *
+   * @param {{row: number, col: number}} wanted  the window cell the URL named
+   * @returns {{row: number, col: number}|null}
+   */
+  function standOnGateLine(wanted) {
+    const held = current.country;
+    const level = current.level;
+    if (!held?.gates?.length || !level) return null;
+    const originRow = current.wild?.originRow ?? 0;
+    const originCol = current.wild?.originCol ?? 0;
+    // The nearest opening to where they were meant to stand, so a gate crosses where it says.
+    let best = null;
+    for (const gate of held.gates) {
+      const world = worldCellOfCity(held.footprint, gate.row, gate.col);
+      const distance = Math.hypot(world.row - (wanted.row + originRow), world.col - (wanted.col + originCol));
+      if (!best || distance < best.distance) best = { gate, distance };
+    }
+    for (const step of [1, 2, 3, 0]) {
+      const world = outsideGateCell(held.footprint, best.gate, step);
+      const row = world.row - originRow;
+      const col = world.col - originCol;
+      if (row < 0 || col < 0 || row >= level.depth || col >= level.width) continue;
+      const hit = standAt(row, col);
+      if (hit) return hit;
+    }
+    return null;
   }
 
   function standNear(row, col, radius = 10) {
@@ -2543,7 +4230,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!doors.length || !pos) return null;
     let best = null;
     for (const door of doors) {
-      const distance = Math.hypot(pos[0] - (door.row + 0.5) * CELL_SIZE, pos[2] - (door.col + 0.5) * CELL_SIZE);
+      // **A wall door is opened from the paving in front of it.** Its own cell is the wall,
+      // so a player can never stand in the middle of it; measuring only to the cell centre
+      // made `E` work from a hand's width of the street and nowhere else in the stand cell.
+      // The door's own `stand` cell (`game/shops.js`'s `doorStand`) is the cell a player
+      // walks up to, so the nearer of the two distances is the one that means "at the door".
+      const toDoor = Math.hypot(pos[0] - (door.row + 0.5) * CELL_SIZE, pos[2] - (door.col + 0.5) * CELL_SIZE);
+      const toStand = door.stand
+        ? Math.hypot(pos[0] - (door.stand.row + 0.5) * CELL_SIZE, pos[2] - (door.stand.col + 0.5) * CELL_SIZE)
+        : toDoor;
+      const distance = Math.min(toDoor, toStand);
       if (distance > reach) continue;
       if (!best || distance < best.distance) best = { door, distance };
     }
@@ -2588,6 +4284,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let best = null;
     for (const spot of list) {
       if (spot.taken) continue;
+      // **The quest's own marker is not a chest.** It is the quest's thing wearing the archive's
+      // treasure art; `E` on it belongs to `takeObjective`, not `takeLoot`, or the job would be
+      // "picked up" as generic loot and never completed.
+      if (spot.marker) continue;
       const distance = Math.hypot(pos[0] - (spot.row + 0.5) * CELL_SIZE, pos[2] - (spot.col + 0.5) * CELL_SIZE);
       if (distance > DOOR_REACH) continue;
       if (!best || distance < best.distance) {
@@ -2623,14 +4323,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       leaf.target = 0;
       if (collider) collider.addMesh(leaf.id, leaf.collider.positions, leaf.collider.indices, identity());
       rememberDoor(leaf);
+      playSfx('doorShut');
       showNotice('The door swings shut.', 1200);
       return true;
     }
     let used = null;
+    // **A riddle door is answered, not forced.** The sign beside it is its own mechanic
+    // (`game/levelTriggers.js` + `game/doors.js`'s `riddleDoors`), so pressing E on one asks the
+    // riddle again rather than offering a shove — and no key in the pack can skip it, which is
+    // what a lock level of 255 used to mean before `placeKeys` stopped minting keys for it.
+    if (leaf.locked && leaf.riddle && !leaf.riddleSolved) {
+      openRiddleForLeaf(leaf);
+      return false;
+    }
     if (leaf.locked) {
-      const key = keyOpens(player.keys, leaf.lockLevel);
+      // The palace's own cell is sealed by the quest, not by a lock: only the mithril key turns
+      // it (Arena's own `HasKeyItem`). A generic key of its level is not that key.
+      const key = leaf.questSeal ? null : keyOpens(player.keys, leaf.lockLevel);
       if (key) used = 'key';
-      else if (quest.mithrilKey && leaf.lockLevel > HAND_FORCE_MAX) {
+      else if (quest.mithrilKey && /^IMPPAL/i.test(mapName) && current.index===3 && leaf.row===24 && leaf.col===21) {
         used = 'key';
         showNotice('The mithril key turns, and the seal gives.', 2000);
       } else if (leaf.lockLevel <= HAND_FORCE_MAX) {
@@ -2639,6 +4350,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         if (roll < forceChance(attributeOf(player, 'strength', 0, 50), leaf.lockLevel)) used = 'forced';
         else { showNotice(FORCE_FAILED, 1600); dbg.lastDoor = { row: leaf.row, col: leaf.col, result: 'held', lockLevel: leaf.lockLevel }; return false; }
       } else {
+        playSfx('doorLocked');
         showNotice(NEEDS_KEY, 1800);
         dbg.lastDoor = { row: leaf.row, col: leaf.col, result: 'sealed', lockLevel: leaf.lockLevel };
         return false;
@@ -2650,6 +4362,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // the player may walk through.
     if (collider && leaf.collider.indices.length) collider.removeBucket(leaf.id);
     rememberDoor(leaf);
+    playSfx('door');
     const reason = openReason(used);
     if (reason && used !== 'key') showNotice(reason, 1600);
     dbg.lastDoor = { row: leaf.row, col: leaf.col, result: used ?? 'opened', lockLevel: leaf.lockLevel, kind: leaf.kind };
@@ -2670,10 +4383,33 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function takeLoot(spot) {
     if (spot.taken) return false;
+    // **Your own chest is storage, not loot** (`homeChest` below). `E` at it opens the
+    // two-list page rather than paying out a random find.
+    if (spot.homeChest) return openHomeChest();
+    // **The mirror is not loot.** A click or an `E` at it opens the body chooser; nothing is
+    // taken and the mirror stays on its wall for the next visit.
+    if (spot.kind === 'mirror') return openMirror();
     let gold = 0;
     const find = lootFind(spot);
+    // **A back has a limit** (`items.js`). The pack is refused before the spot is marked
+    // taken, so the thing stays on the floor for a player who comes back lighter. A chest of
+    // gold is still loot: a full player is refused it as well, rather than being able to fill
+    // their purse while their back cannot take another gram.
+    const room = carryStatus(player, bagOf(), find, find ? 1 : 0);
+    if (!room.ok || room.atLimit) {
+      showNotice(`You cannot lift it — ${room.reason}`, 3200);
+      return false;
+    }
     if (spot.kind === 'key') {
-      player.keys = [...(player.keys ?? []), { lock: spot.lock ?? 0, label: `a key for a lock of level ${spot.lock ?? 0}` }];
+      // **A key names its door.** `placeKeys` answers one key per sealed door and says which
+      // one it is for; a pack that reads only "a key for a lock of level 254" leaves a player
+      // holding three identical labels and no idea which door each belongs to.
+      player.keys = [...(player.keys ?? []), {
+        lock: spot.lock ?? 0,
+        label: spot.door
+          ? `a key for the sealed door at ${spot.door.row},${spot.door.col}`
+          : `a key for a lock of level ${spot.lock ?? 0}`,
+      }];
     } else if (spot.kind === 'equipment') {
       gold = goldFor(spot.kind, () => 0);
     } else {
@@ -2686,6 +4422,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (find) setBag(addToBag(bagOf(), find, 1));
     }
     spot.taken = true;
+    playSfx(spot.kind === 'chest' ? 'chest' : spot.kind === 'key' ? 'ui' : 'pickup');
     markLootTaken(`${mapName}#${current.index}`, `${spot.row},${spot.col}`, radiant.day ?? 0);
     spot.batchRecord?.sync();
     updateObjectiveHud();
@@ -2786,7 +4523,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     back.delete('enter');
     back.delete('back');
     back.delete('level');
-    back.set('at', `${door.row},${door.col}`);
+    // **The street does not greet you again when you come out of a shop.** The jingle belongs
+    // to the wilderness→city crossing (the reference's own rule); this mark tells the city page
+    // which side of a doorstep it is on.
+    back.set('nojingle', '1');
+    // **The street cell the player actually stood on.** A wall door's own cell is the
+    // building; `?at=` with it would be a request to stand inside the wall, and the arrival
+    // snapped to the nearest walkable cell — a *diagonal* one, so the player came back out of
+    // a door they had entered head-on standing to the side of it. `door.stand` is the paving
+    // cell the door is opened from (`game/shops.js`), and it is where they came from.
+    const backAt = door.stand ?? { row: door.row, col: door.col };
+    if (door.country) {
+      // **The country names its cell in the world's own coordinates** (`?wild=row,col`), while
+      // the door's `stand` is a cell of this page's 128×128 window. Writing the window cell
+      // into `?at=` would land the player back on the gate (the page never reads `at`), which
+      // is how leaving a country house put them a province's walk away.
+      const origin = current?.wild ?? { originRow: 0, originCol: 0 };
+      back.set('wild', `${backAt.row + (origin.originRow ?? 0)},${backAt.col + (origin.originCol ?? 0)}`);
+      back.delete('at');
+    } else {
+      back.set('at', `${backAt.row},${backAt.col}`);
+    }
     const next = new URLSearchParams();
     next.set('interior', door.file);
     next.set('enter', `${door.row},${door.col}`);
@@ -2975,12 +4732,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // travel or a dev door leaves, and the case that used to end on the map.
     if (!current?.city && place?.kind === 'dungeon') {
       const remembered = (() => {
-        try {
-          const saved = JSON.parse(localStorage.getItem(LAST_LOCATION_KEY) ?? 'null');
-          return saved?.wild && Number.isFinite(saved.wild.row)
-            ? { row: Math.round(saved.wild.row), col: Math.round(saved.wild.col), name: saved.name ?? null }
-            : null;
-        } catch { return null; }
+        const saved = loadLastLocation(world);
+        return saved?.wild ? { ...saved.wild, name: saved.name } : null;
       })();
       if (remembered) {
         const next = new URLSearchParams(params);
@@ -3052,7 +4805,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @param {number|null} [dungeonSeed]
    * @returns {{next: URLSearchParams, place: string, seed: number, ruin: number|null}|null}
    */
-  function dungeonCountryBoot(point = place?.global, dungeonSeed = place?.dungeonSeed ?? null) {
+  function dungeonCountryBoot(point = place?.tamriel, dungeonSeed = place?.dungeonSeed ?? null) {
     if (!point) return null;
     const settlement = nearestCountry(world, point);
     if (!settlement) return null;
@@ -3060,6 +4813,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const next = new URLSearchParams(params);
     for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'ruin', 'location', 'dungeon', 'dungeonSeed']) next.delete(key);
     next.set('location', settlement.name);
+    next.set('province', String(settlement.provinceID));
+    next.set('placeId', String(settlement.id));
     // A bare `?wild` is "the country of this location": no cell is named, so the page's own
     // rules choose the arrival — the ruin below when one is named, the save's remembered cell
     // when it belongs to this settlement, and the gate otherwise.
@@ -3116,7 +4871,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const next = new URLSearchParams(params);
     // The country's own parameters go: the page that comes back is a dungeon, and a stale
     // `location=`/`wild=` would have it build a settlement (and then the country again).
-    for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'ruin', 'location', 'dungeon']) next.delete(key);
+    // **`province` and `placeId` go with them** (2026-10-18): a country page booted by a dungeon's
+    // own exit carries both, and the world reader resolves a `placeId` to its settlement — so
+    // `E` at the ruin built the **village** that owns the dungeon instead of the dungeon, and the
+    // way back down was a walk into a town. Caught by `dungeonplay`'s last check, which timed out
+    // waiting for `location.kind === 'dungeon'` while the page stood in `VILLAGE2.MIF`.
+    for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'ruin', 'location', 'dungeon', 'province', 'placeId']) next.delete(key);
     next.set('dungeonSeed', String(ruin.seed));
     const folder = source?.arenaPath ?? params.get('arena') ?? null;
     if (folder) next.set('arena', folder);
@@ -3156,22 +4916,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * @returns {{row: number, col: number, to: 'wilderness'|'city', axis: 'north'|'south'|'east'|'west'}|null}
    */
-  function gateAtPlayer() {
-    const level = current?.level;
-    const motor = current?.motor;
-    if (!level || !motor) return null;
-    // Only a settlement has gates: a dungeon's fences and a building's walls are not.
-    // `current.city` rather than a `loadLevel` local: this runs from the HUD, which is
-    // written *during* a load — the same reason `doorNear` reads `current.doors`.
-    if (!current.city && !wildRequest) return null;
-    const row = Math.round(motor.pos[0] / CELL_SIZE - 0.5);
-    const col = Math.round(motor.pos[2] / CELL_SIZE - 0.5);
-    for (const [dr, dc] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]]) {
-      const gate = gateCellAt(row + dr, col + dc);
-      if (gate) return gate;
-    }
-    return null;
-  }
+
 
   /**
    * The settlement's own coordinates of a cell of the level now standing.
@@ -3186,7 +4931,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function settlementCell(row, col) {
     const origin = current?.wild ?? null;
     return origin
-      ? { row: row + origin.originRow - CITY_ORIGIN, col: col + origin.originCol - CITY_ORIGIN }
+      ? { row: row + origin.originRow, col: col + origin.originCol }
       : { row, col };
   }
 
@@ -3200,90 +4945,147 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @param {{row: number, col: number}} cell  settlement coordinates
    * @returns {{row: number, col: number}} level coordinates
    */
-  function gateLevelCell(cell) {
-    const origin = current?.wild ?? null;
-    return origin
-      ? { row: cell.row - origin.originRow + CITY_ORIGIN, col: cell.col - origin.originCol + CITY_ORIGIN }
-      : { row: cell.row, col: cell.col };
-  }
-
   /**
-   * Is this level cell the settlement's gate?
+   * A **world** cell as a cell of the level standing on this page.
    *
-   * On the settlement's outermost line, open (air, or the `0x9` gateway voxel itself),
-   * and with walkable ground on the settlement's inside immediately behind it.
+   * Two pages, two conversions, one meaning: a **city's** own cells are its own (its footprint's
+   * corner is subtracted), a **country** window's are the world's slid by its origin. This is the
+   * only place either subtraction lives, which is what keeps `worldCellNow` and the goal of a
+   * stride aimed at a gate from disagreeing about where a cell is.
    *
-   * @param {number} row @param {number} col  level coordinates
-   * @returns {{row: number, col: number, to: 'wilderness'|'city', axis: 'north'|'south'|'east'|'west'}|null}
+   * @param {{row: number, col: number}} world
+   * @returns {{row: number, col: number}} level coordinates
    */
-  function gateCellAt(row, col) {
-    const level = current?.level;
-    if (!level || row < 0 || col < 0 || row >= level.depth || col >= level.width) return null;
-    const cell = level.cells[row * level.width + col];
-    if (!cell || cell.floor?.chasm) return null;
-    if (cell.solid && cell.kind !== 'transparent') return null;      // the wall itself
-    const settlement = settlementCell(row, col);
-    const { row: lr, col: lc } = settlement;
-    if (lr < 0 || lc < 0 || lr >= mif.height || lc >= mif.width) return null;
-    const onLine = lr === 0 || lc === 0 || lr === mif.height - 1 || lc === mif.width - 1;
-    if (!onLine) return null;
-    // Which way is inward: the player walks out of the city through this cell and into
-    // the country, so the ground *behind* it (the city's side) has to be there.
-    const inward = lr === 0 ? [1, 0] : lr === mif.height - 1 ? [-1, 0] : lc === 0 ? [0, 1] : [0, -1];
-    const inner = { row: row + inward[0], col: col + inward[1] };
-    if (inner.row < 0 || inner.col < 0 || inner.row >= level.depth || inner.col >= level.width) return null;
-    const behind = level.cells[inner.row * level.width + inner.col];
-    if (!behind || behind.solid || behind.floor?.chasm) return null;   // a second wall: not a gate
+  function levelCellOf(world) {
+    if (current?.city) {
+      return { row: world.row - current.cityFootprint.row0, col: world.col - current.cityFootprint.col0 };
+    }
     return {
-      row: lr, col: lc,
-      to: wildRequest ? 'city' : 'wilderness',
-      axis: ringAxis(lr, lc, mif.height, mif.width),
+      row: world.row - (current.wild?.originRow ?? 0),
+      col: world.col - (current.wild?.originCol ?? 0),
     };
   }
 
   /**
-   * Which sides of the settlement's wall have a gate in them.
+   * A cell of the settlement now standing — a city's own coordinates on a city page, the settlement
+   * the window holds on a country page — as a cell of **this page's level**.
    *
-   * The same test `gateCellAt` makes for one cell, walked around the settlement's
-   * outermost line. Only used for the HUD's hint.
+   * @param {{row: number, col: number}} cell
+   * @returns {{row: number, col: number}}
+   */
+  function gateLevelCell(cell) {
+    const held = current?.city ? { footprint: current.cityFootprint } : current?.country;
+    if (!held?.footprint) return { row: cell.row, col: cell.col };
+    return levelCellOf(worldCellOfCity(held.footprint, cell.row, cell.col));
+  }
+
+  /**
+   * **Is the player standing in a gate?** — the one test both halves of the door make.
+   *
+   * The openings themselves are read off the settlement's own outermost line by the install's own
+   * rule (`mifLevel.openSettlementGate`, called on the city's level), one run of two cells, and they
+   * are cached on the level (`current.gates` / the window's own settlement). What is left is where
+   * the player is: on a **city page** their cell *is* the settlement's own, and on a **country page**
+   * it is a world cell that has to be brought back into the settlement's coordinates
+   * (`gateLevelCell`) before the wall means anything.
+   *
+   * `atSettlementGate` (the law) is the reading: reachable along the gate's own line, within one cell
+   * of the wall — from three cells outside it to one cell in. That covers a player walking at the
+   * gate from the country, standing in the gateway itself, and standing on the first paving stone
+   * inside it, which is exactly the set of feet a gate can be crossed from.
+   *
+   * @returns {{row: number, col: number, to: 'wilderness'|'city', axis: 'north'|'south'|'east'|'west',
+   *   inside?: {row: number, col: number}}|null}
+   */
+  /**
+   * **Mark a settlement's gate in the window that holds its wall** — the country's half of
+   * `openSettlementGate`.
+   *
+   * A city page marks its own opening (`openSettlementGate`, on the city's level) and every reader of
+   * `walkable`, `collides` and the mesher follows from that one flag. A country page holds the same
+   * wall as four blocks of the window, and the gateway voxel in it is the **raw** art — `0x9`, a solid
+   * transparent cell — so without this the door would be walkable from the street side and masonry
+   * from the country side, which is the one asymmetry a door must never have.
+   *
+   * @param {object} level  the decoded window
+   * @param {{footprint: object, gates: object[], gateArt?: object[]}} held  the settlement the window holds
+   * @returns {{row: number, col: number}[]} the window's own cells of the opening and gate art
+   */
+  function markCountryGates(level, held, origin) {
+    /** @type {{row: number, col: number}[]} */
+    const out = [];
+    // **This load's own origin, passed in.** Reading `current.wild` here was the defect: the
+    // country page marks its gate while it is being *built*, and `current` still points at the
+    // page that came before (null on a page's first level), so the origin was `0,0`, every gate
+    // cell landed thousands of cells outside the window, and the settlement's gateway voxel stayed
+    // a solid wall in its copy of the city — `gateway: []` measured on the country outside
+    // Daggerfall. `origin` is `wildernessWindowOrigin`'s `{row, col}` for the window being built.
+    const originRow = origin?.row ?? origin?.originRow ?? 0;
+    const originCol = origin?.col ?? origin?.originCol ?? 0;
+    // **The opening and the illustrated posts.** The two `0x9` arch cells are the crossing;
+    // the `PGATE`-painted posts behind them are no more solid than the arch, so the country's
+    // copy of the settlement gets the same `gateway` flag on both.
+    for (const gate of [...(held.gates ?? []), ...(held.gateArt ?? [])]) {
+      const world = worldCellOfCity(held.footprint, gate.row, gate.col);
+      const row = world.row - originRow;
+      const col = world.col - originCol;
+      if (row < 0 || col < 0 || row >= level.depth || col >= level.width) continue;
+      const cell = level.cells[row * level.width + col];
+      if (!cell) continue;
+      cell.gateway = true;
+      // **The axis rides along**, because on the country page the opening is not on the window's
+      // own outermost line: a reader that has to know which side the settlement is on (the
+      // crossing rule, and any probe of it) reads it here rather than guessing from the window's
+      // size, which put a city's east opening in the middle of a 128-cell country page.
+      out.push({ row, col, axis: gate.axis ?? null });
+    }
+    return out;
+  }
+
+  function gateAtPlayer() {
+    const level = current?.level;
+    const motor = current?.motor;
+    if (!level || !motor) return null;
+    // `current.city` and `current.country` rather than a `loadLevel` local: this runs from the HUD,
+    // which is written *during* a load — the same reason `doorNear` reads `current.doors`.
+    const held = current.city
+      ? { footprint: current.cityFootprint, gates: current.gates }
+      : current.country;
+    if (!held?.gates?.length) return null;
+    // **The player's cell, in the settlement's own coordinates** — which on a city page is a
+    // conversion and not an identity: the level's cells are the settlement's, and the settlement
+    // stands at its own world pixel (`worldCellOfCity`). Reading the motor's cell *as* a world cell
+    // was the first version of this, and on Daggerfall it asked about world cell (8,126) — 19 000
+    // cells north of the city — so the push never fired and the player walked out through the open
+    // gateway and off the edge of the level.
+    const levelRow = Math.round(motor.pos[0] / CELL_SIZE - 0.5);
+    const levelCol = Math.round(motor.pos[2] / CELL_SIZE - 0.5);
+    const foot = current.city
+      ? worldCellOfCity(current.cityFootprint, levelRow, levelCol)
+      : { row: levelRow + (current.wild?.originRow ?? 0), col: levelCol + (current.wild?.originCol ?? 0) };
+    for (const gate of held.gates) {
+      if (!atSettlementGate(held.footprint, gate, foot.row, foot.col, GATE_WALK_REACH_CELLS)) continue;
+      return {
+        row: gate.row, col: gate.col, axis: gate.axis,
+        to: current.city ? 'wilderness' : 'city',
+        inside: current.city ? null : insideGateCell(held.footprint, gate, GATE_STEP),
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Which sides of the settlement's wall have a gate in them — the HUD's own hint.
+   *
+   * A reading now rather than a walk around the ring: the openings are the level's own
+   * (`openSettlementGate`), so "which side" is a property of the two cells it answered with.
    *
    * @returns {string[]} e.g. `['north', 'east']`
    */
   function cityGateSides() {
-    const level = current?.level;
-    if (!level) return [];
-    /** @type {Set<string>} */
-    const sides = new Set();
-    for (const [lr, lc] of settlementWallCells()) {
-      const { row, col } = gateLevelCell({ row: lr, col: lc });
-      const gate = gateCellAt(row, col);
-      if (gate) sides.add(gate.axis);
-    }
-    return [...sides];
-  }
-
-  /**
-   * Every cell of the settlement's outermost line, in the settlement's own coordinates.
-   * @returns {[number, number][]}
-   */
-  function settlementWallCells() {
-    /** @type {[number, number][]} */
-    const out = [];
-    for (let col = 0; col < mif.width; col++) { out.push([0, col]); out.push([mif.height - 1, col]); }
-    for (let row = 1; row < mif.height - 1; row++) { out.push([row, 0]); out.push([row, mif.width - 1]); }
-    return out;
-  }
-
-  /**
-   * Which side of a settlement a ring cell belongs to, corners included.
-   * @param {number} row @param {number} col @param {number} depth @param {number} width
-   * @returns {'north'|'south'|'east'|'west'}
-   */
-  function ringAxis(row, col, depth, width) {
-    if (row === 0) return 'north';
-    if (row === depth - 1) return 'south';
-    if (col === 0) return 'west';
-    return 'east';
+    const held = current?.city ? { gates: current.gates } : current?.country;
+    if (!held?.gates?.length) return [];
+    return [...new Set(held.gates.map((gate) => gate.axis))];
   }
 
   /**
@@ -3316,6 +5118,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // you somewhere else in the city". The latch makes the first call the only one; the
     // scene it boots has its own, so travelling on from there is normal.
     if (life.leaving) return window.__arenaScene;
+    // **A sheet does not travel with the player.** The automap pauses the world, so nothing in
+    // the game can ask to leave while it is up — but a debug travel or a map click can, and a
+    // pause that outlived its panel would freeze the place the player arrives in.
+    if (automapOpen) toggleAutomap(false);
     life.leaving = true;
     // **The hour goes with the player.** The scene that is about to be disposed is the only thing
     // that knows what time it is here (`clockNow`), and the scene that replaces it decides its own
@@ -3333,6 +5139,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // an explicit arrival is an instruction about *this* page, and the next page takes its hour from
     // the world, exactly as a player's own travel does.
     next.delete('clock');
+    next.set('grid', String(WORLD_GRID_VERSION));
     try {
       history.replaceState(history.state ?? null, '', `${location.pathname}?${next.toString()}${location.hash ?? ''}`);
     } catch { /* a page that cannot rewrite its URL still travels */ }
@@ -3362,19 +5169,41 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
  * @returns {{to: string, row: number, col: number}|null}
  */
   function crossGate(gate, outward) {
-    const step = outward ? GATE_STEP : -GATE_STEP;
-    const target = { row: gate.row, col: gate.col };
-    if (gate.axis === 'north') target.row -= step;
-    else if (gate.axis === 'south') target.row += step;
-    else if (gate.axis === 'west') target.col -= step;
-    else target.col += step;
-
     const next = new URLSearchParams(params);
     for (const key of ['at', 'interior', 'enter', 'back', 'level', 'wild', 'wildseed']) next.delete(key);
-    if (gate.to === 'wilderness') {
-      next.set('wild', `${target.row + CITY_ORIGIN},${target.col + CITY_ORIGIN}`);
+    /** The cell the player arrives on, in whichever space the URL needs. */
+    let target;
+    if (outward) {
+      // **Out of a city: a world cell** (`game/tamrielGrid.js`), three cells clear of the wall on
+      // the gate's own line. This is the whole of B26's crossing — the country page that boots is the
+      // world at that cell, which is the same country for Daggerfall's gate and for the gate of the
+      // town two thousand cells east of it.
+      // **Ground, not the sea.** A coastal gate's three cells out can be water — Reich Gradkeep's
+      // east gate is — and a country page asked to stand there lands in the middle of the village
+      // instead. `landwardOutsideGate` walks the opening's own line inward until the world grid
+      // says land, and the opening itself is the last resort.
+      // **The nearest clear step first** (the owner, 2026-10-18: *"there is a wall if you continue
+      // to go forward"*). Three cells was chosen so the next push could not cross straight back,
+      // but a player who steps out of a gate and walks on is two cells and a row off the opening —
+      // measured on Daggerfall, the arrival was (71,65) against an opening at (72,63) — so the
+      // wall stood in front of them and the way back in was a diagonal they had no reason to
+      // guess. One step out is *through* the arch and still on its line, and the crossing's own
+      // lock (not distance) is what stops an instant return.
+      target = landwardOutsideGate(
+        current.cityFootprint, gate,
+        (row, col) => !isSeaCell(world.worldTerrain.indices, row, col),
+        [1, 2, 3, 0],
+      );
+      next.set('wild', `${target.row},${target.col}`);
     } else {
+      // **Into a city: the settlement's own coordinates**, three cells inside its own wall.
+      target = gate.inside ?? insideGateCell(current.country.footprint, gate, GATE_STEP);
       next.set('at', `${target.row},${target.col}`);
+      if (current.country?.settlement?.name) {
+        next.set('location', current.country.settlement.name);
+        next.set('province', String(current.country.settlement.provinceID));
+        next.set('placeId', String(current.country.settlement.id));
+      }
     }
     // The dev/test door's `?arena=` rides along, so a URL copied out of the address bar is
     // still reloadable. A *picked* folder cannot be named in a URL at all — that is the
@@ -3416,19 +5245,39 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (gatePushLock > 0 || life.leaving || !(forward || strafe) || !current?.motor) return false;
     const gate = gateAtPlayer();
     if (!gate) return false;
-    const cell = gateLevelCell(gate);
+    /** A cell as the point the stride is measured against, in this page's own level coordinates. */
+    const pointOf = (cell) => {
+      const at = gateLevelCell(cell);
+      return { x: (at.row + 0.5) * CELL_SIZE, z: (at.col + 0.5) * CELL_SIZE };
+    };
     const feet = feetOf();
-    // The level's own axes: **x carries the row and z carries the column** (`cellAtWorld`, and
-    // the seam's `teleportCell`, are the same convention) — the first version of this swapped
-    // them, and the rule then measured the distance to the wrong cell entirely.
-    const dx = (cell.row + 0.5) * CELL_SIZE - feet[0];
-    const dz = (cell.col + 0.5) * CELL_SIZE - feet[2];
-    const distance = Math.hypot(dx, dz) || 1;
-    if (distance > GATE_WALK_REACH) return false;
     const mx = Math.sin(cam.yaw) * forward + Math.cos(cam.yaw) * strafe;
     const mz = Math.cos(cam.yaw) * forward - Math.sin(cam.yaw) * strafe;
     const len = Math.hypot(mx, mz) || 1;
-    if ((mx / len) * (dx / distance) + (mz / len) * (dz / distance) < 0.6) return false;
+    // **What the stride has to be aimed at**, and it is two different things:
+    //
+    //   * approaching the opening — **the gateway's own cell**. A player two cells out in the country
+    //     pushing at the door is aimed at the door, and one walking *along* the wall beside it is not
+    //     (the aim is sideways, and the dot says so).
+    //   * standing in the opening — **the far side**. There is no direction to the cell underfoot, so
+    //     a player in the doorway pushing *through* it is the one who means to cross, and a player in
+    //     it pushing along the wall still does not. (Measured on Reich Gradkeep: the first version of
+    //     this measured the aim at the gateway cell itself, so a player who had walked into the
+    //     opening — which is walkable ground from the country side, `markCountryGates`) was a metre
+    //     from the cell it was aiming at, the dot was zero, and the door never opened.)
+    const gateway = pointOf({ row: gate.row, col: gate.col });
+    const away = Math.hypot(gateway.x - feet[0], gateway.z - feet[2]);
+    // The far side of the door, as the settlement's own cell, then as this level's — `gateLevelCell`
+    // takes the settlement's coordinates in both cases, which is the one thing the two pages agree
+    // about (a city page's own cells, the country's held settlement).
+    const through = pointOf(current.city
+      ? cityCellOfWorld(current.cityFootprint, outsideGateCell(current.cityFootprint, gate, GATE_STEP))
+      : (gate.inside ?? insideGateCell(current.country.footprint, gate, GATE_STEP)));
+    const aim = away > CELL_SIZE
+      ? { x: gateway.x - feet[0], z: gateway.z - feet[2] }
+      : { x: through.x - feet[0], z: through.z - feet[2] };
+    const aimLen = Math.hypot(aim.x, aim.z) || 1;
+    if ((mx / len) * (aim.x / aimLen) + (mz / len) * (aim.z / aimLen) < 0.6) return false;
     gatePushLock = 1.5;
     // Which way the gate leads is the gate's own answer: `gateCellAt` reads it off the side of
     // the wall the player is standing on, so this is one rule for both directions.
@@ -3444,8 +5293,47 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @param {string} file  e.g. `RAT1.CFA`
    * @param {number} capacity  how many of them may stand in this level at once
    */
-  async function loadSpriteSet(file, capacity) {
-    const known = spriteSets.get(file);
+  /**
+   * The scene's own sprite palette with one skin spec written over it (`game/raceSkin.js`).
+   *
+   * A race is six `PAL.COL` entries moved; a hair colour is the entries that *this sheet* paints
+   * on its head (`hairIndices`). Neither costs an artwork, so one person's Dunmer skin and fair
+   * hair is one 768-byte table. Cached per (palette, spec, hair entries) because a street asks for
+   * the same faces on every figure it loads, and a `?sprites=DAYTIME.COL` page gets the race over
+   * *that* palette — the daylight skin, not the night one.
+   *
+   * @param {string} spec  a race, or `race+hair` (`raceSkin.js`'s `skinSpec`)
+   * @param {number[]} hairIndices  the entries this sheet paints its head with
+   * @returns {Promise<{rgb: Uint8Array}>} the same shape `data.palette` returns
+   */
+  const racePalettes = new Map();
+  async function paletteForSkin(spec, hairIndices = []) {
+    const name = spritePaletteName();
+    const key = `${name}|${spec}|${hairIndices.join(',')}`;
+    const cached = racePalettes.get(key);
+    if (cached) return cached;
+    const base = await data.palette(name);
+    const rgb = skinPaletteFor(spec, base.rgb, { hairIndices });
+    const palette = rgb ? { rgb } : base;
+    racePalettes.set(key, palette);
+    return palette;
+  }
+
+  /**
+   * Load one figure's sheet, under one skin spec.
+   *
+   * @param {string} file  the install's own name, e.g. `MLGEN01W.CFA`
+   * @param {number} capacity  how many of them may stand in this level at once
+   * @param {string|null} [spec]  a race or `race+hair` to paint it in; null or unknown keeps
+   *   Arena's own colours
+   */
+  async function loadSpriteSet(file, capacity, spec = null) {
+    // The skin is a **second texture under a suffixed key**, not a second file: `raceSheetKey`
+    // appends the spec, the bytes stay the install's own, and the batch binds to the suffixed
+    // frame-0 texture. A person's `file` is the suffixed key everywhere downstream, so the
+    // billboard pass needs no knowledge of races at all.
+    const key = raceSheetKey(spec, file);
+    const known = spriteSets.get(key);
     if (known) { known.capacity = Math.max(known.capacity, capacity); return known; }
     const bytes = await data.bytes(file);
     if (!bytes) return null;
@@ -3454,17 +5342,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // own bytes are indices into the `.CFA` file's lookup table, which `parseCfa`
     // applies; see `spritePaletteName` for why this is not the daylight palette. See
     // FORMATS.md §11.
-    const spritePalette = spritePaletteName();
-    const palette = await data.palette(spritePalette);
+    // **Where this sheet's hair is** is the sheet's own answer (`hairIndicesOf`), asked by the
+    // sheet's own name: the entries a figure paints only above its head line are its hair, inside
+    // the run its family paints a head with, and one that paints none keeps Arena's own head. The
+    // name matters because `GUARD01.CFA` shades its helmet with a hair entry (the owner: *"some of
+    // them have to be affected by the hair changer"*), while `BABE01.CFA`'s gold 212…218 is the
+    // head this changer exists for (`raceSkin.js`).
+    // **The right table for the sheet** (`game/spritePalette.js`). `GHOST1.CFA` and
+    // `WRAITH1.CFA` are authored against the character-sheet palette, and read under `PAL.COL`
+    // their skin-tone indices become VGA's diagnostic colours — the owner's rainbow ghost and
+    // wraith. The rule is measured per sheet rather than listed by name, so a sheet that behaves
+    // this way is drawn right without anybody adding it to a table first.
+    const palette = spec
+      ? await paletteForSkin(spec, hairIndicesOf(cfa, { name: file }))
+      : await paletteForSheet(cfa.frames, spritePaletteName(), (name) => data.palette(name));
+    // **A cat's coat is painted per pixel, not with a palette** (`raceSkin.js`'s
+    // `catFrameRgba`). Six palette entries cannot carry the coat’s spots: every pixel of one source
+    // shade would receive one colour, which is the flat orange the owner rejected. The frame is
+    // expanded to RGBA and only the wolf's own coat indices are repainted, so the eyes, collar
+    // and muzzle stay Arena's. Every other skin still takes the ordinary palette path.
+    const fur = parseSkinSpec(spec).fur;
     for (const frame of cfa.frames) {
-      renderer.uploadTexture(CREATURE_ARCHIVE, `${file}#${frame.index}`, imageToUpload(frame.indices, frame.width, frame.height, palette));
+      const upload = fur
+        ? { width: frame.width, height: frame.height, colors: catFrameRgba(frame.indices, frame.width, frame.height, palette, fur) }
+        : imageToUpload(frame.indices, frame.width, frame.height, palette);
+      renderer.uploadTexture(CREATURE_ARCHIVE, `${key}#${frame.index}`, upload);
     }
     // Arena's figures are pixel art at roughly 102 pixels to a person.
     const size = { w: cfa.width * SPRITE_SCALE, h: cfa.height * SPRITE_SCALE };
     const centers = [...Array(Math.max(1, capacity))].map(() => [0, -1000, 0]);
-    const batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, `${file}#0`, size, centers, { dynamic: true });
-    const set = { file, cfa, size, batch, capacity: Math.max(1, capacity) };
-    spriteSets.set(file, set);
+    const batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, `${key}#0`, size, centers, { dynamic: true });
+    const set = { file: key, source: file, race: spec ?? null, cfa, size, batch, capacity: Math.max(1, capacity) };
+    spriteSets.set(key, set);
     return set;
   }
 
@@ -3481,20 +5390,29 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {Promise<void>}
    */
   async function loadPeopleActions(people) {
-    /** @type {Map<string, number>} */
+    /** @type {Map<string, {file: string, race: string|null, count: number}>} */
     const wanted = new Map();
     for (const person of people ?? []) {
       // Each action is a **direction → file** reading (`peopleKinds.js`): the town's men and
       // women carry five walk sheets, five talk sheets and five death sheets, and every one of
       // them has to be loaded or a person who turns out of the front direction has no art.
-      for (const action of Object.values(person?.actions ?? {})) {
+      // The **race is part of the key**: one file under two races is two textures, and the same
+      // race shared by ten people is one.
+      // `talk` is skipped on purpose: its art is a different figure in this install (see
+      // `liveBatches`), so uploading it is memory spent on a sheet nothing draws.
+      for (const [name, action] of Object.entries(person?.actions ?? {})) {
+        if (name === 'talk') continue;
         for (const file of Object.values(action ?? {})) {
-          if (file) wanted.set(file, (wanted.get(file) ?? 0) + 1);
+          if (!file) continue;
+          const key = raceSheetKey(person?.skin, file);
+          const entry = wanted.get(key) ?? { file, race: person?.skin ?? null, count: 0 };
+          entry.count++;
+          wanted.set(key, entry);
         }
       }
     }
-    for (const [file, count] of wanted) {
-      if (!spriteSets.has(file)) await loadSpriteSet(file, count);
+    for (const [key, entry] of wanted) {
+      if (!spriteSets.has(key)) await loadSpriteSet(entry.file, entry.count, entry.race);
     }
   }
 
@@ -3514,12 +5432,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const file = weaponRig.file;
     const bytes = await data.bytes(file);
     if (!bytes) { weaponMissing = file; return null; }
-    const cif = parseCif(bytes, file);
+    const decoded = file.endsWith('.CFA') ? parseCfa(bytes, file) : parseCif(bytes, file);
+    const images = decoded.images ?? decoded.frames.map(frame => ({
+      ...frame, xOffset: decoded.xOffset, yOffset: decoded.yOffset,
+    }));
     // The weapon is drawn with the same palette as the walls and the figures (`PAL.COL`);
     // the sheet's bytes are indices into it, and index 0 is the cutout (`palette.js`).
     const palette = await data.palette(spritePaletteName());
     for (const index of weaponRig.indices) {
-      const frame = cif.images[index];
+      const frame = images[index];
       if (!frame) continue;
       const canvas = document.createElement('canvas');
       canvas.width = frame.width;
@@ -3533,6 +5454,145 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
+   * **Give a draw of creatures its body.**
+   *
+   * `spawnEncounter` answers places and stat blocks; this is the reading that makes each one an
+   * actor in the scene: world metres, the next blow's clock, and the `.CFA` sheet its figure
+   * wears. It is one function because the level's own population and a radiant camp that arrives
+   * later (`ensureRadiantCamp`) have to be made by exactly the same law — a camp made by a second
+   * copy is the "enemies that look different from every other enemy" bug waiting to happen.
+   *
+   * @param {object[]} list  spawn records from `spawnEncounter`
+   */
+  function giveSpawnsBodies(list) {
+    list.forEach((spawn, index) => {
+      spawn.world = { x: spawn.place.x * CELL_SIZE, y: spawn.place.y * CELL_SIZE, z: spawn.place.z * CELL_SIZE };
+      spawn.nextAttack = spawn.monster.nextAttack;
+      spawn.awake = false;
+      // **A human foe wears its own figure** (`figureForMonster`): a palette for the human
+      // races, and the lizard or the snow wolf when the race is one this install draws with a
+      // whole body (`raceSkin.js`'s `RACE_FIGURE`).
+      const figure = figureForMonster(spawn.monster, index);
+      spawn.file = figure.sprite ? `${figure.sprite}1.CFA` : null;
+      // A human bowman's own sheet, if the install draws one for their family.
+      spawn.bowFile = spawn.monster?.human?.bowFile ?? null;
+      // **The figure's own base name**, not the monster row's: an Argonian's art is the Lizard
+      // Man's (`LIZARD*`), so its attack and death sheets are `LIZARD2…6`, never `GUARD02…6` —
+      // which is why the race's death animation was the wrong figure (or missing altogether).
+      spawn.sprite = figure.sprite;
+      spawn.skin = figure.skin;
+    });
+  }
+
+  /**
+   * Upload the sheets a draw of creatures is drawn from, and answer the ones this install has.
+   *
+   * One batch per creature file **and skin**, sized for how many of them are here. Files 1–5
+   * hold walk 0..5 and attack 8..11; file 6 is the death action. `keepFigures` is a window that
+   * moved, not a level that was left: the sheets are already uploaded and are reused by key.
+   *
+   * @param {object[]} list  spawn records that have been through `giveSpawnsBodies`
+   * @returns {Promise<object[]>} the ones with real art
+   */
+  async function loadSpawnArt(list) {
+    const usable = list.filter((s) => s.file);
+    const perFile = new Map();
+    for (const spawn of usable) {
+      const key = `${spawn.file}|${spawn.skin ?? ''}`;
+      perFile.set(key, (perFile.get(key) ?? 0) + 1);
+    }
+    // **A bowman's own shot** (`humans.js`'s `humanSheets`): the family's `*BOW.CFA` sheet is a
+    // single three-frame draw, so it is loaded beside the body it belongs to and drawn only on
+    // the attack (`liveBatches`).
+    const bows = new Map();
+    for (const spawn of usable) {
+      if (!spawn.bowFile) continue;
+      const key = `${spawn.bowFile}|${spawn.skin ?? ''}`;
+      bows.set(key, (bows.get(key) ?? 0) + 1);
+    }
+    const missing = new Set();
+    for (const [key, capacity] of perFile) {
+      const [file, skin = ''] = key.split('|');
+      const set = await loadSpriteSet(file, capacity, skin || null);
+      if (!set) missing.add(file);
+      const base = file.slice(0, -5);
+      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${base}${action}.CFA`, capacity, skin || null);
+    }
+    for (const [key, capacity] of bows) {
+      const [file, skin = ''] = key.split('|');
+      const set = await loadSpriteSet(file, capacity, skin || null);
+      if (!set) missing.add(file);
+    }
+    if (missing.size) console.warn(`[combat] no art in this install for: ${[...missing].join(', ')}`);
+    return usable.filter((s) => spriteSets.has(raceSheetKey(s.skin, s.file)));
+  }
+
+  /**
+   * **The quarry of a country job, at the job's own cell.**
+   *
+   * A wilderness job is a cell in a world that keeps moving its 128-cell window under the player
+   * (`slideWildWindow`). The camp used to be drawn only while the level was *built* — and a job
+   * is 130–175 cells out of its anchor's gate, so the window the player first walks into never
+   * holds it: by the time the target's cell arrived in a slid window, `populate` had long since
+   * run and the quarry the HUD pointed at was never spawned. That is the owner's report of
+   * 2026-10-21, *"the game has difficulty … spawning the sprite of the enemies you need to fight
+   * for the quest … even if you're close to their supposed position"*.
+   *
+   * This is called after a slide, and only adds the encounters the job still wants — a reload
+   * that already carries two of the three does not grow a fourth.
+   *
+   * @returns {Promise<number>} how many creatures were added
+   */
+  async function ensureRadiantCamp() {
+    const active = radiant?.active;
+    const hunt = slayProgress(active);
+    if (!hunt || active.completed || active.targetKind !== 'wild' || !current?.level) return 0;
+    let local = wildTargetCell(active);
+    if (!local) {
+      // **The quarry at the edge of the window.** A window slides in whole steps, so a job's
+      // cell can sit a few cells outside the country the player is standing in; waiting for
+      // the next slide is the owner's *"even if you're close to their supposed position"*.
+      // The camp is fielded on the nearest cell of this window when the mark is close enough
+      // to see the field, and the mark itself is still placed only where it really is.
+      const cell = active.targetCell;
+      const wild = current?.wild;
+      if (!cell || !wild) return 0;
+      const row = Math.round(Number(cell.row) - Number(wild.originRow));
+      const col = Math.round(Number(cell.col) - Number(wild.originCol));
+      if (!Number.isFinite(row) || !Number.isFinite(col)) return 0;
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const nearRow = clamp(row, 2, WILD_WINDOW - 3);
+      const nearCol = clamp(col, 2, WILD_WINDOW - 3);
+      const outside = Math.hypot(row - nearRow, col - nearCol);
+      if (outside > RADIANT_EDGE_REACH) return 0;
+      local = { row: nearRow, col: nearCol, edge: true };
+    }
+    const held = new Set(monsters.filter((m) => m.bounty?.questId === active.id && m.health > 0)
+      .map((m) => m.bounty.encounterId));
+    const wanted = hunt.ids.filter((id) => !hunt.defeated.includes(id) && !held.has(id));
+    if (!wanted.length) return 0;
+    const arrival = current.spawn ? { row: current.spawn.x - 0.5, col: current.spawn.z - 0.5 } : null;
+    const danger = dangerOf({ stage: quest.step, city: false });
+    const drawn = spawnEncounter({
+      level: current.level, seed: (current.city?.seed ?? 0) ^ 0x51a7, danger,
+      count: wanted.length, arrival, minCells: 4, monsters: [hunt.monster],
+      near: { row: local.row, col: local.col }, radius: 5,
+      exclude: new Set(monsters.map((m) => `${m.place?.row},${m.place?.col}`)),
+    });
+    const list = [];
+    drawn.forEach((spawn, i) => {
+      if (wanted[i]) list.push({ ...spawn, bounty: { questId: active.id, encounterId: wanted[i] } });
+    });
+    if (!list.length) return 0;
+    giveSpawnsBodies(list);
+    const usable = await loadSpawnArt(list);
+    monsters.push(...usable);
+    dbg.radiantCamp = { quest: active.id, cell: local, spawned: usable.length, when: local.edge ? 'window-edge' : 'window-slide' };
+    updateCombatHud();
+    return usable.length;
+  }
+
+  /**
    * Fill the level that has just been built with whoever lives here.
    *
    * Deterministic in the level's own seed, like every other draw in `game/`: come back
@@ -3540,28 +5600,56 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * @param {object} loaded  the `current` record `loadLevel` builds
    */
-  async function populate(loaded) {
+  async function populate(loaded, { keepFigures = false } = {}) {
     monsters = [];
-    for (const set of spriteSets.values()) {
-      renderer.destroyBillboardBatch(set.batch);
-      for (const batch of set.frameBatches?.values() ?? []) renderer.destroyBillboardBatch(batch);
+    // A boss belongs to the page he was summoned on; a fresh level asks for him again
+    // (`refreshObjective`) if the Jewel is still in the player's pack.
+    tharnSpawn = null;
+    tharnSummoning = false;
+    // **`keepFigures` is a window that moved, not a level that was left** (D-63). A slide has
+    // already got every sheet it needs — the people, the creatures and the player's own card —
+    // and re-uploading them was the freeze that made the country *"reload super frequently"*.
+    // With it, this only re-reads the level's own population; the art is reused by name.
+    if (!keepFigures) {
+      for (const set of spriteSets.values()) {
+        renderer.destroyBillboardBatch(set.batch);
+        for (const batch of set.frameBatches?.values() ?? []) renderer.destroyBillboardBatch(batch);
+      }
+      spriteSets.clear();
+      bloodSet = null;
+      if (sparkBatch) { renderer.destroyBillboardBatch(sparkBatch); sparkBatch = null; }
+      playerSet = null;
+      attackSet = null;
+      swingAnim = 0;
     }
-    spriteSets.clear();
-    playerSet = null;
-    attackSet = null;
-    swingAnim = 0;
     lastFeet = null;
     await ensureJobDungeons();
-    // The weapon starts the level where the original starts it: put away.
-    weaponRig.reset(player.weapon);
-    weaponOnScreen = null;
-    await loadWeaponArt();
+    // The install's own blood and spell sparks travel with the level they are drawn on.
+    if (!keepFigures) await ensureArenaParticles();
+    if (!keepFigures) {
+      // The weapon starts the level where the original starts it: put away.
+      weaponRig.reset(player.weapon);
+      weaponOnScreen = null;
+      await loadWeaponArt();
+    }
     const inCity = Boolean(loaded.city);
     // A settlement's buildings are inhabited, not infested: the first run of this feature
     // put the dungeon's four creatures inside the shop the player had just walked into (the
     // suite's "5 billboards for 1 person" caught it), which is the same mistake as putting
     // monsters in a street — Arena's own cities are patrolled, not hunted.
-    const inhabited = inCity || Boolean(entryCell);
+    //
+    // **But "walked in through a door" is not "inhabited".** The first version of the country's
+    // doors keyed this on `entryCell` alone, so a crypt entered from the country — the one way a
+    // player gets into it — was treated as a shop with the owner at home: the level's own roster
+    // (8 species in `WCRYPT.INF`, 17 in `TOWER1.INF`) was thrown away and the tomb held nothing but
+    // its coffins. Measured on this install: every crypt and tower level answers **7 creatures**
+    // from its own `.INF` (`monsterCountFor`), and `?interior=WCRYPT1.MIF` without a door fields
+    // six. A crypt and a tower are **lairs**, not households, and that is the building's own kind
+    // (`game/shops.js`) rather than how the player arrived.
+    const building = shopForInteriorFile(mapName)?.kind ?? null;
+    const lair = building === 'crypt' || building === 'tower';
+    const inhabited = (inCity || Boolean(entryCell)) && !lair;
+    levelInhabited = inhabited;
     const danger = dangerOf({ stage: quest.step, city: inhabited });
     const seed = Math.round((loaded.city?.seed ?? 0) * 31 + loaded.index * 7919 + mif.width * 3 + mif.height * 17 + quest.step * 101);
     const arrival = loaded.spawn ? { row: loaded.spawn.x - 0.5, col: loaded.spawn.z - 0.5 } : null;
@@ -3605,7 +5693,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // (`{rat: 4}` on all three climates, "0 distinct day bestiaries").
     const wildInf = current?.infName ?? loaded.infName ?? 'TWN.INF';
     const wildClimate = wildRequest?.climate
-      ?? place?.climate
+      ?? loaded.wild?.climate
       ?? skyClimateOf(wildInf).climate
       ?? 'temperate';
     const wild = wilderness
@@ -3613,8 +5701,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       : null;
     const count = inhabited ? 0
       : monsterCountFor({ danger, level: loaded.level, monsters: rosterIds, wilderness });
+    // **Human enemies** (UESP's `Arena:Monsters`' second section, D-67): a dungeon fields
+    // them at the player's own level, and a quest dungeon's are exactly that level (the
+    // page's rule). The country has none (`humans.humanShare`), so a wilderness window passes
+    // `null` and is unchanged.
+    const humans = !inhabited && !wild && !wildRequest
+      ? {
+        playerLevel: player.level ?? 1,
+        questDungeon: Boolean(radiant.active && place?.name
+          && String(place.name).toLowerCase() === String(radiant.active.target ?? '').toLowerCase()),
+      }
+      : null;
     const spawned = spawnEncounter({
-      level: loaded.level, seed, danger, count, arrival,
+      level: loaded.level, seed, danger, count, arrival, humans,
       // **How deep this level is**, which is the other half of whose bestiary stands in it:
       // the entrance level of a place fields the weakest slice of its own `.INF` list and its
       // depths field the rest (`encounters.rosterWindow`, D-15). `loaded.index` is the level's
@@ -3628,10 +5727,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // Their stable IDs persist partial progress without suppressing dungeon replay.
     const active = radiant.active;
     const hunt = slayProgress(active);
-    if (!inhabited && !wildRequest && loaded.index === 0 && hunt && !active.completed
-      && place?.name.toLowerCase() === active.target.toLowerCase()) {
+    // **Dungeon lair or country camp.** A brawl job stands on the first level of the place
+    // it names; a dungeon's target is the dungeon itself, a wild job's is the marked cell —
+    // and only the page holding that cell fields the quarry (`wildTargetCell`).
+    const wildCamp = hunt && !active.completed && active.targetKind === 'wild' ? wildTargetCell(active) : null;
+    const dungeonCamp = hunt && !active.completed && !wildRequest && loaded.index === 0
+      && place?.name?.toLowerCase() === active.target.toLowerCase();
+    if (hunt && !active.completed && (wildCamp || dungeonCamp)) {
       const targets = spawnEncounter({ level: loaded.level, seed: seed ^ 0x51a7, danger,
         count: hunt.required, arrival, minCells: 6, monsters: [hunt.monster],
+        near: wildCamp ? { row: wildCamp.row, col: wildCamp.col } : null,
+        radius: wildCamp ? 6 : 0,
         exclude: new Set(spawned.map(s => `${s.place.row},${s.place.col}`)) });
       targets.forEach((spawn, i) => {
         const encounterId = hunt.ids[i];
@@ -3639,36 +5745,85 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       });
     }
 
-    for (const spawn of spawned) {
-      spawn.world = { x: spawn.place.x * CELL_SIZE, y: spawn.place.y * CELL_SIZE, z: spawn.place.z * CELL_SIZE };
-      spawn.nextAttack = spawn.monster.nextAttack;
-      spawn.awake = false;
-      spawn.file = spawn.monster.sprite ? `${spawn.monster.sprite}1.CFA` : null;
+    // **Tharn's minions arrive with his vision** (`1392`…`1399`). The install's own words have
+    // him send them across the dream bridge — *"Already they arrive"* (1392) — and UESP puts the
+    // attack right after the vision. They are spawned here, while the level is being built, so
+    // their figures get the same sprite sets as the level's own creatures; `maybeAmbushScene`
+    // rouses them the moment the vision ends. The count is stamped in `encounters.js`
+    // (`AMBUSH_MINIONS`): the executable's encounter table is not in this checkout.
+    const ambushKey = dueAmbush(quest);
+    if (ambushKey && arrival && !inhabited && !/^IMPPAL/i.test(String(mapName))) {
+      const minions = spawnEncounter({
+        level: loaded.level, seed: seed ^ 0x7a11, danger,
+        count: AMBUSH_MINIONS, arrival, minCells: 3,
+        near: { row: arrival.row, col: arrival.col }, radius: 8,
+        monsters: wild ? wild.roster : rosterIds,
+        exclude: new Set(spawned.map((s) => `${s.place.row},${s.place.col}`)),
+      });
+      for (const minion of minions) spawned.push({ ...minion, ambush: ambushKey });
     }
-    const usable = spawned.filter((s) => s.file);
 
-    // One batch per creature file, sized for how many of them are here.
-    const perFile = new Map();
-    for (const spawn of usable) perFile.set(spawn.file, (perFile.get(spawn.file) ?? 0) + 1);
-    const missing = new Set();
-    for (const [file, capacity] of perFile) {
-      const set = await loadSpriteSet(file, capacity);
-      if (!set) missing.add(file);
-      // Files 1–5 contain walk 0..5 and attack 8..11; file 6 is the death action.
-      const base = file.slice(0, -5);
-      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${base}${action}.CFA`, capacity);
-    }
-    monsters = usable.filter((s) => spriteSets.has(s.file));
-    if (missing.size) console.warn(`[combat] no art in this install for: ${[...missing].join(', ')}`);
+    giveSpawnsBodies(spawned);
+    const usable = await loadSpawnArt(spawned);
+    monsters = usable;
+    // **A cadaver does not outlive its level.** A dungeon reload is a new visit, and the bodies
+    // the last visit left do not lie there: the owner, 2026-10-19, *"the cadavers of the human
+    // enemies dont disappear when the dungeon reloads and instead they should also"*. The
+    // ledger that remembered them is gone for that reason; a body still lies where it fell for
+    // the rest of the visit, and only the rest of the visit.
 
     // The player's own figures, for the third-person view: the walk seen from behind, and
     // the blow. The attack action ships facing the viewer only (`01…ATT.CFA` exists for
     // every armour and `05…ATT.CFA` for none), so it is a figure of its own here rather
     // than a re-facing of the walk — see `game/playerSprite.js` and `liveBatches`.
-    playerSet = await loadSpriteSet(playerSpriteFile(player, 'WLK'), 1);
-    attackSet = await loadSpriteSet(playerSpriteFile(player, 'ATT', 1), 1);
-    if (!playerSet && view === 'third') console.warn(`[combat] ${playerSpriteFile(player, 'WLK')} is not in this install`);
-    if (!attackSet && view === 'third') console.warn(`[combat] ${playerSpriteFile(player, 'ATT', 1)} is not in this install`);
+    //
+    // **The player is a member of the race they chose, so the crowd's figure law is theirs
+    // too** (`raceSkin.js`'s `RACE_FIGURE`, D-45). An Argonian player is drawn from the Lizard
+    // Man's own sheets — the very art the marsh's townsfolk stand in — rather than from the
+    // install's one human body in their class's armour: the owner, *"argonians should be all
+    // lizard man not green people"*, is about the race, and the player is one of them. A race
+    // this install does draw keeps its class figure and Arena's own palette, unchanged.
+    // A stand-in ships no attack sheet (the Lizard Man fights with its own walk, said in
+    // `peopleKinds.js`), so the blow keeps the walk as it does for any figure whose attack
+    // art the install lacks.
+    // **A look the player chose wins over the class's default body.** A save from before the
+    // visual creator has no `appearance`, so it keeps the old law exactly: an Argonian is the
+    // Lizard Man and everyone else is their class's armour. A chosen body is loaded from all
+    // five shipped angles, because that is what makes the third-person figure turn as the eye
+    // goes round it, and its strike art is the chosen family's own (or the unarmoured arms of
+    // the same sex where the archive drew no citizen strike).
+    const chosenLook = normalizeAppearance(player.appearance, player);
+    playerLook = chosenLook;
+    const explicitLook = Boolean(player.appearance?.spriteId);
+    const playerFigureKey = explicitLook ? null : figureKindFor(player.race);
+    const playerFigure = playerFigureKey ? standInByKey.get(playerFigureKey) ?? null : null;
+    if (!keepFigures) {
+      playerSets.clear();
+      playerSet = null; attackSet = null; attackFrames = null;
+      if (playerFigure) {
+        playerSet = await loadSpriteSet(playerFigure.views[BACK_VIEW] ?? playerSpriteFile(player, 'WLK'), 1);
+      } else {
+        const spec = appearanceSkinSpec(chosenLook, player);
+        const chosenSprite = spriteById(chosenLook.spriteId);
+        for (let angle = 1; angle <= 5; angle++) {
+          const set = await loadSpriteSet(appearanceWalkFile(chosenLook, angle, player), 1, spec);
+          if (set) {
+            // The watch and `BABE` sheets carry Arena's twelve-frame layout, so a stride is
+            // only their first six frames rather than the head-turn and sword-swing after it.
+            set.layout = chosenSprite?.layout ?? 'action';
+            playerSets.set(angle, set);
+          }
+        }
+        playerSet = playerSets.get(BACK_VIEW) ?? [...playerSets.values()][0] ?? null;
+        const strike = appearanceAttack(chosenLook, player);
+        if (strike) {
+          attackSet = await loadSpriteSet(strike.file, 1, spec);
+          attackFrames = strike.frames;
+        }
+      }
+    }
+    if (!playerSet && view === 'third') console.warn(`[combat] ${appearanceWalkFile(chosenLook, BACK_VIEW, player)} is not in this install`);
+    if (!attackSet && view === 'third' && !playerFigure) console.warn(`[combat] ${appearanceAttack(chosenLook, player)?.file ?? 'a strike sheet'} is not in this install`);
     // …and, in a settlement, the people who live in it. Their art is the same `.CFA`
     // family, so they share `spriteSets` and the billboard pass with the creatures.
     if (inCity) { await populateTown(loaded); payBoardJobHere(); }
@@ -3733,7 +5888,178 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // at 23:00, forty-eight people and all forty-eight of them indoors (D-01a).
     const trades = (loaded.peopleSpots ?? []).map((spot) => spot.role).filter(Boolean);
     placed.forEach((person, i) => { if (i < trades.length) person.role = trades[i]; });
+    giveTheCrowdTheirRaces(placed, seed, place?.provinceID ?? null);
     return dressCrowd(placed, seed);
+  }
+
+  /**
+   * **Whose face each of a crowd is** (block B11, D-45).
+   *
+   * The owner's own request — *"in morrowind mostly dark elf npcs in skyrim mostly nords … all
+   * provinces should have a mix of people but mostly their race of people"* — has two halves and
+   * this is the second one. `provinceStyle.js`'s `people` already decides which **names** a
+   * province's folk carry and its `PEOPLE_ART` pool which figures they are drawn from; `raceMix`
+   * is what they *are*, and a person's race is drawn from it by the one thing that identifies them
+   * for the regard ledger too — **their own cell and their own outfit** (`raceSkin.raceForPerson`,
+   * the same "the same man on the same paving stone is the same man" law `personId` keeps). So the
+   * smith a player met in Morrowind is a Dunmer again next visit, and a neighbouring cell can be
+   * an Argonian without either of them moving.
+   *
+   * A place whose province this table knows nothing about (a bare `?city=` dev page, a dungeon)
+   * gets **no race at all**, which is Arena's own skin — an honest absence rather than a guess.
+   *
+   * @param {object[]} placed  figures from `placeTownsfolk`, each with `place` and `outfit`
+   * @param {number} seed      the same seed their placement was drawn from
+   * @param {number|null} provinceID  the province their street belongs to
+   * @returns {object[]} the same figures, each with a `race` (or null)
+   */
+  /**
+   * The skin spec a creature is drawn with — a human foe's race, and a hair colour of its own.
+   *
+   * `humans.js` rolls the class and the race for every human enemy (UESP's "can be of any class
+   * or race"), and the install's one human combat set (`GUARD01.CFA`…) paints skin and hair from
+   * the same `PAL.COL` ladders the street's figures use. So a Dunmer battlemage, a Nord warrior
+   * and a Redguard thief look like three different people — which is what the owner asked for:
+   * *"in enemies using it it doesnt change even skin color"*.
+   *
+   * @param {object|null} monster  a `combat.js` monster (or a corpse's own record)
+   * @param {number} [index]  the spawn's own number, so two humans of a kind differ
+   * @returns {string|null}
+   */
+  function skinForMonster(monster, index = 0) {
+    const race = raceKey(monster?.human?.raceId ?? null);
+    if (!race) return null;
+    const hair = hairForPerson({
+      seed: (Number(index) + 1) * 7919,
+      row: 0,
+      col: Number(index) || 0,
+      key: `${race}|${monster?.human?.classId ?? ''}`,
+    });
+    return skinSpec(race, hair);
+  }
+
+  /**
+   * **The figure a human foe is drawn with** — the same law the crowd follows.
+   *
+   * The owner, 2026-10-19: *"also argonian and khajeet human enemies should use the same edited
+   * sprites that their npcs conterpart use so lizardman and colored wolves"*. `humans.js` gives
+   * every foe a race, and `raceSkin.js`'s `RACE_FIGURE` says which races this install draws with
+   * a whole body rather than a palette: the Lizard Man's sheets for an Argonian, the repainted
+   * snow wolf for a Khajiit (`khajiitCoatFor` gives each cat its own coat, exactly as a street's
+   * cats differ). The combat set's six-file shape is the same one both creatures use — five
+   * directions with the attack inside, and a death sheet — so the fight itself needs nothing
+   * else. A human of any other race keeps the combat set and its own skin palette.
+   *
+   * @param {object|null} monster  a `combat.js` monster (or a corpse's own record)
+   * @param {number} [index]  the spawn's own number, so two cats differ
+   * @returns {{sprite: string|null, skin: string|null}}
+   */
+  function figureForMonster(monster, index = 0) {
+    const race = raceKey(monster?.human?.raceId ?? null);
+    const standIn = figureKindFor(race);
+    if (standIn === 'ARGONIAN') return { sprite: 'LIZARD', skin: null };
+    if (standIn === 'KHAJIIT') {
+      return {
+        sprite: 'SWOLF0',
+        skin: khajiitCoatSpec(khajiitCoatFor({
+          seed: (Number(index) + 1) * 7919,
+          row: 0,
+          col: Number(index) || 0,
+          key: monster?.human?.classId ?? '',
+        })),
+      };
+    }
+    return { sprite: monster?.sprite ?? null, skin: skinForMonster(monster, index) };
+  }
+
+  function giveTheCrowdTheirRaces(placed, seed, provinceID) {
+    const pool = raceMixFor(provinceID);
+    for (const person of placed) {
+      // **A figure the archive draws as lizard-folk is an Argonian, whatever the pool says.**
+      // `game/peopleKinds.js` stands the Lizard Man's own sheets in for the marsh's people, and a
+      // race drawn from the pool is a *skin* laid over a body — so the art, which is a whole
+      // figure, outvotes it. (Paired with the pool instead, a lizard-folk could be assigned a
+      // Dunmer's skin: measured 2026-10-17 in Lilmoth, `LIZARD1.CFA#darkElf` among the marsh's
+      // own, which is not a thing that can be seen and not a thing this may report.)
+      // **A stand-in figure is its own race, whatever the pool drew.** The art is a whole body,
+      // not a skin, so a cat-folk under a province's Breton draw is a Khajiit and not a wolf in a
+      // Breton's face (`raceSkin.js`'s `raceOfFigure`; measured in Riverhold as
+      // `SWOLF03.CFA#breton+blonde`). The lizard half used to be the only name test here.
+      const figureRace = raceOfFigure(person.outfit?.key);
+      const art = String(viewFileFor(person.outfit, 1) ?? '');
+      if (figureRace) { person.race = figureRace; } else if (art.startsWith('LIZARD')) { person.race = 'argonian'; } else {
+        person.race = pool
+          ? raceForPerson({
+            pool,
+            seed,
+            row: person.place?.row ?? 0,
+            col: person.place?.col ?? 0,
+            key: person.outfit?.key ?? '',
+          })
+          // No province known (a bare `?city=` dev page, a dungeon): Arena's own skin, which is an
+          // honest absence rather than a guess (`raceSkin.js`).
+          : null;
+      }
+      // **A race whose own figure this install ships is drawn *as* that figure, with no palette
+      // over it** (`raceSkin.js`'s `RACE_FIGURE`, D-45). The owner: *"argonians should be all
+      // lizard man not green people"* — the palette half of D-45 painted the install's human body
+      // green for the marsh, and the art that stands for an Argonian was in the archive the whole
+      // time. `person.race` stays the identity (names, the regard ledger, the panels); `person.skin`
+      // is the palette, which is now null for a lizard, and `person.outfit` is the figure it is
+      // drawn from.
+      const figureKey = figureKindFor(person.race);
+      const standIn = figureKey ? standInByKey.get(figureKey) ?? null : null;
+      if (standIn) {
+        // The whole outfit is the figure's, not just its files: the panel's description, the
+        // animation layout and the actions come with the art (`peopleKinds.js`), so nothing
+        // downstream is told a lizard-folk is `a person in plain clothes` with a human's walk.
+        person.outfit = {
+          key: standIn.key,
+          group: '0',
+          armour: null,
+          label: standIn.label,
+          actions: standIn.actions ?? null,
+          layout: standIn.layout ?? 'action',
+          views: { ...standIn.views },
+        };
+        person.file = viewFileFor(person.outfit, 1);
+        person.set = standIn.key;
+        person.actions = standIn.actions ?? null;
+        person.kind = standIn.actions ? standIn.key : person.kind;
+        person.description = standIn.label ?? person.description;
+        person.figure = standIn.key;
+        // **The cat is painted, the lizard is not.** A stand-in figure carries its race in its own
+        // art, so no human skin ladder is laid over it (that was D-45's green Argonian). The one
+        // exception is the Khajiit: the snow wolf's coat is white, and `raceSkin.js`'s `KHAJIIT_FUR`
+        // repaints it tawny with stripes — a *figure* palette, not a race's skin, keyed by its own
+        // spec so the Lizard Man keeps his own colours.
+        // **A street of cats is not one cat** (the owner, 2026-10-18: *"focus on khajeet npcs"*):
+        // the coat is drawn from the same identity as the face, so Elsweyr holds tawny, sandy,
+        // black and grey cat-folk rather than one repainted wolf repeated.
+        person.skin = standIn.key === 'KHAJIIT'
+          ? khajiitCoatSpec(khajiitCoatFor({ seed, row: person.place?.row ?? 0, col: person.place?.col ?? 0, key: standIn.key }))
+          : null;
+      } else {
+        person.figure = null;
+        // **Their own hair on their own head** (`raceSkin.hairForPerson`): the install's sheets
+        // are one auburn on every citizen, and the owner asked for the variety a street has —
+        // *"have the blonde hair in npcs change color to a random hair color like you do with the
+        // skin color"*. The colour is drawn from the same identity as the race, so it is the same
+        // head on every visit, and it is part of the **skin spec** so the texture is keyed by it.
+        person.hair = hairForPerson({
+          seed,
+          row: person.place?.row ?? 0,
+          col: person.place?.col ?? 0,
+          key: person.outfit?.key ?? '',
+        });
+        person.skin = skinSpec(person.race, person.hair);
+      }
+      // **Their sex, for the name.** A name is a man's or a woman's (`game/names.js`), and the
+      // figure's own art says which (the roster's sex digit, the family word) — a stand-in or an
+      // ungendered family takes the same identity draw the race did.
+      person.female = isFemalePerson(person, raceDraw(seed, person.place?.row ?? 0, person.place?.col ?? 0, `${person.outfit?.key ?? ''}|sex`));
+    }
+    return placed;
   }
 
   /**
@@ -3755,15 +6081,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {Promise<object[]>} the crowd the scene holds
    */
   async function dressCrowd(placed, seed) {
+    // Grouped by **outfit and skin**: one outfit under two palettes is two sheets to load and two
+    // batches to size, and a batch has to hold every person who draws from it or a figure is
+    // silently dropped (`moveBillboardBatch` clamps to the batch's own quads). The palette is
+    // `person.skin` and not `person.race`, because a race drawn *as its own figure* has no palette
+    // (`giveTheCrowdTheirRaces`): the marsh's lizard-folk are one sheet shared by every Argonian
+    // in the street.
     const perOutfit = new Map();
     for (const person of placed) {
-      const entry = perOutfit.get(person.outfit.key) ?? { outfit: person.outfit, count: 0 };
+      const key = `${person.outfit.key}|${person.skin ?? ''}`;
+      const entry = perOutfit.get(key) ?? { outfit: person.outfit, race: person.skin ?? null, count: 0 };
       entry.count++;
-      perOutfit.set(person.outfit.key, entry);
+      perOutfit.set(key, entry);
     }
-    for (const { outfit, count } of perOutfit.values()) {
-      for (const view of PEOPLE_VIEWS) await loadSpriteSet(viewFileFor(outfit, view), count);
-      await loadSpriteSet(viewFileFor(outfit, 1).replace('WLK.CFA', 'ATT.CFA'), count);
+    for (const { outfit, race, count } of perOutfit.values()) {
+      for (const view of PEOPLE_VIEWS) await loadSpriteSet(viewFileFor(outfit, view), count, race);
+      // A stand-in figure ships no attack sheet (the Lizard Man fights with its own walk), so the
+      // missing file is simply not loaded — `data.bytes` answers nothing and the rig says so.
+      const walk = viewFileFor(outfit, 1);
+      if (String(walk).includes('WLK.CFA')) await loadSpriteSet(walk.replace('WLK.CFA', 'ATT.CFA'), count, race);
     }
     // …and the sheets the archive ships beyond a walk: the **talk** a person answers in and
     // the **die** they go down in (`game/peopleKinds.js`). Loaded once per file, sized for
@@ -3775,7 +6111,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // every time the player comes back (`game/regard.js`'s `personId`).
     const personPlace = whereAmI()?.place ?? place?.name ?? null;
     townsfolk = placed
-      .filter((person) => spriteSets.has(viewFileFor(person.outfit, 1)))
+      .filter((person) => spriteSets.has(raceSheetKey(person.skin, viewFileFor(person.outfit, 1))))
       .map((person) => {
         // The cell they were *placed* on. They walk from it, so `place` moves and this does
         // not: it is what makes their offer, their regard and their walk's own draw the
@@ -3833,6 +6169,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     });
     const trades = wild.trades ?? [];
     placed.forEach((person, i) => { if (trades.length) person.role = trades[i % trades.length]; });
+    // The country is the same province the city is: a road in Morrowind is Dunmer too.
+    giveTheCrowdTheirRaces(placed, seed, place?.provinceID ?? null);
     return dressCrowd(placed, seed);
   }
 
@@ -3886,7 +6224,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   async function populateShop(loaded) {
     const shop = shopForInteriorFile(mapName);
     const seed = Math.round(mif.width * 13 + mif.height * 7 + 4093);
+    // **The owner's house is empty** (the owner's own word): no household is drawn into a
+    // room the player bought, because the room is theirs. The map's own still figures are
+    // dropped too — a `BS` interior names nobody, but another install's might.
+    if (ownedHouseHere()) {
+      stillPeople = [];
+      townsfolk = [];
+      dbg.shopFolk = { map: mapName, kind: 'house', wanted: 0, still: 0, placed: 0, women: 0, files: [], owned: true };
+      closeTalk();
+      return townsfolk;
+    }
     const arrival = loaded.spawn ? { row: loaded.spawn.x - 0.5, col: loaded.spawn.z - 0.5 } : null;
+    // **Whose house this is** — the settlement's own province, through the door the player came
+    // in by. A building was drawing from the whole roster whatever province it stood in, so an
+    // Elsweyr house held no Khajiit and a marsh hovel no Argonian: the province's own art
+    // (`provinceStyle.js`'s `PEOPLE_ART`) reached the street and stopped at the doorstep. The
+    // owner, 2026-10-18: *"focus on khajeet npcs … check npcs variety in houses"*.
+    const houseProvince = place?.provinceID ?? fromPlace?.provinceID ?? null;
+    const houseArt = peopleArtFor(houseProvince);
+    const houseKinds = houseArt && standIns.length ? [...kinds, ...standIns] : kinds;
+    const housePool = houseArt?.pool ?? null;
     // ── the building's own people ──────────────────────────────────────────────
     //
     // A building's `.INF` names who works and who sits in it: `EQUIP.INF`'s item 15 is
@@ -3897,12 +6254,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // *roster* is the install's — which is the difference between the reported "shops are
     // empty of npcs" and a shop with its smith behind the counter and a tavern with
     // patrons at its tables.
+    // **The room's own people already stand on the map's cells.** Those cells are the flat's,
+    // and a second figure placed there is one person with two heads — so a spot is only for a
+    // *walker* when no still person was painted on it.
+    const stillCells = new Set(stillPeople.map((person) => `${person.place.row},${person.place.col}`));
     const spots = (loaded.peopleSpots ?? []).filter((spot) => {
       const cell = loaded.level.cells[spot.row * loaded.level.width + spot.col];
-      return cell && !cell.solid && !cell.floor?.chasm;
+      return cell && !cell.solid && !cell.floor?.chasm && !stillCells.has(`${spot.row},${spot.col}`);
     });
     const placed = spots.length
-      ? placeTownsfolk({ level: loaded.level, folk, kinds, seed, count: spots.length, arrival, minCells: 0 })
+      ? placeTownsfolk({ level: loaded.level, folk, kinds: houseKinds, art: housePool, seed, count: spots.length, arrival, minCells: 0 })
       : [];
     if (placed.length && spots.length) {
       // The map's own cells win over the seeded placement: these are the rooms they were
@@ -3930,16 +6291,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // and it **skips a cell somebody already stands on**: two billboards in one cell is one
     // person with two heads.
     const wanted = BUILDING_FOLK[shop?.kind ?? 'house'] ?? 1;
-    if (placed.length < wanted) {
+    // The still people count: a tavern whose `.INF` paints ten drinkers does not need five more
+    // invented ones, and a temple with its priest needs nobody. The top-up is what makes a house
+    // with no painted company feel lived in — not a second population beside the map's own.
+    if (placed.length + stillPeople.length < wanted) {
       const taken = new Set(placed.map((person) => `${person.place.row},${person.place.col}`));
       const more = placeTownsfolk({
         level: loaded.level,
         folk,
-        kinds,
+        kinds: houseKinds,
+        art: housePool,
         // A different draw from the room's own people, so a top-up cannot land on the same
         // cells as the roster it is filling in around.
         seed: seed + 907,
-        count: Math.max(1, wanted - placed.length),
+        count: Math.max(1, wanted - placed.length - stillPeople.length),
         arrival,
         minCells: placed.length ? 0 : 3,
       });
@@ -3953,27 +6318,61 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         placed.push(person);
       }
     }
+    // **A household is a family, not a sorority** (and not a barracks). A small room's draw of
+    // two or three people can come out all one sex — the owner, 2026-10-18: *"npcs variety in
+    // houses … at the moment is only women"* — and a house is the one building whose whole cast
+    // is meant to read as relatives. When the draw comes out one-sided, the last seat is redrawn
+    // from the other half of the roster, keeping its cell.
+    if (placed.length >= 2) {
+      balanceHousehold(placed, {
+        level: loaded.level, folk, kinds: houseKinds, art: housePool,
+        seed: seed + 4241, arrival,
+      });
+    }
+    // The household's own sex count, taken **before** a race's figure replaces the body (a
+    // cat-folk's art names no sex, so counting it after the swap would report a house of men).
+    const womenSeats = placed.filter((person) => isFemalePerson(person)).length;
     if (!placed.length) console.warn('[shops] this install has no people art to stand behind a counter');
+    // **Whose room this is** — the settlement's own province, through the door the player came in
+    // by, so a smith in Morrowind is a Dunmer and the same smith is the same Dunmer next visit.
+    giveTheCrowdTheirRaces(placed, seed, houseProvince);
+    // What the room's own census came to, for the seam and the suites: the kind of building, how
+    // many seats it wanted, what the draw made of them (the files are the **final art** — a
+    // Khajiit house reports its wolves, not the human bodies it was built from), and whether the
+    // household rule had to redraw a seat.
+    dbg.shopFolk = {
+      map: mapName, kind: shop?.kind ?? null, wanted, spots: spots.length,
+      still: stillPeople.length, placed: placed.length, women: womenSeats,
+      files: placed.map((person) => person.file), swapped: placed.some((person) => person.sexSwap),
+    };
     // The keeper's five angles too: whoever keeps the place looks up when the player walks
     // in, instead of standing at whatever angle the roster happened to hand out.
     for (const person of placed) {
-      for (const view of PEOPLE_VIEWS) await loadSpriteSet(viewFileFor(person.outfit, view), 1);
-      await loadSpriteSet(viewFileFor(person.outfit, 1).replace('WLK.CFA', 'ATT.CFA'), 1);
+      for (const view of PEOPLE_VIEWS) await loadSpriteSet(viewFileFor(person.outfit, view), 1, person.skin);
+      const walk = viewFileFor(person.outfit, 1);
+      if (String(walk).includes('WLK.CFA')) await loadSpriteSet(walk.replace('WLK.CFA', 'ATT.CFA'), 1, person.skin);
     }
     await loadPeopleActions(placed);
     // Whoever the map says *works* here keeps the place: a `SMITH` in an equipment shop, a
     // `BARTEND` in a tavern, a `PREST` in a temple. Everyone else is a patron, and walks.
     const workerRoles = new Set(['smith', 'bartender', 'priest', 'wizard']);
-    const keeperAt = placed.findIndex((person) => workerRoles.has(person.role));
+    // **The map's own worker is the keeper when it paints one.** `EQUIP1.MIF`'s `SMITH.DFA`,
+    // `TAVERN`'s `BARTEND.DFA`, `TEMPLE`'s `PREST1.DFA` and `MAGE`'s `WIZZ1.DFA` are the room's
+    // own keeper (`stillPeople`, their `shop`/`bank` already set), so no walking figure is marked
+    // keeper beside them — the shop's services belong to the person the map drew behind the counter.
+    const stillKeeper = stillPeople.find((person) => person.keeper) ?? null;
+    const keeperAt = stillKeeper ? -1 : placed.findIndex((person) => workerRoles.has(person.role));
     // The keeper is marked *on the person* rather than by position, so a person whose art
     // this install lacks cannot shift the mark onto somebody else.
-    placed.forEach((person, index) => { person.keeper = index === keeperAt || (keeperAt < 0 && index === 0); });
+    placed.forEach((person, index) => {
+      person.keeper = !stillKeeper && (index === keeperAt || (keeperAt < 0 && index === 0));
+    });
     // A building is somebody's, and it stands in a town: the keeper and the patrons belong to
     // the settlement the doorway led out of (`whereAmI` reads `fromPlace` inside a shop), so
     // the smith behind the counter is the same man the next time that shop is opened.
     const shopPlace = whereAmI()?.place ?? fromPlace?.name ?? null;
     townsfolk = placed
-      .filter((person) => spriteSets.has(viewFileFor(person.outfit, 1)))
+      .filter((person) => spriteSets.has(raceSheetKey(person.skin, viewFileFor(person.outfit, 1))))
       .map((person) => {
         // The cell they were placed on, kept apart from where they are standing
         // (`populateTown`'s rule, and what `offerFrom` draws their work from).
@@ -4006,16 +6405,31 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {object|null}
    */
   function personNear(reach = TALK_REACH) {
-    if (!townsfolk.length) return null;
+    // **A still person is a person.** The innkeeper behind the bar, the armourer at his anvil
+    // and the king on his throne are scenery pictures and people at once (`stillPeople`), and
+    // the reach that opens a conversation is the same for them as for the street.
+    if (!townsfolk.length && !stillPeople.length) return null;
     const feet = feetOf();
     let best = null;
-    for (const person of townsfolk) {
+    for (const person of [...townsfolk, ...stillPeople]) {
       const distance = Math.hypot(person.world.x - feet[0], person.world.z - feet[2]);
       if (distance > reach) continue;
       if (!best || distance < best.distance) best = { person, distance };
     }
     if (!best) return null;
     return { ...best.person, distance: best.distance };
+  }
+
+  /**
+   * **Who keeps this building.** The map's own worker when it paints one (`stillPeople`'s
+   * `SMITH`/`BARTEND`/`PREST`/`WIZZ`), and otherwise the walking keeper `populateShop` marked.
+   * One answer for the shop panel, the keeper's regard and the `peopleToStandNextTo` seam, so a
+   * tavern's barkeep is the figure behind the bar rather than whoever the crowd put first.
+   *
+   * @returns {object|null}
+   */
+  function keeperHere() {
+    return [...stillPeople, ...townsfolk].find((person) => person.shop) ?? null;
   }
 
   /**
@@ -4060,8 +6474,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // cell they were placed on (`home`), which is what keeps it the same job on every visit.
     if ('offer' in person) return person.offer;
     const where = person.home ?? person.place;
+    // **A finished job is not offered again.** The count of jobs this person has already
+    // paid for is part of the draw (`personOffer`'s `round`), so a friend who has been helped
+    // once has a different piece of work the next time the player walks up to them.
+    const round = person.regardId ? Number(radiant.people?.[person.regardId] ?? 0) : 0;
     const offer = personOffer({
-      world, library, giver, person: { ...person, place: where }, day: radiant.day ?? 1, dungeons: jobDungeons ?? [],
+      world, library, giver, person: { ...person, place: where }, day: radiant.day ?? 1, round,
+      dungeons: jobDungeons ?? [],
     });
     person.offer = offer;
     return offer;
@@ -4137,13 +6556,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // show the old purse and the next damage/inventory save erased the whole reward.
     player = { ...player, gold: Math.max(0, (player.gold ?? 0) + (result.gold ?? 0)) };
     saveCharacter(player);
-    const note = notePerson(person, 'job');
+    // **The work is a favour, not a transaction.** Carrying out somebody's own job is the
+    // twin's `job` (+25) *and* standing up for them (`helped`, +20): one errand turns a
+    // stranger into somebody who calls the player a friend, which is the whole reason a
+    // person's work exists rather than only the guild board.
+    notePerson(person, 'job');
+    const note = notePerson(person, 'helped');
     // The work earns standing with the guild whose kind of work it was — the guild ledger
     // is a save, like the regard, and the same event credits both.
     const guild = guildForJob(active.kind);
     const standing = earnStanding(guilds, guild.id);
     saveGuildState(guilds);
-    dbg.jobHandedIn = { title: active.title, gold: result.gold ?? 0, regard: note?.regard ?? null, standing: note?.standing ?? null, guild: { id: guild.id, standing } };
+    // **And they have new work.** The finished job's round is remembered against the
+    // person's own id, so `offerFrom` draws a different job on the next conversation — and
+    // the panel opens on it at once rather than making the player press `T` to see it.
+    if (person?.regardId) {
+      const done = Number(radiant.people?.[person.regardId] ?? 0) + 1;
+      radiant = { ...radiant, people: { ...(radiant.people ?? {}), [person.regardId]: done } };
+      saveRadiantState(radiant);
+      delete person.offer;
+    }
+    dbg.jobHandedIn = { title: active.title, gold: result.gold ?? 0, regard: note?.regard ?? null, standing: note?.standing ?? null, guild: { id: guild.id, standing }, rerolled: Boolean(person?.regardId) };
     const warmer = note && note.delta ? ` ${note.delta > 0 ? 'They will remember it.' : ''}` : '';
     showNotice(`Paid: ${result.gold ?? active.reward} gold, from ${active.giverPerson ?? active.giver}.${warmer} ${guild.name} hears of it — standing ${standing}.\n\n${radiantObjective(radiant) ?? 'Nothing else in hand.'}`, 6000);
     updateCombatHud();
@@ -4153,17 +6586,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       block.innerHTML = `<p class="offer">Paid: ${escapeHtml(String(result.gold ?? active.reward))} gold.</p>`
         + `<p class="src">${escapeHtml(standingWord(note?.standing ?? 'neutral', note?.regard ?? 0))}</p>`;
     }
-    return { ok: true, gold: result.gold ?? active.reward };
+    // Draw their next job and put it on the panel, so the reward and the new offer are the
+    // same conversation — the person is not a vending machine that runs dry after one errand.
+    if (person?.regardId) talk();
+    return { ok: true, gold: result.gold ?? active.reward, rerolled: Boolean(person?.regardId) };
   }
 
   /**
    * `T` — speak to whoever is nearest, and answer what they say.
    *
-   * The panel is the person's own words (Arena's, out of `template.dat`) and the two
-   * questions this project can answer honestly (see `game/townsfolk.js`): about the
-   * place, and about the country it is in. Pressing `T` again asks the *same* person
-   * another question — their line walks on through the corpus rather than repeating —
-   * and walking to somebody else starts a new conversation.
+   * The panel is the person's own words, and **the person's own** is meant literally: their
+   * personality's bank (Arena gives every figure one — `game/dialogue.js`), their trade out of the
+   * install's hundred, the city-state they stand in, the province they are from, and the race the
+   * game addresses the player by. Pressing `T` again asks the *same* person another question —
+   * somebody already met answers with their "I remember you" bank rather than introducing
+   * themselves again — and walking to somebody else starts a new conversation.
    *
    * @returns {{ok: boolean, who?: string, line?: string, topics?: object[], reason?: string}}
    */
@@ -4176,7 +6613,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     }
     // The record in `townsfolk` is the one that remembers the turn count, so a
     // conversation survives the player stepping back a pace and returning.
-    const person = townsfolk.find((p) => p.file === found.file && p.place.row === found.place.row && p.place.col === found.place.col) ?? null;
+    const person = townsfolk.find((p) => p.file === found.file && p.place.row === found.place.row && p.place.col === found.place.col)
+      ?? stillPeople.find((p) => p.file === found.file && p.place.row === found.place.row && p.place.col === found.place.col)
+      ?? null;
     const again = talking && person && talking.person === person;
     if (person) person.talkTurn = again ? (person.talkTurn ?? 0) + 1 : (person.talkTurn ?? 0);
     const seed = talkSeedFor(found);
@@ -4195,6 +6634,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // that is the twin's law, not a missing feature.
     const standing = regardId ? standingOf(regard, regardId, day) : 'neutral';
     const refuses = standing === 'enemy' || standing === 'hostile';
+    // **Whether this is somebody who has met the player before**, and read *before* the word is
+    // noted, because noting it is exactly what would make it true. The ledger keeps the memory
+    // across visits and sessions (`game/regard.js`), so the second time a player walks up to a
+    // face it answers with Arena's "I remember you" bank (`template.dat` #115 + personality)
+    // instead of introducing itself from the beginning again. The reference's own flag is the
+    // same idea (`GameWorldUiState.cpp`'s `hasBeenIntroduced`, which it keeps per entity).
+    const met = (regardId ? regardOf(regard, regardId, day) > 0 : false) || (person?.talkTurn ?? 0) > 0;
     // A word exchanged is worth something to them, **once a day** (`noteRegard` enforces
     // the ration): a stranger who answers politely once is an acquaintance, and one who is
     // asked the same question fifty times is not a friend.
@@ -4205,14 +6651,29 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const standingNow = regardId ? standingOf(regard, regardId, day) : 'neutral';
     const regardAfter = regardId ? regardOf(regard, regardId, day) : 0;
 
-    // A shopkeeper speaks their own trade's bank when this install has one, and the town's
-    // talk when it does not (`game/shops.js`'s `serviceGreetings` drops every line that
-    // wants an item or a price, because this project has neither).
+    // **Who is speaking, and every word this game can honestly put in their mouth.** The persona
+    // comes off their own art (a smith is a citizen, a tavern's drinker is a tavern's drinker, the
+    // guild's wizard is a wizard), the trade out of the install's hundred rows, and the values are
+    // facts already in hand: their own name, the player's race and name, the city-state, its kind,
+    // the province, the province the player's own race is from, their own sex, the province's oath.
+    const where = whereAmI();
+    const speaker = speakerFor({
+      person,
+      banks: speech,
+      place: where,
+      provinceID: where?.provinceID ?? null,
+      player,
+      seed,
+      nearby: nearbyBuildings(),
+    });
+    // A shopkeeper speaks their own trade's bank when this install has one, and their own words
+    // when it does not (`game/shops.js`'s `serviceGreetings` drops every line that wants an item
+    // or a price, because this project has neither).
     const bank = person?.bank ? serviceGreetings(library.service, person.bank) : [];
     const greeting = refuses ? null : bank.length
       ? serviceGreeting(bank, seed, person?.talkTurn ?? 0)
-      : greetingFor(talkLines, seed, person?.talkTurn ?? 0);
-    const topics = refuses ? [] : topicsFor(talkLines, whereAmI(), seed);
+      : greetingFor(speaker, speech, { turn: person?.talkTurn ?? 0, met });
+    const topics = refuses ? [] : topicsFor(speaker, speech, person?.talkTurn ?? 0);
     // …and the work they have to offer, which is the reason a player talks to strangers in
     // Arena at all. A person in a dungeon-less install still offers the kinds that need
     // no dungeon; a person inside a building (`place` null) offers nothing, because the
@@ -4224,6 +6685,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const handIn = person ? handInWith(radiant, person.regardId) : null;
     if (person) person.line = greeting?.text ?? null;
     talking = { person };
+    // A conversation that has just opened has not been closed: the seam reads the *last* reason a
+    // panel went away, so opening one clears it rather than reporting an older walk-off.
+    dbg.talkClosed = null;
     showTalk(found, greeting, topics, offer, { standing: standingNow, regard: regardAfter, regards: refuses, handIn, person });
     return {
       ok: true,
@@ -4233,7 +6697,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       standing: standingNow,
       regard: regardAfter,
       handIn: handIn ? { title: handIn.title, reward: handIn.reward } : null,
-      topics: topics.map((t) => ({ key: t.key, label: t.label, text: t.text })),
+      // **What the person is**, for the suites and for the panel: the personality the install gives
+      // their art, the trade out of its hundred rows, and which bank the sentence came from.
+      persona: speaker.persona.key,
+      occupation: speaker.occupation?.name ?? null,
+      subject: greeting?.subject ?? null,
+      met,
+      topics: topics.map((t) => ({ key: t.key, label: t.label, text: t.text, subject: t.subject ?? null })),
       offer: offer
         ? { id: offer.id, kind: offer.kind, title: offer.title, target: offer.target, reward: offer.reward, days: offer.days, text: offer.text }
         : null,
@@ -4306,13 +6776,41 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const pool = nameBanksFor(place?.provinceID) ?? CLIMATE_NAME_BANKS[climate] ?? CLIMATE_NAME_BANKS.T;
     let named = 0;
     people.forEach((person, index) => {
-      if (person.name) return;
+      // A name from the corpus is final; a built-in one is provisional, so the sibling's own
+      // generator replaces it the moment its bytes arrive (`ensurePeopleNames` runs after this).
+      if (person.name && (person.nameSource ?? 'corpus') === 'corpus') return;
       const at = person.place ?? person.home ?? { row: index, col: 0 };
-      const rng = new ArenaRandom(
-        (Number(seed) * 97 + at.row * 7919 + at.col * 104729 + index * 2654435761) >>> 0 || 1,
-      );
-      const name = personName({ banks: peopleBanks, rng }, pool[rng.nextBelow(pool.length)], rng.nextBelow(100) < 50);
-      if (name) { person.name = name; named++; }
+      // **The person's own race and their own sex** (the owner, 2026-10-18: *"make the name of npcs
+      // differenciate between male and female and by race"*). The bank used to be drawn from the
+      // *province's* pool and the sex from a coin toss, so a Redguard woman could be named a
+      // Breton man. `peopleKinds`/`townsfolk` read the sex off the art and `giveTheCrowdTheirRaces`
+      // gives every figure its race, so both are facts the name can follow — and `nameForPerson`
+      // falls back to the built-in per-race table when the sibling corpus has no bank (Argonian)
+      // or is absent altogether.
+      const name = nameForPerson({
+        banks: peopleBanks,
+        race: person.race ?? null,
+        female: person.female ?? false,
+        seed,
+        row: at.row,
+        col: at.col,
+        key: person.outfit?.key ?? person.kind ?? '',
+      }) ?? (() => {
+        // A person with no race (a dev page, a dungeon) is named from the place's own bank pool,
+        // but still from their own sex.
+        const rng = new ArenaRandom(
+          (Number(seed) * 97 + at.row * 7919 + at.col * 104729 + index * 2654435761) >>> 0 || 1,
+        );
+        return personName({ banks: peopleBanks, rng }, pool[rng.nextBelow(pool.length)], Boolean(person.female));
+      })();
+      if (name) {
+        person.name = name;
+        // The corpus composed it when this race's bank was in hand (`nameForPerson` prefers it),
+        // a built-in otherwise — and only the latter may be replaced when the corpus arrives.
+        const fromCorpus = Boolean(person.race && peopleBanks && Array.isArray(peopleBanks[person.race]));
+        person.nameSource = fromCorpus ? 'corpus' : 'lore';
+        named++;
+      }
     });
     return named;
   }
@@ -4358,12 +6856,78 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     let best = Infinity;
     for (const other of world.settlements()) {
       if (other.name === here.name) continue;
-      const distance = Math.hypot(other.global.x - here.global.x, other.global.y - here.global.y);
+      const distance = Math.hypot(other.tamriel.x - here.tamriel.x, other.tamriel.y - here.tamriel.y);
       if (distance < best) { best = distance; neighbour = other.name; }
     }
-    const value = { place: here.name, neighbour: neighbour ?? undefined, province: here.province };
+    const value = {
+      place: here.name,
+      neighbour: neighbour ?? undefined,
+      province: here.province,
+      // **The kind and the province's own number**, which the talk banks ask for: `%ct` is "this
+      // city" / "this town" / "this village", and a province's own oath is `#364 + its race
+      // index`, which is the province's index in this install's own order (`game/provinceStyle.js`
+      // — High Rock, Hammerfell, Skyrim… the reference's `getOathsEntryKey` reads the same number).
+      kind: here.kind ?? null,
+      provinceID: Number.isInteger(here.provinceID) ? here.provinceID : null,
+    };
     whereAmI.cache = { name: here.name, value };
     return value;
+  }
+
+  /**
+   * **The way to the nearest tavern, shop, guild and palace**, for the talk panel.
+   *
+   * The owner, 2026-10-19: *"speaking with town npcs that are outside you need to be able to ask for
+   * directions for the nearest tavern, shop, mages guild and palace"*. The street already knows
+   * every door and what is behind it (`cityDoors`: a kind, a name, a cell), so the answer is a
+   * measurement rather than a guess: the nearest door of each kind, the bearing to it on the
+   * automap's own eight sectors (`automapDirection`, the same word the map's arrow uses) and the
+   * distance in metres. `game/dialogue.js`'s `topicsFor` puts Arena's own where-is bank (#260,
+   * "you'll find that `%di` of here") around it.
+   *
+   * A dungeon, a shop's interior or the country has no `current.doors` of these kinds, so the
+   * questions simply are not offered there — a direction to a tavern from inside a crypt would be
+   * a lie about a street the player is not on.
+   *
+   * @returns {{kind: string, label: string, name: string, distance: number, bearing: string}[]}
+   */
+  const NEARBY_KINDS = Object.freeze([
+    { kind: 'tavern', label: 'the nearest tavern' },
+    { kind: 'equipment', label: 'the nearest shop' },
+    { kind: 'mages', label: 'the Mages Guild' },
+    { kind: 'temple', label: 'the nearest temple' },
+    { kind: 'palace', label: 'the palace' },
+  ]);
+  function nearbyBuildings() {
+    const doors = current?.doors ?? [];
+    if (!doors.length) return [];
+    const feet = feetOf();
+    const out = [];
+    for (const wanted of NEARBY_KINDS) {
+      let best = null;
+      for (const door of doors) {
+        if (door.kind !== wanted.kind) continue;
+        // **The doorstep, not the leaf.** A city door is a wall voxel and the player stands on the
+        // street cell in front of it (`door.stand`); measuring to the wall would put every answer a
+        // cell off, and a palace's own stand is what the door's `E` walks to.
+        const stand = door.stand ?? door;
+        const x = (Number(stand.row) + 0.5) * CELL_SIZE;
+        const z = (Number(stand.col) + 0.5) * CELL_SIZE;
+        const distance = Math.hypot(x - feet[0], z - feet[2]);
+        if (!best || distance < best.distance) best = { x, z, distance, door };
+      }
+      if (!best) continue;
+      out.push({
+        kind: wanted.kind,
+        label: wanted.label,
+        name: best.door.name ?? wanted.label,
+        distance: Math.round(best.distance),
+        bearing: automapDirection(Math.atan2(best.x - feet[0], best.z - feet[2])),
+        row: best.door.row,
+        col: best.door.col,
+      });
+    }
+    return out;
   }
 
   /** Put the talk panel up for a person, with their questions and their work. */
@@ -4392,9 +6956,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       : greeting?.text ?? 'They have nothing to say.';
     el.innerHTML = `<h2>${escapeHtml(person.name ? `${person.name} — ${person.description}` : person.description)}</h2>`
       + `<p class="line">${escapeHtml(line)}</p>`
-      + (refuses ? '' : `<p class="src">Arena's own words — ${greeting?.source ?? `template.dat #${greeting?.id ?? '?'}`}</p>`)
+      + (refuses ? '' : `<p class="src">Arena's own words — ${greeting?.source ?? `template.dat #${greeting?.id ?? '?'}${greeting?.subject ? `, ${greeting.subject}` : ''}`}</p>`)
       + standingLine
       + guildBlock(opts.person ?? person)
+      + houseBlock(opts.person ?? person)
+      + counterBlock(opts.person ?? person)
       + `<ul>${topics.map((topic) => `<li><button data-topic="${topic.key}">Ask about ${escapeHtml(topic.label)}</button></li>`).join('')}</ul>`
       + (opts.handIn ? handInBlock(opts.handIn) : '')
       + (offer ? jobBlock(offer) : '')
@@ -4408,9 +6974,41 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (hand) hand.onclick = () => handInJob();
     const join = el.querySelector('button[data-guild="join"]');
     if (join) join.onclick = () => joinKeeperGuild();
+    const house = el.querySelector('button[data-house]');
+    if (house) {
+      house.onclick = () => {
+        if (house.dataset.house === 'buy') void buyHouseFromKing();
+        else void goToOwnedHouse();
+      };
+    }
+    const counter = el.querySelector('button[data-counter]');
+    if (counter) counter.onclick = () => { closeTalk(); openBag(); };
     el.classList.add('on');
     dbg.talk = { who: person.description, line, standing, offer: offer?.title ?? null, handIn: opts.handIn?.title ?? null, shop: person.shop ?? null };
     return el;
+  }
+
+  /**
+   * **The counter, where the player can see it.**
+   *
+   * The owner, 2026-10-22: *"it needs to be clear that you need to open the inventory to
+   * interact with shops"*. Trades live in the pack page (`updateInventoryPanel`), which is a
+   * good place for them — the shelf and the pack are the same list, and a sale is a click on
+   * the thing being sold — but nothing said so at the counter. A keeper with a trade now says
+   * it, and offers the one button that opens it.
+   *
+   * @param {object} person
+   * @returns {string}
+   */
+  function counterBlock(person) {
+    const kind = person?.shop ?? null;
+    if (!kind) return '';
+    const trade = SERVICE_KINDS[kind]?.name ?? kind;
+    return '<div class="job counter">'
+      + `<p class="offer">${escapeHtml(trade === kind ? 'This keeper trades.' : `This is ${trade.toLowerCase()}: the shelf is what they sell, and your pack is what they buy.`)}</p>`
+      + '<p class="src">Buying, selling and haggling all happen in your pack. It opens here at the counter, and anywhere else with I.</p>'
+      + '<button data-counter="open">Open your pack — the counter (I)</button>'
+      + '</div>';
   }
 
   /**
@@ -4458,23 +7056,68 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function askTopic(key) {
     if (!talking?.person) return { ok: false, reason: 'nobody is being spoken to' };
-    const topics = topicsFor(talkLines, whereAmI(), talkSeedFor(talking.person));
+    // **The same speaker the greeting was built from**, so a question cannot be answered by
+    // somebody else's bank: the persona, the trade and the words are the person's own.
+    const where = whereAmI();
+    const speaker = speakerFor({
+      person: talking.person,
+      banks: speech,
+      place: where,
+      provinceID: where?.provinceID ?? null,
+      player,
+      seed: talkSeedFor(talking.person),
+      nearby: nearbyBuildings(),
+    });
+    const topics = topicsFor(speaker, speech, talking.person.talkTurn ?? 0);
     const topic = topics.find((t) => t.key === key);
     if (!topic) return { ok: false, reason: `no such question: ${key}` };
     const el = document.getElementById('talk');
     const line = el?.querySelector('p.line');
     if (line) line.textContent = topic.text;
     const source = el?.querySelector('p.src');
-    const about = key === 'city' ? whereAmI()?.place : null;
-    if (source) source.textContent = `Arena's own words — template.dat #${topic.id}${about ? `, about ${about}` : ''}`;
-    dbg.talk = { who: talking.person.description, line: topic.text };
-    return { ok: true, text: topic.text };
+    // The credit names the subject as well as the key — "#185, the talk of this place", "#57,
+    // about Daggerfall" — because the number alone says nothing about what was asked. A direction
+    // is Arena's where-is bank (#260) **plus** a sentence this project writes (the metres), so it
+    // never claims the whole answer is the install's; a direction the bank could not fill says so.
+    const about = key === 'city' ? where?.place : topic.subject;
+    if (source) {
+      source.textContent = topic.credit
+        ?? `Arena's own words — template.dat #${topic.id}${about ? `, ${key === 'city' ? `about ${about}` : about}` : ''}`
+          + (key.startsWith('where:') ? ' — and this project\u2019s own distance' : '');
+    }
+    dbg.talk = { who: talking.person.description, line: topic.text, persona: speaker.persona.key, subject: topic.subject ?? null };
+    return { ok: true, text: topic.text, id: topic.id, subject: topic.subject ?? null };
   }
 
   /** Put the talk panel away. */
   function closeTalk() {
     talking = null;
     document.getElementById('talk')?.classList.remove('on');
+  }
+
+  /**
+   * **A conversation is over when the player walks out of earshot.**
+   *
+   * The owner, 2026-10-19: *"the speech gui should disappear once you get too far from who youre
+   * speaking to"*. The panel used to stand for ever: a player could cross a square and still be
+   * reading a sentence from somebody a street away, and the person they had left stood frozen with
+   * their face turned to a player who was gone (`stepTownsfolk`'s hold). Closed at the wider
+   * `OUT_OF_EARSHOT` rather than at `TALK_REACH`, so the edge of a conversation is not a flicker:
+   * the person goes back to their own day, and the record of why the panel shut is kept for a
+   * suite (`talkPanel().closed`) instead of being a mystery the player has to explain.
+   */
+  function stepTalk() {
+    const person = talking?.person;
+    if (!person?.world) return;
+    const feet = feetOf();
+    const away = Math.hypot(person.world.x - feet[0], person.world.z - feet[2]);
+    if (away <= OUT_OF_EARSHOT) return;
+    dbg.talkClosed = {
+      who: person.description ?? null,
+      distance: Math.round(away * 100) / 100,
+      reason: 'out of earshot',
+    };
+    closeTalk();
   }
 
   /**
@@ -4495,10 +7138,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         spawn.walking = false;
         continue;
       }
+      if (dbg.seconds < (spawn.paralysedUntil ?? 0)) { spawn.walking = false; spawn.attack = null; continue; }
       const dx = feet[0] - spawn.world.x;
       const dz = feet[2] - spawn.world.z;
       const distance = Math.hypot(dx, dz);
       spawn.distance = distance;
+      // **A regenerating creature closes its own wounds** (UESP: the troll, the vampire, the
+      // lich; `bestiary.js`'s `REGEN_PER_SECOND`). The carry is fractional so a frame at
+      // 60 Hz does not round the rate away — the wound really does close between blows.
+      const regen = regenerationOf(spawn.monster);
+      if (regen > 0 && spawn.monster.health > 0 && spawn.monster.health < spawn.monster.maxHealth) {
+        spawn.healCarry = (spawn.healCarry ?? 0) + regen * dt;
+        if (spawn.healCarry >= 1) {
+          const amount = Math.floor(spawn.healCarry);
+          spawn.healCarry -= amount;
+          spawn.monster = { ...spawn.monster, health: Math.min(spawn.monster.maxHealth, spawn.monster.health + amount) };
+          dbg.monsterHealed = (dbg.monsterHealed ?? 0) + amount;
+        }
+      }
       // **It has to be able to see the player**, not merely be near them. A monster behind a
       // wall used to wake on distance alone and swing through it: the reported "enemies hit you
       // behind walls". `sees` is the wall test (see `sightClear`), and it is what decides both
@@ -4509,7 +7166,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         spawn.world.x, spawn.world.y + SIGHT_EYE, spawn.world.z,
         feet[0], feet[1] + SIGHT_EYE, feet[2],
       );
+      // **Invisibility is a real state**, not a line on the HUD: a creature that cannot see
+      // through it never wakes on the player's distance. UESP's own bestiary names the ones
+      // that can (`bestiary.js`'s `seesInvisible` — the daemon, the lich, the vampire, the
+      // ghost, the wraith and Tharn), and the rest are blind to a hidden player.
+      if (spawn.sees && player.invisible && !seesInvisible(spawn.monster)) {
+        spawn.sees = false;
+        dbg.hiddenFrom = (dbg.hiddenFrom ?? 0) + 1;
+      }
       spawn.awake = spawn.sees;
+      // **A creature's own voice, the moment it notices the player.** The owner, 2026-10-22:
+      // *"enemies all need to have their sounds"*. `game/combatSound.js`'s `MONSTER_VOICES`
+      // is the install's own `.VOC` per creature (`RATS`, `WOLF`, `GHOST`, `MINOTAUR`, …), so
+      // a rat barks and a lich's voice is a lich's. Once per waking, never on a loop.
+      if (spawn.awake && !spawn.cried) {
+        spawn.cried = true;
+        playSfx('monsterVoice', { monster: spawn.monster.kind === 'human' ? 'human' : spawn.monster.id, event: 'attack', volume: 0.7 });
+      }
       // **The creature has breathing money too.** Its bar is its own; it regenerates at
       // `MONSTER_REGEN` (slower than the player's), every attack pays from it at
       // `beginAttack`, and a spent or wounded light creature gives the fight up and
@@ -4523,8 +7196,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (!spawn.poise) spawn.poise = { poise: poiseMax(spawn.monster.level), max: poiseMax(spawn.monster.level) };
       // A caster never closes if it can help it: the roster's casters fight at range
       // (`game/ranged.js`'s `RANGED_IDS` is the install's own list) and their footwork is
-      // a band, not a chase.
-      spawn.caster = RANGED_IDS.includes(spawn.monster.id);
+      // a band, not a chase. **A silenced caster is a melee creature** (`Silence` and
+      // `Far Silence`), which is what the spell buys.
+      // **A human bowman is a ranged foe too** (`humans.js`'s `isArcherClass`): the Archer and
+      // the Ranger carry a short bow, so they keep their distance and loose instead of closing
+      // — the same band a caster holds (`ranged.js`), with an arrow instead of a bolt.
+      spawn.archer = Boolean(spawn.monster.human?.bow);
+      spawn.caster = (RANGED_IDS.includes(spawn.monster.id) || spawn.archer)
+        && (spawn.silencedUntil ?? 0) <= dbg.seconds;
+      // …and a poisoned one loses its blood a second at a time (`Wyvern's Sting`, `Toxic
+      // Cloud`, `Cause Disease`). The carry keeps the rate honest between frames.
+      if (spawn.venom && dbg.seconds < spawn.venom.until) {
+        spawn.venomCarry = (spawn.venomCarry ?? 0) + dt;
+        if (spawn.venomCarry >= 1) {
+          const tick = Math.floor(spawn.venomCarry);
+          spawn.venomCarry -= tick;
+          damageMonster(spawn, Math.max(1, spawn.venom.power) * tick, spawn.venom.element);
+          if (spawn.monster.health <= 0) continue;
+        }
+      }
       spawn.poise.max = poiseMax(spawn.monster.level);
       // **A stagger is a body, not a stat.** It holds the creature shut out of the fight for
       // its whole clock: no chase, no telegraph, no blow — the recovery *is* the opening.
@@ -4536,22 +7226,72 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // Its own band, **or a sleep it heard**: a creature roused by the player's camp hunts
       // from anywhere in the level until its deadline (`encounters.js`'s `isHunting`).
       const chased = isHunting(spawn, distance, dbg.seconds, { aggro: AGGRO });
-      spawn.fleeing = chased && wantsToFlee(spawn.monster, spawn.stamina);
+      // **And a hunt is a walk, not a wish.** `spawn.awake` is "inside my band *and* I can see
+      // you" (`spawn.sees`), which is the right gate for a *blow* — the rule that keeps a
+      // creature behind a wall from swinging through it. It is the wrong gate for the step
+      // below: a creature roused by the player's camp stands on the far side of the level with
+      // nothing in sight, so that gate skipped exactly the creatures the camp message promised
+      // were coming. Measured on a country page (2026-10-17): four roused, and their distances
+      // unchanged four seconds later. The step runs for `spawn.sees` — an ordinary creature's
+      // own band, with sight — or for a sleep still being heard (`isRoused`), and the blow
+      // itself still needs `spawn.sees` further down, so nothing strikes unseen through stone.
+      const roused = isRoused(spawn, dbg.seconds);
+      // **You get to see who it was.** The camp's line names a distance; when the body actually
+      // arrives within sight, the player who waited it out is told, once per camp, that the wait
+      // is over — the other half of *"they never get close"*.
+      if (roused && distance <= AGGRO && !huntArrivalTold) {
+        huntArrivalTold = true;
+        showNotice('Something has followed you out of the dark.', 2400);
+      }
+      // **Fear is a real flight** (`Witch's Curse`, `Medusa's Gaze`): a frightened creature
+      // runs from the player for the spell's own clock, whatever its health was.
+      spawn.fleeing = (chased && wantsToFlee(spawn.monster, spawn.stamina))
+        || dbg.seconds < (spawn.fearUntil ?? 0);
       // Guard-to-guard: a fleeing creature runs *away* from the player, keeps its facing
       // turned on them (it is still a thing that may be cut down), and never begins a blow.
       if (spawn.fleeing) {
-        const away = Math.min(MONSTER_SPEED * 1.15 * dt, distance - 1);
-        if (away > 0) {
-          const nx = spawn.world.x - (dx / (distance || 1)) * away;
-          const nz = spawn.world.z - (dz / (distance || 1)) * away;
-          if (walkableWorld(nx, spawn.world.z)) spawn.world.x = nx;
-          if (walkableWorld(spawn.world.x, nz)) spawn.world.z = nz;
+        // **A flight ends the blow it was in.** The owner, 2026-10-19: *"if they decide to do that
+        // mid attack their animation brakes and the circle on the ground that gets stuck there in
+        // place until they die"*. The flight used to `continue` past `stepAttack` with
+        // `spawn.attack` still set, and that record is what draws the amber ring *and* what holds
+        // the rig in its attack frames (`actorFrame` reads `actor.attack`) — so a creature that
+        // gave the fight up mid-swing ran away inside its own telegraph for the rest of its life.
+        // The commit is dropped here, which is the same thing a stagger does (`strike`'s poise
+        // break) and the same thing the ring already means: the blow is over.
+        if (spawn.attack) {
+          spawn.attack = null;
+          spawn.nextAttack = Math.max(spawn.nextAttack ?? 0, 0.8);
+          dbg.fledMidBlow = (dbg.fledMidBlow ?? 0) + 1;
         }
-        spawn.walking = away > 0;
+        spawn.circling = false;
+        spawn.baitT = 0;
+        const away = Math.min(MONSTER_SPEED * 1.15 * dt, Math.max(0, distance - 1.2));
+        let moved = false;
+        if (away > 0) {
+          moved = moveBodyToward(spawn,
+            spawn.world.x - (dx / (distance || 1)) * 10,
+            spawn.world.z - (dz / (distance || 1)) * 10, away);
+        }
+        // **A corner is a way out.** Straight away from the player is into the wall in a corridor;
+        // the field read backwards names the neighbour that opens the gap, so a creature boxed in
+        // turns and runs rather than pressing into stone (the owner: *"they can get so close to
+        // walls that they nearly disappear into the wall running away"*).
+        if (!moved) {
+          const flow = navFlowFor(feet);
+          const { row, col } = bodyCell(spawn.world.x, spawn.world.z);
+          const step = retreatFrom(flow, (r, c) => walkableBody((r + 0.5) * CELL_SIZE, (c + 0.5) * CELL_SIZE), row, col);
+          if (step) {
+            moved = moveBodyToward(spawn,
+              (row + step.dRow + 0.5) * CELL_SIZE,
+              (col + step.dCol + 0.5) * CELL_SIZE,
+              MONSTER_SPEED * dt);
+          }
+        }
+        spawn.walking = moved;
         continue;
       }
       if (spawn.attack) { stepAttack(spawn, distance, dt); continue; }
-      if (!spawn.awake) continue;
+      if (!spawn.awake && !roused) continue;
       spawn.facing = Math.atan2(dx, dz);
       // ── the creature reads the guard ──────────────────────────────────────────
       // A shield a monster walks straight into is a wall the fight does not notice. In
@@ -4569,11 +7309,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         const move = Math.min(MONSTER_SPEED * 0.45 * dt, distance);
         const px = (-dz / (distance || 1)) * spawn.circleSide;
         const pz = (dx / (distance || 1)) * spawn.circleSide;
-        const nx = spawn.world.x + px * move;
-        const nz = spawn.world.z + pz * move;
-        if (walkableWorld(nx, spawn.world.z)) spawn.world.x = nx;
-        if (walkableWorld(spawn.world.x, nz)) spawn.world.z = nz;
-        spawn.walking = true;
+        spawn.walking = moveBodyToward(spawn,
+          spawn.world.x + px * 10, spawn.world.z + pz * 10, move);
+        // A body that cannot drift (a corner, a doorway) holds rather than sliding into the wall.
+        if (!spawn.walking) spawn.walking = false;
         // The deferred blow: the creature's next attempt is pushed *past* its own bait,
         // which is why a guard held fresh denies the swing entirely.
         spawn.nextAttack = Math.max(spawn.nextAttack ?? 0, guardRead.bait);
@@ -4587,36 +7326,139 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // distance, and standing in a warrior's lap is where casters die), inside the band
       // they stand and cast. The stand-still rule of a wind-up still holds — a casting
       // telegraph is also read, not chased.
-      if (spawn.caster && !spawn.fleeing) {
+      // **A caster throws, and throws only.** The owner, 2026-10-19: *"not all enemies that shoot
+      // projectile should also have the range attack with the circle around them because otherwise
+      // they have two attack types, maybe only the final boss should have that"*. A caster used to
+      // wind up the melee telegraph and put a bolt out at its end, so the ghost and the wraith had a
+      // ground ring they never actually swung inside. Now the bolt is the whole of their answer and
+      // it has no ring; **Jagar Tharn** — the one boss — keeps both, which is why the caster clock
+      // runs for him and the melee path below it still runs too.
+      // **A human foe may know one spell, and rations it.** UESP's human enemies are drawn
+      // from the classes and races, and every one of those can cast; the owner asked for a
+      // human to do it *very rarely* rather than turn the whole roster into casters. The clock
+      // only runs while the two are in sight and in casting range, so a fight of ten seconds
+      // usually sees none at all.
+      if (!spawn.caster && spawn.monster?.kind === 'human'
+        && spawn.sees && distance <= CAST_RANGE.high) {
+        spawn.spellClock = (spawn.spellClock ?? HUMAN_SPELL_FIRST_SECONDS) - dt;
+        if (spawn.spellClock <= 0) {
+          // **A human casts through its arm too**, not out of a standing pose. The rare clock
+          // decides *when*; `beginSpellAttack` decides *how it looks*, and the bolt leaves when
+          // the animation's own active frame arrives (`stepAttack`).
+          spawn.spellClock = spawn.attack ? 1 : (beginSpellAttack(spawn, distance)
+            ? HUMAN_SPELL_MIN_SECONDS + battle.nextBelow(HUMAN_SPELL_SPREAD_SECONDS) : 3);
+        }
+      }
+      if (spawn.caster) {
+        spawn.castClock = (spawn.castClock ?? CAST_FIRST_SECONDS) - dt;
+        if (spawn.castClock <= 0 && spawn.sees && distance <= CAST_RANGE.high && !spawn.attack) {
+          // **The creature casts by attacking.** Owner, 2026-10-19: *"enemies that cast spells
+          // still need to use their attack animation to cast them and instead at the moment they
+          // dont"*. The bolt is no longer emitted from a statue: the creature commits to its own
+          // attack sheet, and the bolt leaves at the strike frame (`stepAttack`'s `attack.spell`).
+          // The same cadence the melee fight gives it (`attackInterval`, this project's figure),
+          // so a caster does not out-shoot a swordsman's swing.
+          spawn.castClock = attackInterval(spawn.monster);
+          beginSpellAttack(spawn, distance);
+        }
+      }
+      if (spawn.caster && spawn.monster.id !== 'tharn') {
         const footwork = castFootwork(distance);
-        if (footwork.walk !== 0 && !spawn.attack) {
+        if (footwork.walk !== 0) {
           const away = Math.min(MONSTER_SPEED * 0.9 * dt, Math.max(0, distance - 2));
-          const nx = spawn.world.x + (dx / (distance || 1)) * away * footwork.walk;
-          const nz = spawn.world.z + (dz / (distance || 1)) * away * footwork.walk;
-          if (walkableWorld(nx, spawn.world.z)) spawn.world.x = nx;
-          if (walkableWorld(spawn.world.x, nz)) spawn.world.z = nz;
-          spawn.walking = footwork.walk !== 0;
+          spawn.walking = moveBodyToward(spawn,
+            spawn.world.x + (dx / (distance || 1)) * footwork.walk * 10,
+            spawn.world.z + (dz / (distance || 1)) * footwork.walk * 10, away);
         } else spawn.walking = false;
-        spawn.nextAttack = (spawn.nextAttack ?? 0) - dt;
-        if (!spawn.attack && spawn.nextAttack <= 0 && spawn.sees) beginAttack(spawn, distance);
-        if (spawn.attack) stepAttack(spawn, distance, dt);
         continue;
       }
       // A creature that is winding up stands still: the telegraph is only readable if the thing
       // it marks does not move under it.
       if (!spawn.attack && distance > REACH * 0.75) {
-        const move = Math.min(MONSTER_SPEED * dt, Math.max(0, distance - REACH * 0.7));
-        const nx = spawn.world.x + (dx / (distance || 1)) * move;
-        const nz = spawn.world.z + (dz / (distance || 1)) * move;
-        // Sliding, not blocking: a monster that meets a wall keeps coming along it.
-        if (walkableWorld(nx, spawn.world.z)) spawn.world.x = nx;
-        if (walkableWorld(spawn.world.x, nz)) spawn.world.z = nz;
+        // **A hunt is a run.** A roused creature that has not yet got the player in sight
+        // closes at `HUNT_RUN` times its walk (`encounters.js`); once it sees them the ordinary
+        // pace resumes, because that step is the fight's own footwork and should read as one.
+        const pace = MONSTER_SPEED * (roused && !spawn.sees ? HUNT_RUN : 1);
+        const move = Math.min(pace * dt, Math.max(0, distance - REACH * 0.7));
+        // **In sight, the straight line is the way; out of it, the field is.** A creature that can
+        // see the player walks at them (the shortest way across an open room), and one that cannot
+        // — a corner, a doorway, a hunt from the far side of the level — walks to the next cell the
+        // breadth-first search named (`game/navFlow.js`), so it turns the corner instead of pressing
+        // into it. `moveBodyToward` still slides along anything that refuses the step, so a body
+        // never ends up inside the wall it is walking beside.
+        const around = spawn.sees ? null : navStepPoint(spawn.world.x, spawn.world.z, feet);
+        const target = around ?? { x: feet[0], z: feet[2] };
+        spawn.walking = moveBodyToward(spawn, target.x, target.z, move);
       }
+      // **A hunt that cannot close is not a promise.** A roused creature barred from the player
+      // (the far side of a wall, a lake, the courtyard of the ruin it woke in) used to press at
+      // the obstruction for the whole deadline. Four seconds without closing half a metre and it
+      // has lost the trail (`encounters.js`'s `huntStalled`), so it stops counting as something
+      // on its way.
+      if (roused && !spawn.sees && distance > REACH) huntStalled(spawn, distance, dbg.seconds);
       // **A wall is not a weapon.** A blow is only ever *begun* with the two in sight of each
       // other (`sees`), and it is only ever *landed* with them still in sight (`strikeFromMonster`).
       spawn.nextAttack = (spawn.nextAttack ?? 0) - dt;
       if (!spawn.attack && distance <= REACH && spawn.nextAttack <= 0 && spawn.sees) beginAttack(spawn, distance);
       if (spawn.attack) stepAttack(spawn, distance, dt);
+    }
+    separateBodies();
+    // **The last fight has a script, not only a health bar.** Tharn's duel is two beats: he
+    // rises and speaks, and at half his health he calls his own creatures and changes his line.
+    // The owner, 2026-10-21: *"the final boss battle is not scripted"*. The beats are his own
+    // bestiary row's (`monsters.js`'s `jagartharn`, six spells) and this scene's summons, and
+    // `dbg.finalBattle.phase` reports them so a run can hold the order.
+    stepFinalDuel();
+  }
+
+  /**
+   * **The duel's own beats.** Phase 1 is Tharn alone; at half health he speaks and two of the
+   * creatures of the palace answer him (phase 2). He does not heal, and a reloaded page that
+   * finds him alive resumes the phase its own health implies.
+   */
+  function stepFinalDuel() {
+    const spawn = tharnSpawn;
+    if (!spawn?.monster || spawn.monster.health <= 0) return null;
+    spawn.duel ??= { phase: 1 };
+    const half = (spawn.monster.maxHealth ?? 500) * 0.5;
+    if (spawn.duel.phase === 1 && spawn.monster.health <= half) {
+      spawn.duel.phase = 2;
+      dbg.finalBattle = { ...(dbg.finalBattle ?? {}), phase: 2, at: dbg.seconds };
+      showNotice('Jagar Tharn: “You cannot undo a thousand years with a staff, mortal.”', 5200);
+      playSfx('spell');
+      void summonDuelMinions(spawn);
+    }
+    return spawn.duel;
+  }
+
+  /**
+   * Two creatures of the place answer Tharn's call — the same `spawnEncounter` every other
+   * group of creatures comes from, so their art, bodies and names are the level's own.
+   *
+   * @param {object} boss
+   */
+  async function summonDuelMinions(boss) {
+    if (!current?.level || tharnSummoning) return 0;
+    tharnSummoning = true;
+    try {
+      const roster = [...new Set([...(current.rosterIds ?? []), 'skeleton', 'wraith', 'ghoul'])]
+        .filter((id) => MONSTERS.some((kind) => kind.id === id));
+      if (!roster.length) return 0;
+      const drawn = spawnEncounter({
+        level: current.level, seed: (current.city?.seed ?? 0) ^ 0x7a11, danger: 3,
+        count: 2, arrival: { row: boss.place.row, col: boss.place.col }, minCells: 2,
+        monsters: roster.slice(0, 6), near: { row: boss.place.row, col: boss.place.col }, radius: 4,
+        exclude: new Set(monsters.map((m) => `${m.place?.row},${m.place?.col}`)),
+      });
+      if (!drawn.length) return 0;
+      giveSpawnsBodies(drawn);
+      const usable = await loadSpawnArt(drawn);
+      for (const minion of usable) minion.duel = 'tharn';
+      monsters.push(...usable);
+      dbg.finalBattle = { ...(dbg.finalBattle ?? {}), minions: usable.length };
+      return usable.length;
+    } finally {
+      tharnSummoning = false;
     }
   }
 
@@ -4624,6 +7466,30 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * A blow is announced before it lands: the creature winds up for the first part of its own
    * cadence (`attackProfile`), and that windup is what the telegraph draws.
    */
+  /**
+   * **A spell is an attack with a different payload.** The creature commits to the same wind-up
+   * and attack sheet a melee blow uses, but the record is flagged `spell`, so the strike frame
+   * throws the bolt instead of landing a blow and the ground telegraph is not drawn: a caster's
+   * answer is the bolt, and the owner's earlier rule ("casters throw and never plant the melee
+   * circle") still holds.
+   *
+   * @param {object} spawn @param {number} distance
+   * @returns {boolean} whether the creature could commit (it is staggered? then no)
+   */
+  function beginSpellAttack(spawn, distance) {
+    if (!spawn || spawn.attack || spawn.stagger > 0) return false;
+    const fighter = spawn.monster ?? spawn.fighter;
+    if (!fighter) return false;
+    const profile = attackProfile(fighter, { distance });
+    // A caster does not lunge: the arm comes over, the body stays in its band.
+    profile.charge = false;
+    const feet = feetOf();
+    spawn.attack = fitAttackToGround({ profile, elapsed: 0, struck: false, spell: true,
+      origin: { ...spawn.world }, yaw: Math.atan2(feet[0] - spawn.world.x, feet[2] - spawn.world.z) }, current.collider);
+    dbg.spellWindups = (dbg.spellWindups ?? 0) + 1;
+    return true;
+  }
+
   function beginAttack(spawn, distance) {
     const profile = attackProfile(spawn.monster ?? spawn.fighter, { distance });
     // **A blow costs the creature too.** A spent creature does not commit: it keeps its
@@ -4635,11 +7501,74 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return false;
     }
     if (profile.charge) profile.reach = Math.max(profile.reach, 5.5);
+    // A cry now and then, so a fight is not silent between blows — its own clip, quietly.
+    // **A townsperson has no `monster` record** (they fight through `townsfolk.personFighter`),
+    // so the voice is read from whichever record the swing is made with. This line used to
+    // dereference `spawn.monster` unconditionally and an angry civilian's first swing took the
+    // whole scene down.
+    const voice = spawn.monster ?? spawn.fighter;
+    if (voice && battle.nextBelow(100) < 22) {
+      playSfx('monsterVoice', { monster: voice.kind === 'human' ? 'human' : (voice.voice ?? voice.id), event: 'attack', volume: 0.5 });
+    }
     const feet = feetOf();
     spawn.attack = fitAttackToGround({ profile, elapsed: 0, struck: false,
       origin: { ...spawn.world }, yaw: Math.atan2(feet[0] - spawn.world.x, feet[2] - spawn.world.z) }, current.collider);
     if (profile.charge) combatFx.burst(spawn.world.x, spawn.world.y + 0.1, spawn.world.z, 'dust');
     dbg.windups = (dbg.windups ?? 0) + 1;
+  }
+
+  /**
+   * **One bolt, from a caster's eye at the player's present.**
+   *
+   * The bolt leaves from the creature's head at where the player stands *now* — a dart that leads
+   * its target would deny the roll its meaning — flies on its own clock (`stepBoltsSim`) and answers
+   * the live defence at contact: a dodge flees it, a block takes a quarter.
+   *
+   * Which of the creature's spells it is: one-spell creatures throw the same one every time, and
+   * Jagar Tharn walks UESP's six in order (`bestiary.js`'s `castFor`).
+   *
+   * @returns {boolean} false when the player is not in the creature's sight (a whiff, reported)
+   */
+  function throwBolt(spawn) {
+    if (spawn.spellPoints === 0) return false;
+    const fighter = spawn.monster ?? spawn.fighter;
+    if (!fighter) return false;
+    const feet = feetOf();
+    if (!sightClear(spawn.world.x, spawn.world.y + SIGHT_EYE, spawn.world.z,
+      feet[0], feet[1] + SIGHT_EYE, feet[2])) {
+      spawn.lastBlow = { hit: false, whiff: true };
+      return false;
+    }
+    const archer = Boolean(spawn.archer || fighter.human?.bow);
+    const cast = archer ? null : castFor(fighter, spawn.casts ?? 0);
+    spawn.casts = (spawn.casts ?? 0) + 1;
+    // **A bow costs no spell points.** The bar a spell drain eats is magic; an archer's shot
+    // is an arrow out of a quiver, and draining an archer's "spell points" was the one place
+    // the two kinds of ranged foe were the same object.
+    if (!archer) spawn.spellPoints = Math.max(0, Number(spawn.spellPoints ?? 100) - 5);
+    const damage = Array.isArray(fighter.damage)
+      ? (fighter.damage[0] + fighter.damage[1]) / 2
+      : Number(fighter.damage) || 1;
+    const wound = {
+      damage,
+      id: fighter.id,
+      element: archer ? 'physical' : cast?.element,
+      spell: archer ? null : (cast?.spell ?? null),
+    };
+    const bolt = fireBolt(
+      { x: spawn.world.x, y: spawn.world.y + 1.5, z: spawn.world.z },
+      { x: feet[0], y: feet[1] + 1.25, z: feet[2] },
+      wound);
+    if (archer) {
+      bolt.arrow = true;
+      bolt.fire = false;
+      playSfx('bow', { volume: 0.8 });
+    }
+    bolts.push(bolt);
+    // The cast's own tell at the caster's hands, in the spell's element.
+    if (!archer) combatFx.magicBurst(spawn.world.x, spawn.world.y + 1.5, spawn.world.z, { element: wound.element, power: 1 });
+    dbg.casts = (dbg.casts ?? 0) + 1;
+    return true;
   }
 
   /**
@@ -4668,24 +7597,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // warning. A dodge early in the charge can expire before the enemy reaches you.
       if (!attack.profile.charge || contact || at.phase === 'recover' || at.phase === 'done') {
         attack.struck = true;
-        // A caster does not swing at the wind-up's end — it **throws**: the bolt leaves from
-        // the caster's eye at the player's present, flies on its own clock (`stepBolts`),
-        // and answers the player's live defence at the instant of contact. A dodge flees it
-        // outright; a block (or a parry, which is not a sword trick at magic) pays a quarter.
-        if (spawn.caster) {
-          const feet = feetOf();
-          if (sightClear(spawn.world.x, spawn.world.y + SIGHT_EYE, spawn.world.z,
-            feet[0], feet[1] + SIGHT_EYE, feet[2])) {
-            const wound = { damage: (spawn.monster.damage[0] + spawn.monster.damage[1]) / 2 };
-            bolts.push(fireBolt(
-              { x: spawn.world.x, y: spawn.world.y + 1.5, z: spawn.world.z },
-              { x: feet[0], y: feet[1] + 1.25, z: feet[2] },
-              wound));
-            combatFx.burst(spawn.world.x, spawn.world.y + 1.5, spawn.world.z, spawn.monster.id === 'firedaemon' ? 'hit' : 'parried');
-            dbg.casts = (dbg.casts ?? 0) + 1;
-          } else spawn.lastBlow = { hit: false, whiff: true };
-        }
-        else if (attack.profile.charge && !contact) { spawn.lastBlow = { hit: false, whiff: true }; }
+        // **A spell leaves on the animation's strike frame** (`attack.spell`). This is the whole
+        // of the caster's cast: the same wind-up, the same attack sheet, the same moment a melee
+        // blow would land — only the payload is the creature's bolt (`throwBolt`). A melee
+        // creature keeps the ground-ring swing, including Jagar Tharn's second answer.
+        if (attack.spell) {
+          throwBolt(spawn);
+        } else if (attack.profile.charge && !contact) { spawn.lastBlow = { hit: false, whiff: true }; }
         else strikeFromMonster(spawn, distance);
       }
     }
@@ -4724,6 +7642,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         else dbg.boltOut = (dbg.boltOut ?? 0) + 1;
         continue;
       }
+      // **Shalidor's Mirror turns the spell around** (UESP's own note: reflection is the
+      // answer to a caster). The bolt becomes its caster's problem: it flies home, and the
+      // loop below lands it on the body that threw it.
+      if (player.mirror && !bolt.reflected && boltAtPlayer(bolt, feet)) {
+        bolt.reflected = true;
+        bolt.vx = -bolt.vx; bolt.vy = -bolt.vy; bolt.vz = -bolt.vz;
+        dbg.reflected = (dbg.reflected ?? 0) + 1;
+        showNotice('The bolt turns in the air — a mirror. It is his now.', 1200);
+        continue;
+      }
+      if (bolt.reflected) {
+        const caster = monsters.find((spawn) => spawn.monster?.id === bolt.caster && spawn.monster.health > 0);
+        if (caster && Math.hypot(caster.world.x - bolt.x, caster.world.z - bolt.z) < 0.9) {
+          damageMonster(caster, bolt.damage, 'a reflected bolt');
+          bolt.dead = true;
+          combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element, power: bolt.damage > 10 ? 2 : 1 });
+        }
+        continue;
+      }
       if (!boltAtPlayer(bolt, feet)) continue;
       const landed = resolveBolt(bolt, { defence: liveDefence() });
       bolt.dead = true;
@@ -4734,8 +7671,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         continue;
       }
       dbg.boltHit = (dbg.boltHit ?? 0) + 1;
-      hurtPlayer(landed.damage, 'a thrown bolt', { unguarded: true });
-      combatFx.burst(bolt.x, bolt.y, bolt.z, 'hit', landed.damage > 10);
+      // **The bolt carries what the creature is** (`game/bestiary.js` through `fireBolt`): a
+      // fire daemon's burns, an ice bolt freezes, and the stone golem's magic is the one UESP
+      // says no potion reduces.
+      hurtPlayer(landed.damage, 'a thrown bolt', {
+        unguarded: true, spell: true, element: bolt.element, irresistible: Boolean(bolt.irresistible),
+      });
+      const casterSpawn = monsters.find((spawn) => spawn.monster?.id === bolt.caster);
+      if (casterSpawn && paralyses(casterSpawn.monster) === 'ranged') maybeHold(casterSpawn, 25);
+      // **A bolt lands as what it is made of** — the same element motes a cast throws
+      // (`combatFx.magicBurst`), not the blood a blade draws. The colour is the bolt's own,
+      // so an ice bolt leaves frost and a fire daemon's leaves fire.
+      combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element, power: landed.damage > 10 ? 2 : 1 });
       dbg.lastBolt = landed.outcome === 'blocked' ? 'blocked' : 'struck';
     }
     for (let i = bolts.length - 1; i >= 0; i--) if (bolts[i].dead) bolts.splice(i, 1);
@@ -4748,6 +7695,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function strikeFromMonster(spawn, distance) {
     const { profile } = spawn.attack;
+    playSfx('monsterSwing', { volume: profile.charge ? 0.9 : 0.55 });
     const feet = feetOf();
     if (!insideAttack(spawn.attack, feet[0], feet[2]) || !sightClear(
       spawn.attack.origin.x, spawn.attack.origin.y + SIGHT_EYE, spawn.attack.origin.z,
@@ -4759,12 +7707,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const outcome = resolveDefence({ phase: 'active', defence: liveDefence(), unblockable: profile.unblockable });
     dbg.lastDefence = outcome.outcome;
     if (outcome.outcome === 'dodged') {
+      playSfx('dodge');
       spawn.lastBlow = { hit: false, dodged: true };
       dbg.dodges = (dbg.dodges ?? 0) + 1;
       showNotice('Rolled clear.', 900);
       return;
     }
     if (outcome.outcome === 'parried') {
+      playSfx('parry');
       defence.riposte = outcome.riposte;
       defence.riposteUntil = dbg.seconds + 1.2;
       defence.riposteTarget = spawn;
@@ -4778,15 +7728,60 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       showNotice('Parried. Strike back now.', 1200);
       return;
     }
-    const blow = monsterAttack({ monster: spawn.monster ?? spawn.fighter, target: player, random: battle });
+    // **The armour over the area the blow strikes** — `game/armour.js`'s law, read from what
+    // the player is wearing. A bare area answers 0 and the blow is as likely as it ever was.
+    const blow = monsterAttack({
+      monster: spawn.monster ?? spawn.fighter,
+      target: player,
+      random: battle,
+      armour: (area) => armourOn(player, area),
+      // **Inside the circle and not rolling is a hit.** The owner, 2026-10-19: *"enemies need to
+      // ignore the main game dodge chance and always hit you if youre not outside their circle or
+      // if you didnt manually dodge"*. Everything above this line has already decided the three
+      // things that make a creature miss — the player outside the attack's footprint, out of its
+      // sight, or rolling with i-frames — so the passive to-hit roll is not asked again. The
+      // player's own Agility still sets *their* chance to wound (`resolveAttack`), which is the
+      // half the owner kept: *"enemies still have a chance to not get hit by you if you have low
+      // athletics"*.
+      guaranteed: true,
+    });
     spawn.lastBlow = blow;
     // A charge cannot be guarded: the guard is not applied to it (`unguarded`).
     if (blow.hit) {
       combatFx.burst(feet[0], feet[1] + 0.9, feet[2], outcome.outcome);
       hurtPlayer(Math.max(1, Math.round(blow.damage * profile.damageScale)), (spawn.monster ?? spawn.fighter).name, {
         unguarded: profile.unblockable,
+        element: blow.element,
       });
+      // **The blow can do more than wound.** UESP: the spider and the lizard man paralyse,
+      // the medusa at range, the rat, ghoul, zombie and vampire carry disease.
+      if (paralyses(spawn.monster) === 'melee') maybeHold(spawn, 30);
+      if (transmitsDisease(spawn.monster)) maybeAfflict('disease', 15, spawn.monster.name);
     }
+  }
+
+  /** A creature's hold, if the player is not already free of it (and not a Knight). */
+  function maybeHold(spawn, chance) {
+    if (player.freeAction) return false;
+    if (/paralysis/i.test(String(classOf(player.classId)?.ability ?? ''))) return false;
+    if (battle.nextBelow(100) >= chance) return false;
+    heldUntil = Math.max(heldUntil, dbg.seconds + 2);
+    dbg.holds = (dbg.holds ?? 0) + 1;
+    showNotice(`${spawn.monster.name}'s blow holds you still — a Free Action breaks it.`, 2000);
+    return true;
+  }
+
+  /** A creature's disease, if the player's luck does not turn it aside. */
+  function maybeAfflict(element, chance, from) {
+    if (battle.nextBelow(100) >= chance) return false;
+    const list = new Set(Array.isArray(player.afflictions) ? player.afflictions : []);
+    if (list.has(element)) return false;
+    list.add(element);
+    player = { ...player, afflictions: [...list] };
+    dbg.afflicted = { element, from };
+    showNotice(`${from} leaves a ${element} in you — a cure will wash it out.`, 2400);
+    savePlayer();
+    return true;
   }
 
   /** Which defence is live at this instant: a roll's i-frames, a parry's window, or the guard. */
@@ -4805,6 +7800,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return false;
     }
     defence.rollT = 0;
+    playSfx('dodge');
     const input = inputOf(keys, pressed, weaponRig.drawn);
     const forward = input.forward || (input.strafe ? 0 : -1);
     const len = Math.hypot(forward, input.strafe);
@@ -4848,25 +7844,61 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * chasm, and the reason the bed was sunk in the first place.
    *
    * * **A wet chasm may be swum in** — `allowsSwimming(Wet)` — which in this build is a
-   *   **wade**: the player keeps their feet on the 0.45 m bed, keeps the engine's gravity
-   *   and step-up, and moves at the engine's own water speed (`swimSpeedScale`, the walk
-   *   speed modifier DFU holds while swimming). The engine's full swim mode was tried first
-   *   and is *not* used, for a reason worth writing down: it is camera-directed movement
-   *   with **no gravity and no vertical input from this scene's keys**, so a 0.45 m bank
-   *   becomes a wall the player cannot climb — a pool that traps you. Arena's own chasm is
-   *   shallow (a third of a cell) and a wade is what it is; deep water and real swimming
-   *   belong with the exterior water the engine already models.
+   *   **wade**: the player keeps their feet on the bed, keeps the engine's gravity and step-up,
+   *   and moves at the engine's own water speed (`swimSpeedScale`, the walk speed modifier DFU
+   *   holds while swimming). The bed is **1.55 m** down (`mifMesh.js`), so the water is past the
+   *   waist and the eye stays clear of the surface: this reads as deep water, and the 0.5 m step
+   *   cannot get you out of it — **the climb does**. The engine's full swim mode is still not
+   *   used, for the reason it never was: it is camera-directed movement with no gravity and no
+   *   vertical input from this scene's keys, so on its own a bank is a wall the player cannot
+   *   climb. What closed that hole is the ledge climb (`motor.js`, switched on at boot above),
+   *   which runs from water as well as from land: at a bank, hold `W` and the body hauls itself
+   *   over the lip. The surface is handed to the motor here (`waterSurfaceY`), because the climb's
+   *   water reach is measured from it rather than from a second copy of the level's geometry.
    * * **A lava chasm damages.** The blow goes through `hurtPlayer`, so the guard, the
    *   health, the save and the "you come to at the way in" flow are the ones already there.
-   * * **A dry chasm is neither**, which is what `allowsSwimming(Dry) === false` says: it is
-   *   a pit, and this build leaves it walkable rather than trapping a player in one (S12).
+   * * **A dry chasm is a pit**: `allowsSwimming(Dry) === false`, so no wading speed and no water
+   *   line — it is a 1.2 m hole you fall into and climb out of, which is what the owner asked for
+   *   (*"shallow pits you can climb instead of just holes"*).
    *
    * @param {number} dt
    */
   function updateWater(dt) {
     const wet = waterAt();
-    const inWater = wet.submerged && (wet.chasm === 'wet' || wet.chasm === 'lava');
+    // **A body on the air is not in the water.** Levitation was reported as doing nothing partly
+    // because the wading speed and the lava's burn were applied to a caster floating over them.
+    const above = Boolean(player.levitating);
+    const inWater = !above && wet.submerged && (wet.chasm === 'wet' || wet.chasm === 'lava');
     dbg.inWater = inWater ? wet.chasm : null;
+    // **The water line the climb measures from** (`motor.js`'s `_inWater`/`_ledgeMaxReach`). A
+    // pool's surface is the level's floor plane, and it is `null` everywhere else — including a
+    // dry pit, which is not water and needs no water reach: its 1.2 m bank is inside the plain
+    // `CLIMB_LEDGE_MAX` (1.6 m) of a body standing on its bed.
+    const surfaceFor = wet.chasm === 'wet' || wet.chasm === 'lava' ? wet.surface : null;
+    if (current.motor.waterSurfaceY !== surfaceFor) {
+      current.motor.waterSurfaceY = surfaceFor;
+      dbg.waterSurface = surfaceFor;
+    }
+    // **A body in a chasm is a low body** — pits as well as pools. The mesher leaves the band
+    // between a chasm's bed and the floor plane open under a wall standing in it (the "tube"),
+    // and the motor's `height` answers the crouched capsule while this flag is up, so a swimmer
+    // or a crawler fits; a standing 1.8 m capsule does not.
+    const low = Boolean(wet.chasm) && wet.submerged;
+    if (current.motor.lowBody !== low) {
+      current.motor.lowBody = low;
+      dbg.lowBody = low;
+    }
+    // …and the **eye** ducks only inside the arch itself (a solid cell whose floor is a chasm),
+    // so a pool's own view is unchanged and the one cell where the camera would sit in the wall
+    // is the one cell it lowers for. A dry pit's arch is the same cell, crawled through.
+    const arch = Boolean(wet.chasm) && Boolean(cellAtWorld(feetOf()[0], feetOf()[2])?.solid);
+    if (current.motor.lowEye !== arch) {
+      current.motor.lowEye = arch;
+      dbg.lowEye = arch;
+    }
+    // A pit is walkable and harmless, and a player standing in one has to be told the way out
+    // exists at all: `W` at its wall is the climb, and the HUD says so (see the flags below).
+    dbg.inPit = wet.chasm === 'dry' && wet.submerged;
     const scale = inWater ? WADE_SPEED_SCALE : 1;
     if (current.motor.swimSpeedScale !== scale) {
       current.motor.swimSpeedScale = scale;
@@ -4882,27 +7914,277 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   function hurtPlayer(damage, from, opts = {}) {
+    // **The ward is spent first** (`game/spells.js`'s Shield/Sanctuary, and a potion of
+    // Restoration no longer exists — Arena's own list has none). A ward is points, not a
+    // percentage: it eats what it can and is gone.
+    let incoming = Math.max(0, Number(damage) || 0);
+    if (opts.spell && player.spellAbsorption && battle.nextBelow(100) < player.spellAbsorption) {
+      player = { ...player, spellPoints: Math.min(player.maxSpellPoints ?? 0, (player.spellPoints ?? 0) + incoming) };
+      return 0;
+    }
+    // **Spell Shield is a ward against magic alone** (`Shield` is the general one): a bolt is
+    // flagged `spell` by the caller, and its points are spent the same way.
+    let shielded = 0;
+    if (!opts.unresisted && opts.spell && (Number(player.spellShield) || 0) > 0 && incoming > 0) {
+      shielded = Math.min(Number(player.spellShield), incoming);
+      player = { ...player, spellShield: Number(player.spellShield) - shielded };
+      incoming -= shielded;
+    }
+    let warded = 0;
+    if (!opts.unresisted && (Number(player.ward) || 0) > 0 && incoming > 0) {
+      warded = Math.min(Number(player.ward), incoming);
+      player = { ...player, ward: Number(player.ward) - warded };
+      incoming -= warded;
+    }
+    // **A resistance is the element's own** (the Resist spells and potions): each point takes
+    // a tenth off, capped at six, so a potion is felt without making a fight free. The stone
+    // golem's bolt is the one UESP says no potion reduces (`irresistible`).
+    const element = String(opts.element ?? 'magic').toLowerCase();
+    let resisted = 0;
+    if (!opts.unresisted && !opts.irresistible) {
+      const points = Math.max(Number(player.resistances?.[element]) || 0, opts.spell ? Number(player.resistances?.magic) || 0 : 0);
+      if (points > 0 && incoming > 0) {
+        const cut = Math.min(points >= 8 ? 1 : 0.6, points * 0.1);
+        resisted = Math.round(incoming * cut);
+        incoming -= resisted;
+      }
+    }
     // The guard is applied here, at the only door a blow reaches the player through, so
     // a monster's swing and a test's `hurt` cannot disagree about what blocking means. A
     // blow that is `unguarded` (a charge) is not turned aside by it.
-    const guarded = opts.unguarded ? { damage, blocked: 0 } : guardDamage(damage, guarding());
+    const guarded = opts.unguarded ? { damage: incoming, blocked: 0 } : guardDamage(incoming, guarding());
     const taken = guarded.damage;
+    if (taken > 0) for (const id of [player.shield, ...Object.values(player.armour ?? {})].filter(Boolean)) player = wearEquipment(player,id,0.25);
     // A blow that lands shakes the view by its weight — the same language the heavy's own
     // impact speaks, so damage has a body and not only a number.
-    screenShake = Math.max(screenShake, (player.maxHealth ?? 1) > 0 && damage > (player.maxHealth ?? 1) * 0.15 ? 0.25 : 0.12);
+    screenShake = Math.max(screenShake, (player.maxHealth ?? 1) > 0 && incoming > (player.maxHealth ?? 1) * 0.15 ? 0.25 : 0.12);
     const health = Math.max(0, (player.health ?? 1) - taken);
     player = { ...player, health };
+    if (opts.spell) playSfx('spellHit', { element });
+    else if (guarded.blocked) playSfx('block');
+    else if (taken > 0) playSfx('playerHurt', { volume: taken > (player.maxHealth ?? 1) * 0.2 ? 1 : 0.75 });
     dbg.lastDamage = guarded.blocked
-      ? `${from} for ${damage} (guarded: ${taken} through)`
-      : `${from} for ${damage}`;
+      ? `${from} for ${incoming} (guarded: ${taken} through)`
+      : `${from} for ${incoming}`;
+    if (warded || resisted || shielded) {
+      dbg.lastWard = { warded, resisted, shielded, element, left: Number(player.ward) || 0 };
+    }
     if (health <= 0) {
+      playSfx('death');
       player = { ...player, health: player.maxHealth ?? player.health ?? 1 };
-      current.motor.spawn(current.spawn.x * CELL_SIZE, current.spawn.y * CELL_SIZE, current.spawn.z * CELL_SIZE);
       dbg.deaths = (dbg.deaths ?? 0) + 1;
-      showNotice(`${from} struck you down. You come to at the way in.`, 4000);
+      void fallToRia(from);
     }
     savePlayer();
     updateCombatHud();
+  }
+
+  /**
+   * **Death is Ria's** — the owner, 2026-10-22: *"when you die the Ria cutscene should play,
+   * the one that says with you died the last hope"*, *"you should lose 10% of your gold and
+   * be teleported to the Imperial Prison dungeon"*.
+   *
+   * The words are the installs own (`TEMPLATE.DAT` key `1402`: "With you died our last hope
+   * for justice…"), spoken over her own movie (`VISION.FLC`) with the speech clips that
+   * belong to that key (`arena/storySpeech.js`), which is how every other beat of hers is
+   * played (`playStoryScene`). The purse is lightened first so the number is written before
+   * the scene takes the keyboard, and the cell comes last: `goInPlace` builds `START.MIF`
+   * in this page, so a character who falls in a dungeon wakes in the Imperial Dungeons with
+   * the Arena folder they picked still open.
+   *
+   * A death during a death is not a second death (`falling`), and the health restored by
+   * `hurtPlayer` before this is called means the player arrives alive — the price of falling
+   * is the gold and the walk back, which is what Arena charges.
+   *
+   * @param {string} [from] what struck the player down, for the notice and the debug seam
+   * @returns {Promise<boolean>} whether this call was the death
+   */
+  async function fallToRia(from) {
+    if (falling) return false;
+    falling = true;
+    const purse = Math.max(0, Math.round(Number(player.gold) || 0));
+    const lost = Math.floor(purse * DEATH_GOLD_SHARE);
+    if (lost > 0) player = { ...player, gold: purse - lost };
+    dbg.death = { by: from ?? null, gold: lost, to: START_INTERIOR };
+    savePlayer();
+    updateCombatHud();
+    showNotice(`${from ?? 'A blow'} struck you down.${lost ? ` ${lost} gold slips from your purse.` : ''} Ria's voice finds you in the dark.`, 6000);
+    try {
+      await playStoryScene(DEATH_TEXT);
+    } catch (err) {
+      console.warn('[death] Ria could not speak', err?.message ?? err);
+    }
+    const next = new URLSearchParams();
+    next.set('interior', START_INTERIOR);
+    const folder = params.get('arena');
+    if (folder) next.set('arena', folder);
+    await goInPlace(next);
+    falling = false;
+    return true;
+  }
+
+  /**
+   * A frame of the player's own lasting magic: regeneration, and the slow tax of a disease
+   * or poison.
+   *
+   * `Troll's Blood` (and the artefacts that carry it) sets `player.regeneration` to points a
+   * second; a disease left in the body costs one health a second, which is UESP's "slowly but
+   * surely eat away your health" and is why a cure is worth carrying. Neither can kill: a
+   * regeneration tick stops at the maximum, and the affliction stops at one health, so a
+   * player wakes at the way in rather than dying in their sleep to a rat bite.
+   */
+  function stepPlayerBuffs(dt) {
+    if (player.enchantedUntil && dbg.seconds >= player.enchantedUntil) {
+      player = { ...player, enchantedUntil:null, attributeBuffs:{}, spellAbsorption:0, mirror:false, invisible:false, regeneration:0, resistances:{} };
+    }
+    const regen = Number(player.regeneration) || 0;
+    if (regen > 0 && player.health < player.maxHealth) {
+      buffCarry += regen * dt;
+      if (buffCarry >= 1) {
+        const amount = Math.floor(buffCarry);
+        buffCarry -= amount;
+        player = { ...player, health: Math.min(player.maxHealth, player.health + amount) };
+        dbg.regenerated = (dbg.regenerated ?? 0) + amount;
+      }
+    } else buffCarry = 0;
+    const afflictions = Array.isArray(player.afflictions) ? player.afflictions : [];
+    if (afflictions.length && player.health > 1) {
+      afflictCarry += dt;
+      if (afflictCarry >= 1) {
+        const amount = Math.floor(afflictCarry);
+        afflictCarry -= amount;
+        player = { ...player, health: Math.max(1, player.health - amount) };
+        dbg.afflictionTick = (dbg.afflictionTick ?? 0) + amount;
+      }
+    } else afflictCarry = 0;
+  }
+
+  /**
+   * Loose the arrow in the bow.
+   *
+   * The shot leaves the player's eye along the camera's own facing — the crosshair is the
+   * sight, so what is under it is what the arrow is aimed at — and flies on `archery.js`'s
+   * clock. **The wound is not rolled here**: the bow's base and the metal it is made of travel
+   * with the shaft, and `resolveAttack` is called where it lands, against the creature it lands
+   * on, so immunity (an iron arrow at an iron golem), a silver arrow's doubling at a vampire and
+   * a blow from behind are the fight's own law rather than a second one for archery.
+   *
+   * A bow's cadence is its draw: the shot is on the same `PLAYER_SWING` cooldown as a swing,
+   * because Arena's own bow rate is `A.EXE`'s and a rate chosen per weapon would be invented
+   * twice over.
+   *
+   * @param {{held?: number, aim?: {x: number, y: number, z: number}|null}} [opts]  `aim` is a
+   *   world-space direction, for the debug seam that aims at a named creature; a real shot
+   *   leaves it out and the camera's own yaw is the sight
+   * @returns {{ok: boolean, hit: boolean, loosed: boolean, reason?: string}}
+   */
+  function looseArrowNow({ held = 0, aim = null } = {}) {
+    // A held shot is not a heavy: a bow has one shot, and `chargeScale`'s heavy is a melee
+    // wind-up. The press fires it either way, which is Arena's own answer for a bow.
+    void held;
+    // **Every shot spends an arrow** (the owner, 2026-10-18: *"make the bow consume arrows from
+    // your inventory to work that you need to be able to buy"*). The bag is the one the pack panel
+    // shows, and an equipment store's shelf always carries a bundle of 20 (`items.js`'s `arrow`,
+    // `services.js`'s staple). An empty quiver does not fire — the bow is still a club in melee
+    // (`strike`), which is the honest answer for a bowman who did not stock up.
+    const quiver = bagOf();
+    if (!countInBag(quiver, 'arrow')) {
+      showNotice('You have no arrows — an equipment store sells them.', 2400);
+      dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: 'no arrows' };
+      return { ok: false, hit: false, loosed: false, reason: 'no arrows' };
+    }
+    setBag(removeFromBag(quiver, 'arrow', 1));
+    dbg.arrowsLeft = countInBag(bagOf(), 'arrow');
+    swingCooldown = PLAYER_SWING;
+    swingAnim = SWING_ANIM_SECONDS;
+    // The bow's own state in `weaponView.js` (`firing`); `swing` falls back to the nearest
+    // state a family has, so a family with no bow state still ends its draw cleanly.
+    weaponRig.swing('forward');
+    playSfx('bow');
+    const feet = feetOf();
+    const eye = { x: feet[0], y: feet[1] + SIGHT_EYE, z: feet[2] };
+    // The camera's own aim: `cam.yaw` turns the eye and the crosshair is level, so the shot is
+    // level too (the drop is `ARROW_DROP`'s). A bowman who wants an angle walks closer.
+    const arrow = looseArrow({
+      from: eye,
+      aim: aim ?? aimFromAngles(cam.yaw, 0),
+      weapon: player.weapon,
+      material: player.material ?? null,
+    });
+    arrows.push(arrow);
+    dbg.arrowsLoosed = (dbg.arrowsLoosed ?? 0) + 1;
+    dbg.lastArrow = { from: { ...eye }, weapon: arrow.weapon, material: arrow.material, state: 'loosed' };
+    showNotice(`${weaponName(player.weapon)} — loosed (${dbg.arrowsLeft} arrow${dbg.arrowsLeft === 1 ? '' : 's'} left).`, 900);
+    return { ok: true, hit: false, loosed: true };
+  }
+
+  /**
+   * Step every arrow in flight, and land the ones that meet a body.
+   *
+   * A shaft dies on stone, at the end of its flight, or **in the first creature whose body it
+   * crosses** — the standing cylinder `archery.js` defines, tested after the step so a frame's
+   * 0.43 m of travel cannot pass through a ribcage unnoticed.
+   *
+   * @param {number} dt
+   */
+  function stepArrowsSim(dt) {
+    // A software-rendered frame may span 100–250 ms: at 26 m/s an
+    // endpoint-only hit test skipped whole bodies. Bound travel to 0.26 m
+    // (less than the 0.55 m hit radius), preserving wall collisions too.
+    const steps = Math.max(1, Math.ceil(dt / 0.01));
+    for (let i = 0; i < steps; i++) integrateArrows(dt / steps);
+  }
+  function integrateArrows(dt) {
+    for (const arrow of arrows) {
+      if (arrow.dead) continue;
+      const nextX = arrow.x + arrow.vx * dt, nextY = arrow.y + arrow.vy * dt, nextZ = arrow.z + arrow.vz * dt;
+      const flight = stepArrow(arrow, dt, () => !sightClear(arrow.x, arrow.y, arrow.z, nextX, nextY, nextZ));
+      if (flight.dead) {
+        arrow.dead = true;
+        if (flight.wallhit) { dbg.arrowWall = (dbg.arrowWall ?? 0) + 1; playSfx('arrowWall', { volume: 0.7 }); }
+        else dbg.arrowOut = (dbg.arrowOut ?? 0) + 1;
+        dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: flight.wallhit ? 'struck stone' : 'flew out' };
+        continue;
+      }
+      let struck = null;
+      for (const spawn of monsters) {
+        if (spawn.monster.health <= 0 || spawn.death) continue;
+        if (!arrowAtMonster(arrow, { x: spawn.world.x, y: spawn.world.y, z: spawn.world.z })) continue;
+        struck = spawn;
+        break;
+      }
+      if (!struck) continue;
+      arrow.dead = true;
+      playSfx('arrowHit');
+      combatFx.blood(arrow.x, arrow.y, arrow.z, { power: 1 });
+      // **The fight's own blow, at range.** The arrow carries the bow and its metal; the
+      // creature is the defender, so the material floor and the creature's resistances answer
+      // exactly as they do for a sword (`combat.js`'s `resolveAttack`).
+      const blow = resolveAttack({
+        attacker: player,
+        defender: struck.monster,
+        weapon: arrow.weapon,
+        material: arrow.material ?? player.material,
+        random: battle,
+      });
+      if (blow.immune) {
+        showNotice(blow.reason, 2200);
+        dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: 'no wound', target: struck.monster.name, reason: blow.reason };
+        continue;
+      }
+      if (!blow.hit) {
+        dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: 'missed', target: struck.monster.name };
+        continue;
+      }
+      const after = damageMonster(struck, blow.damage, `an arrow from your ${weaponName(arrow.weapon).toLowerCase()}`);
+      dbg.arrowHits = (dbg.arrowHits ?? 0) + 1;
+      dbg.lastArrow = {
+        ...(dbg.lastArrow ?? {}), state: 'struck', target: after.name, damage: blow.damage,
+        health: after.health, chance: blow.chance,
+      };
+      showNotice(`${blow.damage} to ${after.name} at range${after.health === 0 ? ' — dead' : ` (${after.health} left)`}.`, 1600);
+    }
+    for (let i = arrows.length - 1; i >= 0; i--) if (arrows[i].dead) arrows.splice(i, 1);
   }
 
   /**
@@ -4910,23 +8192,32 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * @returns {{ok: boolean, hit: boolean, target?: string, damage?: number, health?: number, xp?: number, kills?: number, reason?: string}}
    */
-  function strike({ held = 0 } = {}) {
+  function strike({ guaranteed = false } = {}) {
+    // `held` is deliberately **not** a parameter any more: the player has one blow, the ordinary
+    // one. The owner, 2026-10-19: *"remove the possibility to do heavy blows in combat just normal
+    // blows for the player the mechanic doesnt insert well in combat"*. A caller that still passes
+    // `held` (an old probe, a saved URL's script) is simply given the same normal strike.
+    // `guaranteed` is a **fixture's** door, not a player's: `prepareCombat` exists so a suite can
+    // hold the consequence of a landed blow (a poise break, a stagger) against whatever the roll
+    // says, and the roll is the player's own chance (`combat.js`'s `hitChance`) that the owner asked
+    // to keep. A browser that had to strike until it got lucky proved the dice, not the law.
+    if (equipmentCondition(player,player.weaponItem??player.weapon)<=0) return {ok:false,hit:false,reason:'weapon broken'};
     if (defence.rollT < DODGE.seconds || guarding()) return { ok: false, hit: false, reason: 'defending' };
     if (swingCooldown > 0) return { ok: false, hit: false, reason: 'still swinging' };
-    // A heavy is a *held* strike: the press charges it (`chargeScale`), and letting go trips
-    // this with the seconds held. A hold the bar cannot pay for falls back to the light
-    // blow — a winded player is not denied a swing, only the multiplier.
-    const charge = chargeScale(held);
-    let heavy = charge.heavy;
-    if (heavy && !spendStamina(defence.stamina, HEAVY.stamina)) heavy = false;
-    swingCooldown = heavy ? HEAVY.cooldown : PLAYER_SWING;
-    // A blow has a picture: the swing animation plays whether it connects or not — longer
-    // for the heavy, which is the recovery the bigger action readably takes.
-    swingAnim = heavy ? SWING_ANIM_SECONDS * 1.6 : SWING_ANIM_SECONDS;
+    // **A bow is not swung** — it is loosed (`game/archery.js`, and the owner's "we need all the
+    // weapons like axes flails … actually working"). Before this, a long bow resolved a blow at
+    // the sword's own `REACH` through `resolveAttack`, which is a club with an archery price tag.
+    if (isBow(player.weapon)) return looseArrowNow();
+    // **One blow, one price.** A press is the strike itself now: no hold to charge, no stamina
+    // surcharge, no heavier damage tier. The owner asked for the ordinary blow alone because the
+    // hold-and-release mechanic did not fit the fight, so this is the whole of the swing law.
+    swingCooldown = PLAYER_SWING;
+    swingAnim = SWING_ANIM_SECONDS;
     // …and in the first person the picture is Arena's own weapon sheet, swung the way the
     // player is pushing (a thrust when moving forward, a side sweep when strafing, the
-    // overhead chop when standing still). The heavy is always the chop. See `game/weaponView.js`.
-    weaponRig.swing(heavy ? 'down' : swingDirection(inputOf(keys, pressed, weaponRig.drawn)));
+    // overhead chop when standing still). See `game/weaponView.js`.
+    weaponRig.swing(swingDirection(inputOf(keys, pressed, weaponRig.drawn)));
+    playSfx('swing');
     const feet = feetOf();
     const fx = Math.sin(cam.yaw);
     const fz = Math.cos(cam.yaw);
@@ -4952,6 +8243,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (folk) return strikeFolk(folk);
       return { ok: true, hit: false, reason: 'nothing within reach' };
     }
+    if (equipmentCondition(player,player.weaponItem??player.weapon)<=0) return {ok:false,hit:false,reason:'weapon broken'};
     if (defence.rollT < DODGE.seconds || guarding()) return { ok: false, hit: false, reason: 'defending' };
     const riposting = defence.riposte && defence.riposteTarget === best.spawn && dbg.seconds <= defence.riposteUntil;
     // The **backstab is a position**, not a roll (the browsergame's own reading): the blow
@@ -4960,26 +8252,40 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // walk step recorded; a monster that has never moved has no facing, and no backstab.
     const fromBehind = best.spawn.facing != null
       && Math.cos(best.spawn.facing - Math.atan2(best.spawn.world.x - feet[0], best.spawn.world.z - feet[2])) > 0.3;
+    // **Orc Strength is a heavier arm** (`spells.js`'s strength effect and the potion of
+    // Strength): the fight's own Strength rule reads the boosted attribute, so the buff is
+    // spent where damage is rolled and nowhere else.
+    const strong = (Number(player.strengthBuff) || 0) > 0
+      ? {
+        ...player,
+        attributes: {
+          ...(player.attributes ?? {}),
+          strength: (Number(player.attributes?.strength ?? 50) || 50) + Number(player.strengthBuff),
+        },
+      }
+      : player;
     const blow = resolveAttack({
-      attacker: player,
+      attacker: strong,
       defender: best.spawn.monster,
       weapon: player.weapon,
       material: player.material,
       random: battle,
-      guaranteedHit: Boolean(riposting),
+      guaranteedHit: Boolean(riposting) || Boolean(guaranteed),
       fromBehind,
     });
+    if (blow.immune) {
+      // **A metal under the creature's floor is no blow at all** (`bestiary.js`): say so,
+      // rather than spilling blood over a wound that did not happen.
+      playSfx('clang');
+      showNotice(blow.reason, 2400);
+      dbg.lastImmune = { target: best.spawn.monster.name, weapon: player.weapon, material: player.material, reason: blow.reason };
+      return { ok: true, hit: false, immune: true, target: best.spawn.monster.name, reason: blow.reason };
+    }
     if (!blow.hit) return { ok: true, hit: false, target: best.spawn.monster.name, reason: 'missed' };
     if (blow.backstab) {
       dbg.backstabs = (dbg.backstabs ?? 0) + 1;
       showNotice('A backstab — landed before the turn.', 1100);
     }
-    // The charge's own weight, before the riposte's turning: a heavy lands as the bigger
-    // blow the hold paid for, and the screen reads it (`screenShake`) so the body feels it.
-    if (heavy && charge.scale > 1) blow.damage = Math.round(blow.damage * charge.scale);
-    // The player's own heavy is *felt*: the wound lands in the view the same way a
-    // monster's charge does, so a big blow reads as weight on both sides of it.
-    if (heavy) screenShake = Math.max(screenShake, 0.3);
     if (defence.riposte && defence.riposteTarget === best.spawn && dbg.seconds <= defence.riposteUntil) {
       blow.damage = Math.round(blow.damage * defence.riposte);
       defence.riposte = 0; defence.riposteTarget = null;
@@ -4995,11 +8301,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // is the mark it leaves on the floor: `game/bloodEffect.js` turns a blow into the engine's
     // own decal records, and wiring them to the decal pass needs the blood art's texture — see
     // `docs/PORT_BLOCKS.md` §5.
+    playSfx(blow.guard ? 'hitArmour' : 'hitFlesh', { volume: blow.damage > 10 ? 1 : 0.8 });
     combatFx.blood(best.spawn.world.x, best.spawn.world.y + 0.9, best.spawn.world.z, {
       power: blow.damage > 10 ? 3 : 1,
     });
-    const monster = { ...best.spawn.monster, health: Math.max(0, best.spawn.monster.health - blow.damage) };
+    const artifact = artifactById(player.weaponItem);
+    const beforeHit = best.spawn.monster.health;
+    let enchantedDamage = 0;
+    if (artifact?.onHit === 'volendrung') {
+      enchantedDamage = 30 + (player.level ?? 1);
+      best.spawn.paralysedUntil = dbg.seconds + 10;
+      best.spawn.strengthDrain = { power:25, until:dbg.seconds + 15 * (player.level ?? 1) };
+    }
+    const monster = { ...best.spawn.monster, health: Math.max(0, beforeHit - blow.damage - enchantedDamage) };
     best.spawn.monster = monster;
+    if (artifact?.onHit === 'vampiric') player = { ...player, health: Math.min(player.maxHealth, player.health + Math.min(beforeHit, 3 + battle.nextBelow(10))) };
+    player = wearEquipment(player, player.weaponItem ?? player.weapon);
     // **A wound has weight.** Poise drains with every landed blow; emptying it *staggers* —
     // the creature's committed attack is dropped mid-windup (the telegraph dies with it) and
     // it holds still for `STAGGER_SECONDS`, which is the player's opening, not a stat line.
@@ -5011,10 +8328,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       hitStop = Math.max(hitStop, 0.12);
       showNotice(best.spawn.monster.name + ' staggers!', 900);
       dbg.staggers = (dbg.staggers ?? 0) + 1;
-    } else if (heavy) {
-      // A heavy that does not break poise still lands as weight: a short arrest of the
-      // whole screen, as long as its frames (the wound and the recovery share it).
-      hitStop = Math.max(hitStop, 0.08);
     }
     if (monster.health === 0) {
       beginMonsterDeath(best.spawn);
@@ -5025,7 +8338,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       awardExperience(monsterXp(monster), `${monster.name} falls`);
     }
     updateCombatHud();
-    return { ok: true, hit: true, target: monster.name, damage: blow.damage, health: monster.health, xp, kills };
+    return { ok: true, hit: true, target: monster.name, damage: blow.damage, health: monster.health, xp, kills, guard: blow.guard ?? 0 };
   }
 
   /**
@@ -5087,9 +8400,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       random: battle,
     });
     if (!blow.hit) return { ok: true, hit: false, target: fighter.name, reason: 'missed' };
+    playSfx('hitFlesh');
     const health = Math.max(0, fighter.health - blow.damage);
     person.fighter = { ...fighter, health };
     const struck = notePerson(person, 'struck');
+    // The victim's own answer, before the ledger's: a blow is answered.
+    person.angerUntil = dbg.seconds + FOLK_ANGER_SECONDS;
     let slain = null;
     if (health === 0) {
       // The witnesses. `slain` is worth −75, which is past `HOSTILE_AT` — the town turns on
@@ -5105,6 +8421,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // **The witnesses are the people who could see it.** Somebody indoors did not watch a
       // killing in the street, and the port has the flag that says so (`atHome`).
       for (const other of townsfolk) if (other !== person && !other.down && !other.atHome) notePerson(other, 'slain');
+      playSfx('monsterDeath');
       showNotice(`${fighter.name} falls. The town saw it.`, 4000);
       // …and the watch's own answer, which is a *different* question from what the witnesses
       // think of the player (`game/livingWorld.js`): how many come, whether it is an arrest,
@@ -5147,7 +8464,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const feet = feetOf();
     for (const person of townsfolk) {
       if (person.down) { person.hostile = false; continue; }
-      const hostile = person.regardId && standingOf(regard, person.regardId, day) === 'hostile';
+      // **A blow makes an enemy on the spot** (the owner, 2026-10-18: *"they should get angry at
+      // you when you do"*). The ledger's `struck` is −45 and `HOSTILE_AT` is −70, so a single
+      // hit used to leave the victim apologetic rather than angry; the ledger is still the
+      // lasting memory, but the person the player just cut is hostile for their own clock.
+      const angry = (person.angerUntil ?? 0) > dbg.seconds;
+      const hostile = angry || Boolean(person.regardId && standingOf(regard, person.regardId, day) === 'hostile');
       // **Marked on the person**, because the walking pass just below reads it: a man coming
       // at the player with a blade is not also keeping his hour, and a hostile townsperson
       // who kept his route walked away from the player faster than `MONSTER_SPEED` could
@@ -5167,6 +8489,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (person.attack) { stepAttack(person, distance, dt); continue; }
       if (distance > AGGRO) continue;
       if (!sightClear(person.world.x, person.world.y + SIGHT_EYE, person.world.z, feet[0], feet[1] + SIGHT_EYE, feet[2])) continue;
+      // **An angry townsman may know a spell too** (the owner, 2026-10-19: *"npcs that get
+      // angry in towns should to [cast]"*). It is the same rare clock the human foes keep, with
+      // a longer first wait because a street fight starts at arm's length and most end before
+      // the clock has run out.
+      if (distance <= CAST_RANGE.high) {
+        person.spellClock = (person.spellClock ?? HUMAN_SPELL_FIRST_SECONDS + 25) - dt;
+        if (person.spellClock <= 0) {
+          person.spellClock = throwBolt(person)
+            ? HUMAN_SPELL_MIN_SECONDS + battle.nextBelow(HUMAN_SPELL_SPREAD_SECONDS)
+            : 3;
+        }
+      }
       if (distance > REACH * 0.75) {
         const move = Math.min(HOSTILE_FOLK_SPEED * dt, Math.max(0, distance - REACH * 0.7));
         const nx = person.world.x + (dx / (distance || 1)) * move;
@@ -5204,13 +8538,43 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   let menuConfirm = false;
 
   /** Every control, printed once, in the game's own words. */
+  /**
+   * **Every key the game answers, in one list, in the order a hand reaches for it.**
+   *
+   * The HUD used to print a shorter copy of this under every fight (the owner, 2026-10-21:
+   * *"this part of the gui should not be there anymore instead in the settings"*); the settings
+   * section is now the one place a player can read the controls, and it is complete: the
+   * walking keys, both mouse buttons, the fight's four answers, the three panels, the two maps
+   * and the level's own stairs. A key that is not here is not bound — the list is kept beside
+   * the handlers that read it, so it cannot drift into a manual for a game nobody is playing.
+   */
   const MENU_CONTROLS = Object.freeze([
-    ['W A S D', 'walk'], ['Shift', 'run'], ['Space', 'jump'], ['Mouse', 'look; the left button swings'],
-    ['E', 'open a door, take a thing, cross a gate, use a stair'], ['F', 'strike'],
-    ['B / right mouse', 'guard; tap before impact to parry (8 stamina)'], ['Q', 'directional dodge (12 stamina)'], ['T', 'talk to whoever is in front of you'],
-    ['V', 'first or third person'], ['R', 'rest if safe; rent a room in a tavern'], ['I', 'what you carry'], ['C', 'your spellbook'],
-    ['Z', 'cast the spell you read last'], ['M', 'the world map'],
-    ['] [', 'down and up a level'], ['Esc', 'this menu'],
+    // ── moving ──
+    ['W A S D', 'walk'],
+    ['Shift', 'run'],
+    ['Ctrl', 'crouch (sneak)'],
+    ['Space', 'jump; a held W at a bank or a pit wall climbs out'],
+    ['Mouse', 'look around'],
+    // ── fighting ──
+    ['Left mouse / F', 'strike with what is in hand'],
+    ['B / right mouse', 'guard; tap it just before the blow lands to parry (8 stamina)'],
+    ['Q', 'dodge roll the way you are moving (12 stamina)'],
+    // ── what is in front of you ──
+    ['E', 'take a thing, open a door, enter a building, cross a gate, use a stair'],
+    ['T', 'talk to whoever is in front of you'],
+    ['R', 'rest where it is safe; rent a room at a tavern'],
+    // ── the panels ──
+    ['I', 'your pack'],
+    ['C', 'your spellbook'],
+    ['Z', 'cast the spell you read last'],
+    ['P', 'your portrait and character sheet'],
+    ['L', 'spend a level when one is owed'],
+    // ── the world and the level ──
+    ['V', 'first or third person'],
+    ['M', 'the world map of Tamriel, from anywhere'],
+    ['Tab', 'the automap of this level (dungeons and buildings)'],
+    ['] [', 'down and up a level'],
+    ['Esc', 'this menu, and the settings on it'],
   ]);
 
   /** One button, in the menu's own shape. */
@@ -5237,7 +8601,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const where = place?.name ?? mapName;
     const rows = [
       menuRow('resume', 'Esc', 'Resume', 'back to the world'),
-      menuRow('controls', 'C', 'Controls', menuControls ? 'hide' : 'show'),
+      menuRow('controls', 'Esc', 'Settings', menuControls ? 'hide' : 'sound, picture and every key'),
       menuRow('newgame', 'N', 'New Game…', 'forget everything and start over'),
     ];
     el.innerHTML = '<div class="panel">'
@@ -5250,6 +8614,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         ? `<p class="side">Side work: ${escapeHtml(side)}</p>`
         : '<p class="stat">No side work in hand — a tavern is where the world hands it out.</p>')
       + `<p class="stat">Who knows you: <b>${tally.known}</b> met · ${tally.friends} ${tally.friends === 1 ? 'friend' : 'friends'} · ${tally.enemies} ${tally.enemies === 1 ? 'enemy' : 'enemies'} · ${tally.hostile} hostile · <b>${radiant.day ?? 0}</b> days travelled</p>`
+      + `<div class="volume"><label for="music-volume">Music</label>`
+      + `<input id="music-volume" type="range" min="0" max="100" step="5" value="${Math.round(getMusicVolume() * 100)}">`
+      + `<output id="music-volume-value">${Math.round(getMusicVolume() * 100)}%</output></div>`
+      + `<div class="volume"><label for="sfx-volume">Sound</label>`
+      + `<input id="sfx-volume" type="range" min="0" max="100" step="5" value="${Math.round(getSfxVolume() * 100)}">`
+      + `<output id="sfx-volume-value">${Math.round(getSfxVolume() * 100)}%</output></div>`
+      // **The original picture.** Arena draws at 320×200; the tick gives the world that image
+      // and that lens, presented point-sampled over the canvas (`game/videoSettings.js`).
+      + `<label class="tick"><input id="retro-320" type="checkbox"${retro320Enabled() ? ' checked' : ''}> 320×200 — Arena's own resolution</label>`
       + `<div class="rows">${rows.join('')}</div>`
       + '<div class="confirm' + (menuConfirm ? ' on' : '') + '">'
       + '<p>Begin a new game? ' + escapeHtml(player.name) + ', the quest, the purse and everyone who has met you are all forgotten. This cannot be undone.</p>'
@@ -5313,6 +8686,31 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * Delegated and registered with this scene's `AbortSignal`, like every other listener
    * here, so a replaced scene takes its handlers with it.
    */
+  // **The music slider.** 0 is off, and the level is remembered across pages
+  // (`musicPlayer.setMusicVolume`); the label follows the thumb as it is dragged.
+  document.getElementById('menu')?.addEventListener('input', (e) => {
+    if (e.target?.id === 'music-volume') {
+      const level = setMusicVolume(Number(e.target.value) / 100);
+      const out = document.getElementById('music-volume-value');
+      if (out) out.textContent = `${Math.round(level * 100)}%`;
+      return;
+    }
+    if (e.target?.id === 'sfx-volume') {
+      const level = setSfxVolume(Number(e.target.value) / 100);
+      const out = document.getElementById('sfx-volume-value');
+      if (out) out.textContent = `${Math.round(level * 100)}%`;
+      if (level > 0) playSfx('ui');
+    }
+  }, { signal });
+  // **The 320×200 tick** — a change, not a button: the renderer's own source reads the setting
+  // every world frame, and `paint` takes the lens at once.
+  document.getElementById('menu')?.addEventListener('change', (e) => {
+    if (e.target?.id !== 'retro-320') return;
+    const on = setRetro320(Boolean(e.target.checked));
+    renderer.setRetroSource?.(retro320Frame);
+    dbg.video = { retro320: on, frame: on ? { width: 320, height: 200 } : null };
+    playSfx('ui');
+  }, { signal });
   document.getElementById('menu')?.addEventListener('click', (e) => {
     const button = e.target?.closest?.('[data-menu]');
     if (!button) return;
@@ -5321,6 +8719,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     else if (action === 'controls') { menuControls = !menuControls; renderMenu(); }
     else if (action === 'newgame') { menuConfirm = true; renderMenu(); }
     else if (action === 'newgame-confirm') void newGame();
+  }, { signal });
+
+  /**
+   * The automap's own buttons — and the one the owner's correction made necessary.
+   *
+   * `M` is Tamriel from everywhere (see the key handler), but a player who opened the level's
+   * sheet should not have to close it and remember a key to see the world: the sheet offers the
+   * hand-over directly. It closes first, so the pause the sheet took is given back before the
+   * world map takes its own.
+   */
+  document.getElementById('automap')?.addEventListener('click', (e) => {
+    const button = e.target?.closest?.('[data-automap]');
+    if (!button) return;
+    if (button.dataset.automap === 'worldmap') {
+      toggleAutomap(false);
+      void openWorldMap();
+    } else if (button.dataset.automap === 'close') {
+      toggleAutomap(false);
+    }
   }, { signal });
 
   /**
@@ -5373,6 +8790,66 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @type {'bag'|'spells'}
    */
   let panelMode = 'bag';
+  let searchedCorpse = null;
+  /** Whether the pack panel is showing the player's own house chest (a two-list page). */
+  let homeChestOpen = false;
+
+  function corpseNear() {
+    let best = null;
+    for (const spawn of monsters) {
+      if (spawn.monster.health > 0 || !spawn.loot) continue;
+      const distance = personDistance(spawn);
+      if (distance > DOOR_REACH || (best && distance >= best.distance)) continue;
+      // Do not search through a wall: same clear line as a melee target.
+      const feet = feetOf();
+      if (!sightClear(feet[0], feet[1] + SIGHT_EYE, feet[2], spawn.world.x, spawn.world.y + SIGHT_EYE, spawn.world.z)) continue;
+      best = { spawn, distance };
+    }
+    return best?.spawn ?? null;
+  }
+
+  function searchCorpse(spawn) {
+    searchedCorpse = spawn;
+    toggleInventory(true);
+    document.exitPointerLock?.();
+    return true;
+  }
+
+  function takeFromCorpse(id) {
+    const spawn = searchedCorpse;
+    if (!spawn || personDistance(spawn) > DOOR_REACH) {
+      searchedCorpse = null; toggleInventory(false);
+      showNotice('The body is out of reach.', 1800); return false;
+    }
+    if (id !== 'all') {
+      const room = carryStatus(player, bagOf(), id, 1);
+      if (!room.ok || room.atLimit) { showNotice(room.reason, 3000); return false; }
+    } else {
+      // **Take all** is still a carry check. It used to skip `carryStatus` entirely, so one
+      // click could put a full player past their limit with every item on the body.
+      const room = carryStatus(player, bagOf(), null, 0);
+      const preview = takeCorpseLoot(spawn.loot, 'all');
+      const extra = preview.taken.items.reduce((kg, item) => kg + (Number(itemById(item)?.weight) || 0), 0);
+      if (room.atLimit || room.weight + extra > room.max + 0.05) {
+        showNotice(room.atLimit
+          ? 'Your load is full — drop something before looting the body.'
+          : `The body's gear would put your load past ${room.max.toFixed(0)} kg.`, 3000);
+        return false;
+      }
+    }
+    const result = takeCorpseLoot(spawn.loot, id);
+    if (!result.changed) return false;
+    let bag = bagOf();
+    for (const item of result.taken.items) bag = addToBag(bag, item, 1);
+    setBag(bag);
+    player = { ...player, gold: (player.gold ?? 0) + result.taken.gold };
+    spawn.loot = result.remaining;
+    savePlayer();
+    dbg.humanLoot = { by: spawn.monster.name, ...result.taken };
+    showNotice(`Taken: ${result.taken.gold} gold${result.taken.items.length ? ', ' + result.taken.items.map((item) => itemById(item).name).join(', ') : ''}.`, 2600);
+    updateInventoryPanel(); updateObjectiveHud(); updateCombatHud();
+    return true;
+  }
   /** The install's own spell file, read once per scene (`arena/spellsFile.js`). */
   let spellLibrary = null;
 
@@ -5481,6 +8958,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       + '</div>';
   }
 
+  /**
+   * **The king's offer of a house**, as the panel shows it.
+   *
+   * Only the ruler in a palace speaks it (`isPalaceMap`, role `ruler`), and only in a city —
+   * a palace in a town has no street of house doors to sell. The offer's own words come from
+   * `game/playerHouse.js`, so the panel, the refusal notice and the sale all agree on the
+   * price and the friendship the king asks for.
+   *
+   * @param {object|null} person
+   * @returns {string}
+   */
+  function houseBlock(person) {
+    if (!isPalaceMap(mapName) || person?.role !== 'ruler' || !fromPlace) return '';
+    const city = fromPlace.name;
+    const day = radiant.day ?? 0;
+    const friends = friendsInPlace(regard, city, day);
+    const owns = Boolean(player?.house && String(player.house.city ?? '').toLowerCase() === String(city).toLowerCase());
+    if (owns) {
+      return '<div class="job">'
+        + `<p class="offer">You are a householder of ${escapeHtml(city)} — the deed is yours.</p>`
+        + '<p class="src">Your house is empty, keeps a chest of your own, and its bed is free.</p>'
+        + '<button data-house="go">Go to my house</button>'
+        + '</div>';
+    }
+    const offer = houseOffer({ friends, gold: player?.gold, owns, city });
+    return '<div class="job">'
+      + `<p class="offer">${escapeHtml(offer.reason)}</p>`
+      + `<p class="src">A deed buys one of ${escapeHtml(city)}'s own house doors: empty rooms, a working chest, and a bed no innkeeper charges for. You are known to ${friends} of ${HOUSE_FRIENDS_REQUIRED} friends the king asks.</p>`
+      + (offer.ok ? `<button data-house="buy">Buy the deed — ${HOUSE_PRICE} gold</button>` : '')
+      + '</div>';
+  }
+
   // A job done for a person earns standing with the guild whose kind of work it was —
   // the trades' own allegiance, one number per guild, capped like the regard's.
   const guildForJob = (kind) => (kind === 'slay' || kind === 'rescue'
@@ -5501,6 +9010,156 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     showNotice(`Welcome to ${guild.name} — you stand at rank ${result.rank}${title ? `, ${title}` : ''}.`, 4600);
     updateObjectiveHud();
     return result;
+  }
+
+  /**
+   * **Is this room the house the player bought?**
+   *
+   * A deed is a **door**, not a map: eight `BS` interiors are shared by every ordinary house
+   * in the city (`game/playerHouse.js`'s header). So the answer is the city the building came
+   * from plus the street cell of the doorway it was entered by (`entryCell`). Inside a bought
+   * house the room is empty of people, keeps a working chest, and lets the owner sleep free.
+   *
+   * @returns {boolean}
+   */
+  function ownedHouseHere() {
+    return isOwnedHouseDoor(player?.house, fromPlace, entryCell);
+  }
+
+  /** The city's own doors, rebuilt once for a house sale from inside the palace. */
+  let homeDoorCache = null;
+  async function cityDoorsForHome() {
+    if (homeDoorCache) return homeDoorCache;
+    if (!fromPlace) return [];
+    const request = cityRequestOf(fromPlace);
+    const skeleton = await data.mif(request.template);
+    const built = await buildCityLevel({
+      data, mif: skeleton, blocksPerSide: request.blocksPerSide, seed: request.seed,
+    });
+    const inf = await data.inf(request.infName);
+    const level = decodeLevel(built.level, inf, {
+      width: built.level.width, depth: built.level.depth, mapType: 'city', startPoints: [],
+    });
+    homeDoorCache = cityDoors({
+      level, city: built, inf, blocksPerSide: request.blocksPerSide, settlement: fromPlace,
+    });
+    return homeDoorCache;
+  }
+
+  /**
+   * **Buy a house from the king.**
+   *
+   * The king speaks for the city (`game/playerHouse.js`'s `houseOffer`): ten friends there and
+   * five thousand gold buy a deed to one of the city's own house doors, chosen by a seeded
+   * draw so the sale is random but a reload cannot move the house. The deed lands on the
+   * character (`player.house`), and the player is taken straight to it — the owner's own
+   * *"that should teleport you to your house"*.
+   *
+   * @returns {Promise<boolean>}
+   */
+  async function buyHouseFromKing() {
+    const city = fromPlace?.name ?? null;
+    const day = radiant.day ?? 0;
+    const friends = friendsInPlace(regard, city, day);
+    const owns = Boolean(player?.house && String(player.house.city ?? '').toLowerCase() === String(city ?? '').toLowerCase());
+    const offer = houseOffer({ friends, gold: player?.gold, owns, city });
+    if (!offer.ok) {
+      playSfx('error');
+      showNotice(offer.reason, 3600);
+      return false;
+    }
+    let doors = [];
+    try {
+      doors = await cityDoorsForHome();
+    } catch (err) {
+      showNotice(`The city's deeds are not to be read here: ${err.message}`, 3600);
+      return false;
+    }
+    const random = new ArenaRandom((String(player.name ?? '').length * 7919
+      + String(city).length * 131 + day * 17 + (Number(player.gold) || 0) + 4099) >>> 0 || 1);
+    // `pickHouseDoor` takes a seed and picks by modulo; feeding it `random.next()` (0…1)
+    // would collapse every city's choice to its first two doors.
+    const door = pickHouseDoor(doors, random.nextBelow(0x7fffffff));
+    if (!door) {
+      playSfx('error');
+      showNotice('There is no house in this city the king can give you.', 3200);
+      return false;
+    }
+    player = {
+      ...player,
+      gold: Math.max(0, (Number(player.gold) || 0) - HOUSE_PRICE),
+      house: houseDeed(city, door, day),
+    };
+    savePlayer();
+    playSfx('coin');
+    dbg.house = { bought: true, city, door: player.house, friends, price: HOUSE_PRICE };
+    showNotice(`The king signs the deed: a house in ${city}, ${HOUSE_PRICE} gold. You are a householder now.`, 4600);
+    closeTalk();
+    await goToOwnedHouse();
+    return true;
+  }
+
+  /**
+   * Walk the player through their own front door — in this page, the same way every other
+   * doorway travels (`goInPlace`), so the Arena folder survives and leaving the house returns
+   * to the street cell of the deed's own door.
+   */
+  async function goToOwnedHouse() {
+    const house = player?.house;
+    if (!house) {
+      showNotice('You own no house to go to.', 2400);
+      return false;
+    }
+    // The page to come back to: the city this building stands in. Inside the palace that is
+    // the palace's own `back` URL; in the street it is this page with the door removed.
+    const back = backHref
+      ? new URLSearchParams(backHref.replace(/^\?/, ''))
+      : new URLSearchParams(params);
+    for (const key of ['interior', 'enter', 'back', 'level', 'wild', 'wildseed', 'clock']) back.delete(key);
+    const stand = house.stand ?? { row: house.row, col: house.col };
+    if (back.has('location') || back.has('city')) back.set('at', `${stand.row},${stand.col}`);
+    const next = new URLSearchParams();
+    next.set('interior', house.file);
+    next.set('enter', `${house.row},${house.col}`);
+    next.set('back', `?${back.toString()}`);
+    const folder = source?.arenaPath ?? params.get('arena') ?? null;
+    if (folder) next.set('arena', folder);
+    dbg.enterHouse = { file: house.file, city: house.city, row: house.row, col: house.col };
+    playSfx('door');
+    void goInPlace(next);
+    return true;
+  }
+
+  /**
+   * **A cell for the owner's chest**, near the arrival and out of the doorway's way.
+   *
+   * The house is the install's own room and carries no chest flat, so the deed places one: a
+   * ring search out from the arrival, the first standable cell that is not the player's own
+   * spawn and is not already decorated. It is a billboard, not a wall, so it does not need a
+   * free walkway; it only needs to be reachable and visible.
+   */
+  function homeChestCell(level, spawn) {
+    const row0 = Math.max(0, Math.floor(Number(spawn?.x) || level.width / 2));
+    const col0 = Math.max(0, Math.floor(Number(spawn?.z) || level.depth / 2));
+    // **Not within the doorway's own reach.** `interact` checks the way out before the
+    // floor, so a chest one cell from the arrival made `E` leave the house instead of opening
+    // it. Two cells is the first ring outside `DOOR_REACH` (2.6 m), and the chest is still
+    // in the room the player arrives in.
+    for (let radius = 2; radius <= 10; radius++) {
+      for (let dr = -radius; dr <= radius; dr++) {
+        for (let dc = -radius; dc <= radius; dc++) {
+          if (Math.abs(dr) !== radius && Math.abs(dc) !== radius) continue;
+          const row = row0 + dr;
+          const col = col0 + dc;
+          if (row < 0 || col < 0 || row >= level.depth || col >= level.width) continue;
+          const cell = level.cells[row * level.width + col];
+          if (!cell || cell.solid || cell.floor?.chasm) continue;
+          if (row === row0 && col === col0) continue;
+          return { row, col };
+        }
+      }
+    }
+    return null;
   }
 
   /** The trade of the building the player is standing in, or null out in the street. */
@@ -5529,20 +9188,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {number}
    */
   function arrivalMinutes() {
-    // **`Number(null)` is `0`, and that is midnight.** Reading a missing `?clock=` as a number
-    // therefore put every level's clock at 00:00, which shut every shop in the game and made
-    // walking into a storefront a refusal — caught by the `doors` suite timing out on its way
-    // into an equipment shop. A parameter that is not there is not a number.
-    const raw = params.get('clock');
-    const forced = raw === null || raw === '' ? Number.NaN : Number(raw);
-    if (Number.isFinite(forced)) return ((Math.trunc(forced) % 1440) + 1440) % 1440;
-    // **…and when there is no forced hour, the world's own clock answers** (`worldState`'s
-    // `world.clock`, written on the way out of the last place). Before this, every arrival was ten
-    // in the morning: a player who left a town at dusk walked into the next one at breakfast, and
-    // the hour *never* came back — the owner's *"there is no persistency in the world like instead
-    // there is in daggerfall enhanced"*, in its simplest measurable form (D-05, B19). Ten in the
-    // morning stays the answer for a world that has never had an hour written to it.
-    return worldClock(worldMemory)?.minutes ?? 10 * 60;
+    // Captured once before the first load; saving must not change the clock's origin.
+    return clockBaseMinutes;
   }
 
   /**
@@ -5557,7 +9204,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {number}
    */
   function worldDay() {
-    return Math.max(radiant.day ?? 0, worldClock(worldMemory)?.day ?? 0);
+    return clockBaseDay;
   }
 
   /**
@@ -5575,7 +9222,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function rememberClock() {
     const clock = clockNow();
-    setWorldClock(worldMemory, worldDay() + (clock.turned ?? 0), clock.minutes);
+    setWorldClock(worldMemory, clock.day + (clock.turned ?? 0), clock.minutes);
+    const days = Math.max(0, worldMemory.clock.day - (radiant.day ?? 0));
+    if (days) { radiant = advanceDays(radiant, days); saveRadiantState(radiant); }
     // **…and where in the place the player was standing** (`worldState`'s `player`, the second of the
     // world half's two loose fields). Written on the same events as the hour — every place change, the
     // world's own saves and the slow tick — so a page that names no cell of its own puts the player
@@ -5655,7 +9304,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * tavern fill.
    */
   function clockNow() {
-    return timeOfDay(worldDay(), dbg.seconds ?? 0, { opensAt: arrivalMinutes() / 60 });
+    return timeOfDay(worldDay(), Math.max(0, (dbg.seconds ?? 0) - clockBaseSeconds), { opensAt: arrivalMinutes() / 60 });
+  }
+
+  /** Rest advances the live clock without advancing animation/AI timers by hours. */
+  function passRestTime(minutes) {
+    const before = clockNow();
+    const total = before.minutes + minutes;
+    clockBaseDay = before.day + before.turned + Math.floor(total / 1440);
+    clockBaseMinutes = total % 1440;
+    clockBaseSeconds = dbg.seconds ?? 0;
+    rememberClock();
+    applyDaylight();
+    maybeRecomposeSky();
+    updateObjectiveHud();
+    return clockNow();
   }
 
   /**
@@ -5695,6 +9358,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return light;
   }
 
+  /**
+   * The player's own light — Arena's `Light` and `Wanderlight`, and nothing else.
+   *
+   * A dungeon's ambient is the level's; the spell's radius is points, and each one lifts the
+   * room's ambient by a small, fixed step (0.02, capped at six points' worth). It is written
+   * only when the boost *changes*, so a frame without a light is byte for byte the light the
+   * level had before this existed — the daylight pass above keeps owning the clock.
+   *
+   * The spell lasts until the character rests (`spells.js`'s `restore` clears `light`), which
+   * is the one duration this project has for it; the event line says so.
+   */
+  function applyPlayerLight() {
+    const radius = Number(player?.light?.radius) || 0;
+    const boost = radius > 0 ? 0.02 * Math.min(6, radius) : 0;
+    if (boost === playerLightShown) return;
+    playerLightShown = boost;
+    const scale = dayLit && dayLight ? dayLight.ambientScale : 1;
+    const ambient = [
+      dayAmbient[0] * scale + boost,
+      dayAmbient[1] * scale + boost,
+      dayAmbient[2] * scale + boost,
+    ];
+    const sun = dayLit && dayLight ? daySunMax * dayLight.sunScale : daySunMax;
+    renderer.setLighting(ambient, sun, dayLit && dayLight ? dayLight.sunColor : NO_SUN);
+    dbg.playerLight = { radius, boost, seconds: Number(player?.light?.seconds) || 0 };
+  }
+
+  /** Force the next painted frame to write the light, after a cast changed it. */
+  function applyPlayerLightNow() {
+    playerLightShown = -1;
+  }
+
   /** A clock, as somebody in the street would say it: `6:05 in the evening`. */
   function clockWord(clock) {
     const hour12 = clock.hour % 12 === 0 ? 12 : clock.hour % 12;
@@ -5724,9 +9419,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /** The person standing nearest the player, or null on an empty street. */
   function nearestPerson() {
-    if (!townsfolk.length) return null;
+    if (!townsfolk.length && !stillPeople.length) return null;
     let best = null;
-    for (const person of townsfolk) {
+    for (const person of [...townsfolk, ...stillPeople]) {
       // A person at home is behind a door the port cannot open (there is no home interior to
       // enter), so they are not somebody the player can speak to from the street either.
       if (person.down || person.atHome) continue;
@@ -5896,7 +9591,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function knownSpells(character) {
     if (!spellLibrary) return [];
     return knownSpellsOf(character)
-      .map((name) => spellFromLibrary(spellLibrary, name))
+      .map((name) => customSpell(character, name) ?? spellFromLibrary(spellLibrary, name))
       .filter(Boolean);
   }
 
@@ -6047,6 +9742,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       level: player.level, gained: taken.health, points: taken.character.lastLevel.points,
       spent: taken.spent, unspent: taken.character.lastLevel.unspent, refused: taken.refused,
     };
+    // **The panel goes away when the level is taken.** `levelUp = null` above is the state half;
+    // the page half is `renderLevelUp`, and without this call the DOM kept `class="on"` and the
+    // panel stayed on the screen until a reload — the owner's *"when i click enter to level up
+    // the level up screen doesnt disappear and remains there untill reload"*. It only looked
+    // right when another level was owed (`beginLevelUp` re-renders below) or when the row was
+    // postponed with `Escape`, which removes the class by hand.
+    renderLevelUp();
     const still = pendingLevels(player);
     // **The install's own fanfare, at the event it is for** (`FANFARE1.VOC`, Arena's level-up
     // cue). It used to be played as a boot greeting instead — see `updateCombatHud`'s note —
@@ -6069,9 +9771,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function toggleInventory(force, mode) {
     const el = document.getElementById('inventory');
     if (!el) return null;
-    if (mode) panelMode = mode === 'spells' ? 'spells' : 'bag';
+    if (mode) { panelMode = ['spells', 'portrait', 'mirror'].includes(mode) ? mode : 'bag'; searchedCorpse = null; homeChestOpen = false; }
     const on = typeof force === 'boolean' ? force : !el.classList.contains('on');
     el.classList.toggle('on', on);
+    el.classList.toggle('portrait-mode', on && panelMode === 'portrait');
+    if (!on) homeChestOpen = false;
     if (on) updateInventoryPanel();
     dbg.inventoryOpen = on;
     dbg.panelMode = panelMode;
@@ -6083,6 +9787,129 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const el = document.getElementById('inventory');
     const showing = Boolean(el?.classList.contains('on')) && panelMode === 'bag';
     return toggleInventory(showing ? false : true, 'bag');
+  }
+
+  function openPortrait() {
+    const showing = panelIsOpen('inventory') && panelMode === 'portrait';
+    document.exitPointerLock?.();
+    keys.clear(); pressed.clear();
+    return toggleInventory(!showing, 'portrait');
+  }
+
+  let portraitRender = 0;
+  function renderPortrait() {
+    const revision = ++portraitRender;
+    const el = document.getElementById('inventory');
+    el.classList.add('portrait-mode');
+    dbg.portraitError = null;
+    el.innerHTML = `<h2>${escapeHtml(player.name)} — Arena character portrait</h2>`
+      + '<p class="hint">Original race, face and equipped-item artwork. Click the face to change it; this changes appearance only.</p>'
+      + '<canvas id="character-portrait" width="320" height="200" style="image-rendering:pixelated;cursor:pointer" aria-label="Original Arena character and equipment"></canvas>'
+      + '<p><button data-face="next">Next face</button> <button data-panel="bag">Equipment (I)</button> <button data-portrait-close="true">Close (P)</button></p>';
+    const canvas = el.querySelector('canvas');
+    drawCharacterPortrait(canvas, data, player).then((portrait) => {
+      if (!canvas.isConnected || revision !== portraitRender) return;
+      dbg.portrait = portrait;
+      canvas.addEventListener('click', (event) => {
+        const bounds = canvas.getBoundingClientRect();
+        const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
+        const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
+        const h = portrait.head;
+        if (x >= h.x && x < h.x + h.width && y >= h.y && y < h.y + h.height) nextPortraitFace();
+      }, { signal });
+    }).catch((error) => {
+      dbg.portraitError = error.message;
+      if (canvas.isConnected) canvas.replaceWith(document.createTextNode(`Portrait unavailable: ${error.message}`));
+    });
+    return { mode: 'portrait' };
+  }
+
+  /**
+   * The body behind the mirror — Arena's own crowd sheets, the same catalogue the creator
+   * offers, in a page a player can open from their own house.
+   *
+   * The owner, 2026-10-21: *"add a mirror wall inside the house … that if you click you can
+   * change your third person character again like in character creation"*. This is the same
+   * choice the creator makes (`game/playerAppearance.js`'s `NPC_SPRITES`), limited to what the
+   * install's own roster draws and saved as `player.appearance`; the scene then re-dresses the
+   * third-person figure the way `populate` does at load (`dressPlayer`), so the change is on
+   * the body before the panel closes.
+   *
+   * @returns {{mode: 'mirror', selected: string, choices: number}}
+   */
+  function renderMirror() {
+    const el = document.getElementById('inventory');
+    if (!el) return null;
+    el.classList.remove('portrait-mode');
+    const look = normalizeAppearance(player.appearance, player);
+    const sprite = spriteById(look.spriteId);
+    el.innerHTML = '<h2>Your mirror — choose the body you wear</h2>'
+      + '<p class="hint">Arena\'s own crowd sheets, painted in the skin you chose. This changes the third-person figure only.</p>'
+      + '<div class="look-grid">' + NPC_SPRITES.map((choice) => '<button class="look-choice'
+        + (choice.id === look.spriteId ? ' on' : '') + '" data-mirror-sprite="' + escapeHtml(choice.id)
+        + '" title="' + escapeHtml(choice.note ?? choice.id) + '">' + escapeHtml(choice.name ?? choice.id) + '</button>').join('')
+      + '</div>'
+      + '<p><button data-mirror-close="true">Step away</button></p>';
+    dbg.mirror = { open: true, selected: look.spriteId, sheet: sprite?.walk(1) ?? null };
+    return { mode: 'mirror', selected: look.spriteId, choices: NPC_SPRITES.length };
+  }
+
+  async function openMirror() {
+    document.exitPointerLock?.();
+    keys.clear(); pressed.clear();
+    panelMode = 'mirror';
+    const el = document.getElementById('inventory');
+    el.classList.add('on');
+    dbg.inventoryOpen = true;
+    dbg.panelMode = 'mirror';
+    updateInventoryPanel();
+    return true;
+  }
+
+  /**
+   * Put the chosen body on the third-person figure without reloading the level.
+   *
+   * `populate` dresses the player for a level; the mirror has to do the same work on a page
+   * that is already standing, so this is that block, by name: every shipped angle under the
+   * chosen skin, then the strike sheet.
+   */
+  async function dressPlayer() {
+    const look = normalizeAppearance(player.appearance, player);
+    playerLook = look;
+    const spec = appearanceSkinSpec(look, player);
+    const sprite = spriteById(look.spriteId);
+    playerSets.clear();
+    playerSet = null; attackSet = null; attackFrames = null;
+    for (let angle = 1; angle <= 5; angle++) {
+      const set = await loadSpriteSet(appearanceWalkFile(look, angle, player), 1, spec);
+      if (!set) continue;
+      set.layout = sprite?.layout ?? 'action';
+      playerSets.set(angle, set);
+    }
+    playerSet = playerSets.get(BACK_VIEW) ?? [...playerSets.values()][0] ?? null;
+    const strike = appearanceAttack(look, player);
+    if (strike) {
+      attackSet = await loadSpriteSet(strike.file, 1, spec);
+      attackFrames = strike.frames;
+    }
+    dbg.playerView = playerSet?.file ?? null;
+    return look;
+  }
+
+  async function chooseMirrorBody(id) {
+    if (!spriteById(id)) return false;
+    player = { ...player, appearance: normalizeAppearance({ ...(player.appearance ?? {}), spriteId: id }, player) };
+    savePlayer();
+    await dressPlayer();
+    updateInventoryPanel();
+    showNotice('The mirror agrees with you.', 2200);
+    return true;
+  }
+
+  function nextPortraitFace() {
+    player = { ...player, portraitFace: ((Number(player.portraitFace) || 0) + 1) % (dbg.portrait?.faceCount || 10) };
+    savePlayer();
+    renderPortrait();
   }
 
   /** `C`: the spellbook. The file is read before the page is drawn, once. */
@@ -6097,9 +9924,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /** One row of the pack: what it is, what it does, and what can be done with it. */
   function bagRow(row) {
     const trade = shopTrade();
+    // **A pinned thing says `Unpin`.** The pack is where a pin is made, so it is where it is
+    // taken back; the right-click on the cell stays as the quicker hand.
+    const pinned = slotOf(player, 'item', row.id) >= 0;
     const buttons = [
-      ['weapon', 'armour', 'shield'].includes(row.kind) ? `<button data-bag="${escapeHtml(row.id)}" data-do="equip">Equip</button>` : '',
-      ['potion', 'scroll'].includes(row.kind) ? `<button data-bag="${escapeHtml(row.id)}" data-do="use">Use</button>` : '',
+      ['weapon', 'armour', 'shield', 'jewelry'].includes(row.kind) ? `<button data-bag="${escapeHtml(row.id)}" data-do="equip">Equip</button>` : '',
+      (['potion', 'scroll'].includes(row.kind) || itemById(row.id)?.artifact || player.enchantments?.[row.id]) ? `<button data-bag="${escapeHtml(row.id)}" data-do="use">Use</button>` : '',
+      pinned
+        ? `<button data-bag="${escapeHtml(row.id)}" data-do="unpin" title="Take this off the hotbar">Unpin</button>`
+        : `<button data-bag="${escapeHtml(row.id)}" data-do="pin" title="Pin this to the hotbar">Pin</button>`,
       trade && buys(trade, row.kind) ? `<button data-bag="${escapeHtml(row.id)}" data-do="sell">Sell</button>` : '',
       `<button data-bag="${escapeHtml(row.id)}" data-do="drop">Drop</button>`,
     ].filter(Boolean).join(' ');
@@ -6113,11 +9946,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const check = canCast(player, entry);
     const element = entry.element && entry.element !== 'none' ? ` · ${entry.element}` : '';
     return `<li><b>${escapeHtml(entry.name)}</b> <span class="sub">${escapeHtml(entry.note)} · ${cost} spell points${element}</span>`
-      + ` <button data-cast="${escapeHtml(entry.name)}"${check.ok ? '' : ` title="${escapeHtml(check.reason ?? '')}"`}>Cast</button></li>`;
+      + ` <button data-cast="${escapeHtml(entry.name)}"${check.ok ? '' : ` title="${escapeHtml(check.reason ?? '')}"`}>Cast</button>`
+      + (slotOf(player, 'spell', entry.name) >= 0
+        ? ` <button data-unpin-spell="${escapeHtml(entry.name)}" title="Take this spell off the hotbar">Unpin</button>`
+        : ` <button data-pin-spell="${escapeHtml(entry.name)}" title="Pin this spell to the hotbar">Pin</button>`)
+      + '</li>';
   }
 
   /** Everything the shop the player is standing in will sell them. */
   function shelfSection(kind) {
+    // **A room with no trade has no shelf.** The pack is opened in dungeons, houses and
+    // palaces as well as at counters, and this used to print "This trade carries nothing to
+    // haggle over" in every one of them — a shop's apology in a place that is not a shop.
+    if (!kind) return '';
     const rows = shopShelf().items.filter((row) => row.qty > 0);
     const empty = shopShelf().items.length && !rows.length
       ? '<p class="sub">The shelf is bare — sold down to nothing this visit.</p>' : '';
@@ -6141,6 +9982,76 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       + '</ul>';
   }
 
+  // ── the house chest (`game/playerHouse.js`) ────────────────────────────────
+  //
+  // The owner asked for *"a functional chest"* in a bought house. A chest that pays out one
+  // random find and is empty for ever is not a chest; this one is **storage**. Its contents
+  // live on the character (`player.homeChest`, a bag of the same shape as their pack), so they
+  // are saved with everything else, and the page is the pack's own row shape with a Store
+  // button on the left and a Take button on the right.
+
+  /** Open the house chest page. Called by `E` on the chest (and by `lootNear`'s spot). */
+  function openHomeChest() {
+    homeChestOpen = true;
+    searchedCorpse = null;
+    playSfx('chest');
+    toggleInventory(true);
+    return true;
+  }
+
+  /** What the house chest holds, as a bag (a save from before the chest has none). */
+  function homeChestBag() {
+    return Array.isArray(player.homeChest) ? player.homeChest : [];
+  }
+
+  /** Render the chest: the pack on the left, the chest on the right, one item a press. */
+  function renderHomeChest() {
+    const el = document.getElementById('inventory');
+    if (!el) return null;
+    const pack = bagRows(bagOf());
+    const chest = bagRows(homeChestBag());
+    const row = (entry, action, label) => `<li><b>${escapeHtml(entry.name)}</b>${entry.qty > 1 ? ` ×${entry.qty}` : ''} `
+      + `<span class="sub">${escapeHtml(entry.note)}</span> `
+      + `<button data-home="${action}" data-item="${escapeHtml(entry.id)}">${label}</button></li>`;
+    el.innerHTML = `<h2>Your chest — ${escapeHtml(player.house?.city ?? 'your house')}</h2>`
+      + `<p class="stat">${carriedWeight(player, bagOf()).toFixed(1)} / ${maxCarryWeight(player).toFixed(0)} kg carried · ${chest.length} kind${chest.length === 1 ? '' : 's'} stored</p>`
+      + `<h3>In the chest</h3>` + (chest.length
+        ? `<ul>${chest.map((entry) => row(entry, 'take', 'Take')).join('')}</ul>`
+        : '<p class="sub">The chest is empty. Store what you do not want to carry.</p>')
+      + `<h3>In your pack</h3>` + (pack.length
+        ? `<ul>${pack.map((entry) => row(entry, 'store', 'Store')).join('')}</ul>`
+        : '<p class="sub">Your pack is empty.</p>')
+      + '<p class="hint">Store and Take move one at a time · Escape closes the chest</p>';
+    dbg.panel = { mode: 'homeChest', pack: pack.length, chest: chest.length, city: player.house?.city ?? null };
+    return dbg.panel;
+  }
+
+  /** Put one thing from the pack in the chest. */
+  function storeInHomeChest(id) {
+    const bag = bagOf();
+    if (!countInBag(bag, id)) return false;
+    const left = removeFromBag(bag, id, 1);
+    player = { ...player, bag: left, homeChest: addToBag(homeChestBag(), id, 1) };
+    const off = takeOffIfLast(id, left);
+    savePlayer();
+    playSfx('ui');
+    if (off) showNotice(off, 2400);
+    updateInventoryPanel();
+    return true;
+  }
+
+  /** Take one thing out of the chest — if the back can bear it. */
+  function takeFromHomeChest(id) {
+    if (!countInBag(homeChestBag(), id)) return false;
+    const room = carryStatus(player, bagOf(), id, 1);
+    if (!room.ok) { showNotice(room.reason, 3000); return false; }
+    player = { ...player, bag: addToBag(bagOf(), id, 1), homeChest: removeFromBag(homeChestBag(), id, 1) };
+    savePlayer();
+    playSfx('pickup');
+    updateInventoryPanel();
+    return true;
+  }
+
   /**
    * Rebuild the panel from the live character, bag, spellbook and shop.
    *
@@ -6154,16 +10065,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function updateInventoryPanel() {
     const el = document.getElementById('inventory');
     if (!el) return null;
+    if (panelMode === 'portrait') return renderPortrait();
+    if (panelMode === 'mirror') return renderMirror();
+    el.classList.remove('portrait-mode');
+    if (homeChestOpen) return renderHomeChest();
+    if (searchedCorpse) {
+      const rows = corpseRows(searchedCorpse.loot);
+      el.innerHTML = `<h2>Search ${escapeHtml(searchedCorpse.monster.name)}</h2>`
+        + (rows.length ? `<ul>${rows.map((row) => `<li>${escapeHtml(row.name)} ×${row.qty} <button data-corpse="${escapeHtml(row.id)}">Take ${escapeHtml(row.name)}</button></li>`).join('')}</ul><button data-corpse="all">Take all</button>` : '<p>The body is empty.</p>')
+        + '<p><button data-corpse-close="true">Close</button> · Escape to return</p>';
+      return { mode: 'corpse', rows: rows.length };
+    }
     const bag = bagOf();
     resolveKnownSpells();
     const kind = shopTrade();
-    const held = weaponHeld(player);
     const sections = carried(player, {
       quest,
       kills,
       xp,
       day: radiant.day ?? 0,
       side: radiant.active?.title ?? null,
+      bag,
     });
     const carriedHtml = sections.map((section) => `<h3>${escapeHtml(section.section)}</h3><ul>`
       + section.rows.map((row) => `<li><b>${escapeHtml(row.name)}</b> <span class="sub">${escapeHtml(row.note)}</span></li>`).join('')
@@ -6171,9 +10093,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const head = `<h2>${escapeHtml(player.name)} — ${panelMode === 'spells' ? 'your spellbook' : 'what you carry'}</h2>`
       + `<p class="hint"><button data-panel="bag">Pack (I)</button> <button data-panel="spells">Spells (C)</button>`
       + (kind ? ` · ${escapeHtml(SERVICE_KINDS[kind]?.name ?? kind)}` : '') + '</p>'
+      // **The counter, said out loud.** The shop lives here (`shelfSection`), so the page says so:
+      // otherwise a player stands at a smith, presses `E` at the door, and never learns that the
+      // trade is one key away (`I`). The owner, 2026-10-22: *"it needs to be clear that you need
+      // to open the inventory to interact with shops"*.
+      + (kind ? `<p class="hint shop-lede">This is the counter. The shelf below is what the keeper sells; every row in your pack has a Sell button; the keeper's own line is behind <b>T</b>. Buying and selling work in this pack, and only while you stand in the trade's building.</p>` : '')
+      // **The vitals only.** The weapon, the purse, the armour and the weight are the first
+      // block below (`inventory.js`'s `carried`), and printing them twice made the page's own
+      // top line the longest thing on it.
       + `<p class="stat"><span class="gold">${player.gold ?? 0} gold</span> · <b>${player.health ?? 0}</b>/${player.maxHealth ?? 0} health`
       + (player.spellPoints == null ? ' · no spell points' : ` · <b>${player.spellPoints}</b>/${player.maxSpellPoints ?? player.spellPoints} spell points`)
-      + ` · ${armourRating(player)} armour · in hand: ${escapeHtml(held.item.name)} (${escapeHtml(held.material.name)}) ${held.min}–${held.max} damage</p>`;
+      + '</p>';
 
     let body;
     let spells = 0;
@@ -6205,7 +10135,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     }
     const shelfRows = shelfSection(kind);
     if (shelfRows) shelf += (shopShelf().items ?? []).length;
-    body += shelfRows + serviceSection(kind);
+    body += shelfRows + serviceSection(kind) + craftingSection(kind);
     el.innerHTML = head + body
       + `<p class="hint">I the pack · C the spellbook · Z casts the spell you read last · Escape puts this away</p>`
       + `<p class="hint">${escapeHtml(HIT_FORMULA_NOTE)} ${escapeHtml(CASTING_NOTE)}</p>`;
@@ -6232,6 +10162,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const button = e.target?.closest?.('button');
     if (!button) return;
     const data = button.dataset ?? {};
+    if (data.makeSpell) { void createCustomSpell(); return; }
+    if (data.enchantItem) { void applyEnchantment(); return; }
+    if (data.repairItem) { submitRepair(data.repairItem); return; }
+    if (data.collectRepairs) { collectSmithRepairs(); return; }
+    if (data.oghmaStat) { allocateOghma(Number(data.oghmaStat)); return; }
+    if (data.face) { nextPortraitFace(); return; }
+    // **The mirror's own page** (`renderMirror`): a body chosen here is saved and dressed at
+    // once, and the page stays open so a player can try another without walking back to it.
+    if (data.mirrorSprite) { void chooseMirrorBody(data.mirrorSprite); return; }
+    if (data.mirrorClose) { panelMode = 'bag'; toggleInventory(false); return; }
+    if (data.portraitClose) { toggleInventory(false); return; }
+    if (data.corpse) { takeFromCorpse(data.corpse); return; }
+    if (data.corpseClose) { searchedCorpse = null; toggleInventory(false); return; }
+    if (data.home) {
+      if (data.home === 'close') { homeChestOpen = false; toggleInventory(false); }
+      else if (data.home === 'store') storeInHomeChest(data.item);
+      else if (data.home === 'take') takeFromHomeChest(data.item);
+      return;
+    }
     if (data.panel) {
       panelMode = data.panel === 'spells' ? 'spells' : 'bag';
       if (panelMode === 'spells') void ensureSpellLibrary().then(() => updateInventoryPanel());
@@ -6242,9 +10191,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (data.do === 'use') void useThing(data.bag);
       else if (data.do === 'drop') void dropThing(data.bag);
       else if (data.do === 'sell') void sellThing(data.bag);
+      else if (data.do === 'pin') pinItem(data.bag);
+      else if (data.do === 'unpin') unpinThing('item', data.bag);
       else void equipThing(data.bag);
       return;
     }
+    if (data.pinSpell) { pinSpell(data.pinSpell); return; }
+    if (data.unpinSpell) { unpinThing('spell', data.unpinSpell); return; }
     if (data.cast) void castSpell(data.cast);
     else if (data.goods) void buyThing(data.goods);
     else if (data.haggle) void haggleThing(data.haggle);
@@ -6252,8 +10205,108 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     else if (data.service) void takeService(data.service);
   }, { signal });
 
+  function craftingSection(kind) {
+    const rows = bagRows(bagOf());
+    let html = '';
+    if (kind === 'equipment') {
+      html += '<h3>Smith repairs</h3><p>Leave an item, then return to this smith after the quoted time. Prices are reconstructed.</p>'
+        + '<label>Turnaround <select id="repair-days"><option value="10">10 days (standard)</option><option value="5">5 days (double price)</option><option value="1">1 day (tenfold price)</option></select></label><ul>'
+        + rows.filter(r => repairQuote(player, r.id)).map(r => `<li>${escapeHtml(r.name)} — ${equipmentCondition(player,r.id)}% condition <button data-repair-item="${r.id}">Repair (standard ${repairQuote(player,r.id).cost} gold)</button></li>`).join('') + '</ul>'
+        + `<p>${(player.repairs ?? []).filter(r=>r.smith===smithIdentity()).map(r=>`${escapeHtml(itemById(r.id)?.name ?? r.id)}: ready day ${r.ready}`).join('<br>')}</p><button data-collect-repairs="yes">Collect completed repairs</button>`;
+    }
+    if (kind === 'mages' && spellLibrary) {
+      const options = spellLibrary.spells.filter(s=>s.effects.length).flatMap(s=>s.effects.map((e,i)=>`<option value="${escapeHtml(s.name)}|${i}">${escapeHtml(s.name)}: ${escapeHtml(e.kind)}</option>`)).join('');
+      html += '<h3>Spellmaker</h3><p>Up to three effects, 32 custom spells. Magnitudes and prices use this port’s spell model; all effects must share a target type.</p><label>Name <input id="custom-spell-name" maxlength="32"></label>'
+        + [0,1,2].map(i=>`<p><label>Effect ${i+1} <select id="custom-effect-${i}"><option value="">None</option>${options}</select></label> <label>Magnitude <input id="custom-power-${i}" type="number" min="1" max="100" value="1" style="width:4em"></label></p>`).join('')
+        + '<button data-make-spell="yes">Create spell (2 gold per base spell point)</button>'
+        + '<h3>Enchant equipment — extension</h3><p>Requested extra service, not an original Arena spellmaker feature. Activated enchantments use charges.</p>'
+        + `<select id="enchant-item">${rows.filter(r=>!itemById(r.id)?.artifact && ['weapon','armour','shield'].includes(r.kind)).map(r=>`<option value="${r.id}">${escapeHtml(r.name)}</option>`).join('')}</select>`
+        + `<select id="enchant-spell">${knownSpells(player).map(s=>`<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join('')}</select><button data-enchant-item="yes">Enchant (10 gold per spell point, minimum 100)</button>`;
+    }
+    if (player.oghmaPoints > 0) html += `<h3>Oghma Infinium — ${player.oghmaPoints} points to assign</h3>` + ATTRIBUTES.map((a,i)=>`<button data-oghma-stat="${i}">${escapeHtml(a.name)} +1</button>`).join(' ');
+    return html;
+  }
+  function smithIdentity() { return `${mapName}:${shopSeed()}`; }
+  async function createCustomSpell() {
+    if (shopTrade() !== 'mages') return false;
+    await ensureSpellLibrary();
+    const effects = [0,1,2].flatMap(i=>{
+      const value=document.getElementById(`custom-effect-${i}`)?.value;
+      if(!value) return [];
+      const [spell,index]=value.split('|');
+      return [{spell,index:Number(index),power:Number(document.getElementById(`custom-power-${i}`).value)}];
+    });
+    const result=makeSpell(player,spellLibrary,{name:document.getElementById('custom-spell-name')?.value,effects});
+    if(!result.ok) {showNotice(result.reason,3500);return false;}
+    player=result.character;savePlayer();updateInventoryPanel();showNotice(`${result.spell.name} added to your spellbook for ${result.cost} gold.`,3500);return true;
+  }
+  async function applyEnchantment() {
+    if(shopTrade()!=='mages') return false;
+    await ensureSpellLibrary();
+    const id=document.getElementById('enchant-item')?.value;
+    const name=document.getElementById('enchant-spell')?.value;
+    const spell=customSpell(player,name)??spellFromLibrary(spellLibrary,name);
+    const result=enchantEquipment(player,bagOf(),id,spell);
+    if(!result.ok){showNotice(result.reason,3500);return false;}
+    player=result.character;savePlayer();updateInventoryPanel();return true;
+  }
+  function submitRepair(id) {
+    if(shopTrade()!=='equipment')return false;
+    const result=orderRepair(player,bagOf(),id,clockNow().day+(clockNow().turned??0),Number(document.getElementById('repair-days')?.value??10),smithIdentity());
+    if(!result.ok){showNotice(result.reason,3500);return false;}
+    player=result.character;setBag(result.bag);savePlayer();weaponRig.reset(player.weapon);void loadWeaponArt();updateInventoryPanel();return true;
+  }
+  function collectSmithRepairs() {
+    if(shopTrade()!=='equipment')return false;
+    const result=collectRepairs(player,bagOf(),clockNow().day+(clockNow().turned??0),smithIdentity());
+    player=result.character;setBag(result.bag);savePlayer();updateInventoryPanel();showNotice(result.ok?`${result.count} repaired item(s) returned.`:'No repairs ready at this smith.',3000);return result.ok;
+  }
+  function allocateOghma(index) {
+    if(!(player.oghmaPoints>0)||!ATTRIBUTES[index])return false;
+    const values=Array.isArray(player.attributes)?player.attributes.slice():{...player.attributes};
+    const key=Array.isArray(values)?index:ATTRIBUTES[index].key;
+    if((values[key]??0)>=100)return false;
+    values[key]=(values[key]??0)+1;player={...player,attributes:values,oghmaPoints:player.oghmaPoints-1};savePlayer();updateInventoryPanel();return true;
+  }
+  async function useEnchantedItem(id) {
+    if(!countInBag(bagOf(),id))return false;
+    const artifact=artifactById(id);
+    if(artifact && !canUseArtifact(player,id)){showNotice(`Your class cannot use ${artifact.name}.`,3000);return false;}
+    const day=clockNow().day + (clockNow().turned ?? 0);
+    if(artifact?.utility){
+      if(player.artifactDays?.[id]===day){showNotice('This artifact can be used once per day.',3000);return false;}
+      if(artifact.utility==='gold'){
+        const result=useOrgnumsCoffer(player,day,1+battle.nextBelow(100));
+        if(!result.ok)return false;
+        player=result.character;
+        if(result.exhausted){const left=removeFromBag(bagOf(),id);setBag(left);takeOffIfLast(id,left);}
+        showNotice(`${result.gold} gold appears in the Coffer.${result.exhausted ? ' Its power spent, the Coffer disappears.' : ''}`,3000);
+      }
+      if(artifact.utility==='attributes'){const left=removeFromBag(bagOf(),id);player={...player,oghmaPoints:50};setBag(left);takeOffIfLast(id,left);}
+      if(artifact.utility==='unlock'){
+        const leaf=leafNear();
+        if(!leaf || !leaf.locked || leaf.lockLevel>25){showNotice('The Key opens one locked door of level 25 or lower.',3000);return false;}
+        const palaceCell=/^IMPPAL/i.test(mapName)&&current.index===3&&leaf.row===24&&leaf.col===21&&quest.pieces>=8;
+        const opened=shiftLock(true);showNotice(opened,3000);
+        if(palaceCell){quest={...quest,skeletonKey:true};saveQuestState(quest);refreshObjective();}
+      }
+      player={...player,artifactDays:{...(player.artifactDays??{}),[id]:day}};
+      savePlayer();updateInventoryPanel();return true;
+    }
+    const charges=Number(player.itemCharges?.[id]??100);
+    if(charges<=0||equipmentCondition(player,id)<=0){showNotice('This item needs a smith to restore its charge and condition.',3000);return false;}
+    if(artifact?.onHit==='volendrung'){showNotice('Volendrung releases its enchantment when a blow lands.',3000);return false;}
+    const entry=artifact?artifactSpell(artifact,player.level):player.enchantments[id];
+    if(!entry)return false;
+    const result=await castSpell(entry.name,{fromScroll:true,entry});
+    if(!result.ok)return false;
+    player=wearEquipment({...player,itemCharges:{...(player.itemCharges??{}),[id]:charges-1}, enchantedUntil:dbg.seconds+30},id);
+    savePlayer();updateInventoryPanel();return true;
+  }
+
   /** Equip something out of the pack, and put it in the player's hands. */
   async function equipThing(id) {
+    if (equipmentCondition(player,id)<=0) {showNotice('That equipment is broken; a smith must repair it.',3000);return false;}
     const result = equipFromBag(player, bagOf(), id);
     if (!result.ok) { showNotice(result.reason, 2400); return false; }
     player = result.character;
@@ -6273,6 +10326,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /** Drink a potion, or read a scroll — and cast what the scroll carries. */
   async function useThing(id) {
+    if (itemById(id)?.artifact || player.enchantments?.[id]) return useEnchantedItem(id);
     const result = useFromBag(player, bagOf(), id);
     if (!result.ok) { showNotice(result.reason, 2400); return false; }
     player = result.character;
@@ -6283,6 +10337,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     setBag(result.bag);
     savePlayer();
     dbg.lastItem = { do: 'use', id, note: result.note, effect: result.effect ?? null };
+    // A draught or a scroll still in the pack after the dose is a cell filled; the last one
+    // drunk does not leave a dead cell behind.
+    // Using a thing does **not** pin it: the bar is the player's own shelf, filled only by
+    // the pack's `Pin` button.
     showNotice(result.note, 2800);
     updateCombatHud();
     updateInventoryPanel();
@@ -6291,6 +10349,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (result.effect?.kind === 'spell' && result.effect.spell) {
       await castSpell(result.effect.spell, { fromScroll: true });
     }
+    // **The draughts that touch the body's own bars.** `useFromBag` is pure and hands the
+    // dose back; the fight's stamina bar and the scene's light live here.
+    if (result.effect?.kind === 'stamina') {
+      defence.stamina.stamina = Math.min(staminaMax(player),
+        (Number(defence.stamina.stamina) || 0) + (Number(result.effect.power) || 0));
+      defence.stamina.regenIn = 0;
+    }
+    if (result.effect?.kind === 'freeAction' || result.effect?.kind === 'purify') heldUntil = 0;
+    if (result.effect?.kind === 'invisibility') dbg.invisible = true;
+    if (result.effect?.kind === 'strength' || result.effect?.kind === 'invisibility') updateCombatHud();
     return true;
   }
 
@@ -6299,11 +10367,33 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const result = dropFromBag(bagOf(), id);
     if (!result.dropped) { showNotice('There is nothing like that in the pack.', 2000); return false; }
     setBag(result.bag);
+    const off = takeOffIfLast(id, result.bag);
     savePlayer();
-    showNotice(`${result.dropped.name} dropped.`, 2000);
-    dbg.lastItem = { do: 'drop', id };
+    showNotice(`${result.dropped.name} dropped.${off ? ` ${off}` : ''}`, 2400);
+    dbg.lastItem = { do: 'drop', id, unequipped: Boolean(off) };
     updateInventoryPanel();
     return true;
+  }
+
+  /**
+   * **Whatever leaves the pack leaves the body.** A weapon, a shield, a cuirass or a ring is
+   * *in the pack and on the character* at once (`items.js`'s `equipFromBag`), so the last copy
+   * going out by any door — a sale, the ground, the chest at home, an artifact burning out —
+   * must also come off the hand or the body. The owner, 2026-10-22: *"you should not still have
+   * things that left your inventory by dropping selling or whatever method equipped anymore"*.
+   * `unequipItem` is the one law for all four; this is the scene's door into it.
+   *
+   * @param {string} id
+   * @param {object[]} bag  the bag **after** the thing left it
+   * @returns {string} the line to append to the notice, or '' when nothing came off
+   */
+  function takeOffIfLast(id, bag) {
+    if (countInBag(bag, id) > 0) return '';
+    const off = unequipItem(player, id);
+    if (!off.unequipped.length) return '';
+    player = off.character;
+    dbg.lastUnequip = { id, slots: [...off.unequipped] };
+    return off.note;
   }
 
   /** Sell something to the shop the player is standing in. */
@@ -6336,6 +10426,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     player = result.character;
     setBag(result.bag);
     stockTaken[id] = (stockTaken[id] ?? 0) + 1;
+    // Something a shop sells to be used — a draught, a scroll — is worth a cell the moment it
+    // is bought; a sword is worn, not pressed, so it stays out of the bar.
+    // Buying something does not pin it either — the player chooses what the bar holds.
     savePlayer();
     showNotice(result.note, 2600);
     dbg.lastTrade = { do: 'buy', id, cost: result.cost, factor: visitHaggle?.factor ?? 1 };
@@ -6405,19 +10498,73 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const result = rest(player, { kind: 'tavern' });
     if (!result.ok) { showNotice(result.reason, 2600); return false; }
     player = result.character;
-    radiant = advanceDays(radiant, result.days);
-    saveRadiantState(radiant);
+    // **The room you rented is a room, not the taproom floor** (the owner, 2026-10-19: *"resting
+    // at an inn should also teleport you to the room you rented"*). A tavern is one interior and
+    // the install does not label a rented chamber, so the scene picks the quietest standable
+    // cell away from the arrival and the drinkers — deterministic per tavern and per day, so the
+    // same room is the one the player returns to. `dbg.lastRest.room` names it for a check.
+    const room = rentedRoomCell();
+    if (room) current.motor.spawn((room.row + 0.5) * CELL_SIZE, current.level.floorY * CELL_SIZE, (room.col + 0.5) * CELL_SIZE);
+    // A room is rented until tomorrow morning, not a free heal at the same hour.
+    const before = clockNow();
+    passRestTime(1440 - before.minutes + 8 * 60);
     savePlayer();
-    showNotice(result.note, 3400);
-    dbg.lastRest = { cost: result.cost, days: result.days, day: radiant.day };
+    playSfx('rest');
+    showNotice(room
+      ? `${result.note} You wake in the room you rented.`
+      : result.note, 3400);
+    dbg.lastRest = { cost: result.cost, days: result.days, day: radiant.day, room };
     updateCombatHud();
     updateObjectiveHud();
     updateInventoryPanel();
+    // **A sleep is where Ria finds you** (UESP: the dreams come when the player rests). The dream
+    // the quest owes plays over the room, and the movie holds the world while it does.
+    void maybeDreamScene();
     return true;
+  }
+
+  /**
+   * The quietest cell of a tavern: the room the player paid for.
+   *
+   * Standable, at least three cells from the arrival, and not within a stride of anybody
+   * drinking or working — then the farthest of those, with a seeded pick among the top few so
+   * two taverns do not both hand out their coldest corner. A single-room tavern (no candidate)
+   * answers null and the player simply rests where they stand.
+   *
+   * @returns {{row: number, col: number}|null}
+   */
+  function rentedRoomCell() {
+    const level = current?.level;
+    if (!level?.cells?.length) return null;
+    const spawnRow = Math.floor(Number(current.spawn?.x) || level.width / 2);
+    const spawnCol = Math.floor(Number(current.spawn?.z) || level.depth / 2);
+    const others = townsfolk.filter((person) => !person.down).map((person) => ({
+      row: person.place?.row ?? person.home?.row ?? 0,
+      col: person.place?.col ?? person.home?.col ?? 0,
+    }));
+    const candidates = [];
+    for (let row = 0; row < level.depth; row++) {
+      for (let col = 0; col < level.width; col++) {
+        if (!walkableCell(row, col)) continue;
+        const distance = Math.hypot(row - spawnRow, col - spawnCol);
+        if (distance < 3) continue;
+        if (others.some((other) => Math.hypot(row - other.row, col - other.col) < 2)) continue;
+        candidates.push({ row, col, distance });
+      }
+    }
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => b.distance - a.distance || a.row - b.row || a.col - b.col);
+    const random = new ArenaRandom((shopSeed() + (radiant.day ?? 0) * 17 + 7) >>> 0 || 1);
+    const pick = candidates[random.nextBelow(Math.min(6, candidates.length))];
+    return { row: pick.row, col: pick.col };
   }
 
   // Reconstructed camping rule: exposed or threatened rest is refused. Time and
   // deadlines advance, but encounters are not repopulated until the next entry.
+  // How long a camp's hunt lasts, in seconds: the deadline `stirTheLevel` marks on a creature
+  // it rouses (`encounters.js`'s `HUNT_SECONDS`), and the run (`HUNT_RUN`) times it times the
+  // creature's walk is the reach a camp is heard at.
+  let huntArrivalTold = false;   // one arrival line per camp, not one per creature
   function restHere() {
     if (shopTrade() === 'tavern') return restIn();
     const feet = feetOf();
@@ -6428,6 +10575,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (threatened || defence.rollT < DODGE.seconds || swingCooldown > 0) {
       showNotice('You cannot rest while enemies threaten you.', 2400); return false;
     }
+    // **A bought house is a home.** The owner's own house is the one place in a city a player
+    // may sleep without paying an inn, which is the whole reason the deed exists.
+    if (ownedHouseHere()) {
+      player = { ...player, health: player.maxHealth ?? player.health,
+        ...(player.maxSpellPoints != null ? { spellPoints: player.maxSpellPoints } : {}) };
+      const beforeHome = clockNow();
+      const afterHome = passRestTime(8 * 60);
+      savePlayer();
+      playSfx('rest');
+      dbg.lastRest = { cost: 0, days: afterHome.day - beforeHome.day, hours: 8, day: radiant.day, home: true };
+      showNotice('You sleep in your own bed. The house is yours; no coin changes hands.', 3400);
+      updateCombatHud(); updateObjectiveHud(); updateInventoryPanel();
+      return true;
+    }
     if (current.city || entryCell) {
       showNotice('Rent a room at a tavern to rest in town — speak to the keeper, or press R inside.', 3200); return false;
     }
@@ -6437,30 +10598,48 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // ── the level hears you ────────────────────────────────────────────────────
     //
     // **A dungeon is not a hotel.** In Arena a camp in a quiet corridor is heard: the
-    // creatures standing somewhere in the level walk to the sleeper, and what wakes the
-    // player is company rather than a night's rest — the owner's report (2026-10-16):
-    // "resting spawns enemies or moves enemies to you in normal arena and perfectarena
-    // doesnt". So the sleep is rolled against the level's own living creatures
-    // (`encounters.js`'s `stirTheLevel`): if any is left alive, it comes, and the rest is
-    // **disturbed** — the day still passes (the calendar is the same clock a job's deadline
-    // is measured on, `game/radiantQuests.js`), but the wounds and the spell points are not
-    // handed back, because the player did not get the sleep they paid a day for.
-    const { roused } = stirTheLevel(monsters, dbg.seconds);
-    const disturbed = roused > 0;
-    if (!disturbed) {
-      player = { ...player, health: player.maxHealth ?? player.health,
-        ...(player.maxSpellPoints != null ? { spellPoints: player.maxSpellPoints } : {}) };
+    // creatures standing somewhere in the level come to the sleeper, and what the player gets
+    // is company rather than a night's rest — the owner's report (2026-10-16): "resting spawns
+    // enemies or moves enemies to you in normal arena and perfectarena doesnt".
+    //
+    // The first version of this passed the day anyway and said *"Something heard you sleep. 4 of
+    // them are coming."* — and the owner's next report (2026-10-17) was that the message was a
+    // promise nothing kept: *"it just tells you theres people around but they never get close and
+    // you dont rest"*. Two things were wrong with it. The count named creatures on the far side
+    // of the level that could not arrive before the hunt expired, and the day still passed with
+    // no wound handed back, so pressing `R` cost a day to learn nothing.
+    //
+    // Now the camp is **refused** when the level hears it, and the refusal says how many heard
+    // and how far off the nearest one is — a distance, because that is the thing the player
+    // could not see for themselves. They are still roused (`encounters.js`'s `stirTheLevel`), so
+    // they do come; a camp that comes back clean is a level with nothing left in earshot.
+    const feetNow = feetOf();
+    const reach = MONSTER_SPEED * HUNT_RUN * HUNT_SECONDS;
+    const { roused, nearest } = stirTheLevel(monsters, dbg.seconds, {
+      reach,
+      distanceOf: (spawn) => Math.hypot(spawn.world.x - feetNow[0], spawn.world.z - feetNow[2]),
+    });
+    if (roused > 0) {
+      huntArrivalTold = false;
+      const metres = nearest === null ? null : Math.max(1, Math.round(nearest));
+      dbg.lastRest = { cost: 0, days: 0, day: radiant.day, camp: true, roused, disturbed: true, nearest };
+      showNotice(roused === 1
+        ? `You cannot rest — something heard you sleep${metres === null ? '' : `, ${metres} m off`}.`
+        : `You cannot rest — ${roused} of them heard you sleep, nearest ${metres === null ? 'in the dark' : `${metres} m off`}.`,
+      4200);
+      updateCombatHud(); updateObjectiveHud();
+      return false;
     }
-    radiant = advanceDays(radiant, 1);
-    saveRadiantState(radiant); savePlayer();
-    dbg.lastRest = { cost: 0, days: 1, day: radiant.day, camp: true, roused, disturbed };
-    showNotice(disturbed
-      ? (roused === 1
-        ? 'Something in the dark heard you sleep. It is coming.'
-        : `Something in the dark heard you sleep. ${roused} of them are coming.`)
-      : 'You make camp and rest. A day passes; health and spell points are restored.',
-    disturbed ? 4200 : 3400);
+    player = { ...player, health: player.maxHealth ?? player.health,
+      ...(player.maxSpellPoints != null ? { spellPoints: player.maxSpellPoints } : {}) };
+    const beforeRest = clockNow();
+    const afterRest = passRestTime(8 * 60);
+    savePlayer();
+    dbg.lastRest = { cost: 0, days: afterRest.day - beforeRest.day, hours: 8, day: radiant.day, camp: true, roused: 0, disturbed: false };
+    showNotice('You make camp and rest for eight hours; health and spell points are restored.', 3400);
     updateCombatHud(); updateObjectiveHud(); updateInventoryPanel();
+    // A camp is a sleep too: Ria's dream comes over it as it does over a rented room.
+    void maybeDreamScene();
     return true;
   }
 
@@ -6494,7 +10673,84 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * @param {object} spawn @param {number} amount @param {string} source
    */
+  /**
+   * **The last fight, scripted.** Jagar Tharn rises in the Jewel's chamber when it is taken.
+   *
+   * The owner, 2026-10-21: *"the ending doesnt properly work the final boss battle is not
+   * scripted"*. The palace used to answer the Jewel with `won` in the same frame: the movies
+   * played, the deed was done, and the game's last enemy never existed on the page. Tharn is
+   * now a real creature with the bestiary's own row (`monsters.js`'s `jagartharn`: 500 hp,
+   * six spells, no mundane weapon lands on him), placed in the chamber the Jewel came from,
+   * and the quest's `won` event is refused until he falls (`questState.js`'s `tharnSlain`).
+   *
+   * He is placed on the chamber's own cell — the palace's fourth floor is the data's, not
+   * this project's — and if the player is already standing there (a reload, a teleport) he
+   * stands a body's width toward the player instead of inside them.
+   *
+   * @returns {Promise<object|null>} the creature, or null when this install has no art for him
+   */
+  async function beginTharnDuel() {
+    if (tharnSpawn?.monster?.health > 0) return tharnSpawn;
+    if (tharnSummoning) return null;
+    tharnSummoning = true;
+    const kind = MONSTERS.find((m) => m.id === 'jagartharn');
+    if (!kind?.sprite) { tharnSummoning = false; return null; }
+    const file = `${kind.sprite}1.CFA`;
+    if (!await loadSpriteSet(file, 1)) { tharnSummoning = false; return null; }
+    for (let action = 2; action <= 6; action++) await loadSpriteSet(`${kind.sprite}${action}.CFA`, 1);
+    const chambers = finaleChambers(current?.level);
+    const feet = feetOf();
+    let x = chambers ? (chambers.jewel.x + 0.5) * CELL_SIZE : feet[0] + Math.sin(cam.yaw) * 2.2;
+    let z = chambers ? (chambers.jewel.z + 0.5) * CELL_SIZE : feet[2] + Math.cos(cam.yaw) * 2.2;
+    if (Math.hypot(x - feet[0], z - feet[2]) < MONSTER_BODY_RADIUS + PLAYER_RADIUS) {
+      const dx = feet[0] - x;
+      const dz = feet[2] - z;
+      const d = Math.hypot(dx, dz) || 1;
+      x = feet[0] - (dx / d) * 1.6;
+      z = feet[2] - (dz / d) * 1.6;
+    }
+    const monster = rollMonster(kind, battle);
+    const spawn = {
+      monster,
+      sprite: kind.sprite,
+      skin: null,
+      file,
+      boss: 'jagar',
+      place: chambers ? { row: chambers.jewel.x, col: chambers.jewel.z } : { row: 0, col: 0 },
+      world: { x, y: (current?.level?.floorY ?? 1) * CELL_SIZE, z },
+      nextAttack: monster.nextAttack,
+      awake: true,
+      distance: Math.hypot(x - feet[0], z - feet[2]),
+    };
+    monsters.push(spawn);
+    tharnSpawn = spawn;
+    tharnSummoning = false;
+    dbg.finalBattle = { boss: 'jagar', at: { x, z }, health: monster.health, started: dbg.seconds };
+    showNotice('Jagar Tharn steps out of the Jewel\'s light. There is no way past him but through.', 5200);
+    playSfx('spell');
+    updateCombatHud();
+    return spawn;
+  }
+
+  /** The last scene: Tharn's fall, then Arena's own closing movie and page. */
+  function playTheEnding() {
+    // **His cry belongs to the Jewel, and his fall to the last blow.** `1404` plays when the
+    // Jewel is taken (Tharn feels his lifeforce go); this is the other half — the two ending
+    // movies, then the Emperor's page — and it runs once, on the kill that earns it.
+    void (async () => {
+      showEndingPanel(await showEndingMovie());
+    })();
+  }
+
   function beginMonsterDeath(spawn) {
+    // The creature's own dying cry, then the floor (`combatSound.js`'s `MONSTER_VOICES`); a
+    // human foe takes the install's man/woman death instead, which is what the original does.
+    if (spawn.monster?.kind === 'human') playSfx('monsterDeath', { female: Boolean(spawn.monster.female) });
+    else playSfx('monsterVoice', { monster: spawn.monster?.id, event: 'death' });
+    // Death leaves the contents on the body; only a search transfers them.
+    if (spawn.monster?.kind === 'human') {
+      spawn.loot ??= humanLoot(spawn.monster, battle);
+    }
     noteKill(worldMemory, memoryKey(current.index), spawn.monster.id);
     rememberClock();
     spawn.attack = null;
@@ -6505,12 +10761,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     combatFx.burst(spawn.world.x, spawn.world.y + 0.7, spawn.world.z, 'hit', true);
     if (spawn.bounty) {
       const result = applyRadiantEvent(radiant, 'killed', { where: place?.name,
-        ...spawn.bounty, monster: spawn.monster.id });
+        cell: worldCellNow(), ...spawn.bounty, monster: spawn.monster.id });
       if (result.ok) {
         radiant = result.state; saveRadiantState(radiant);
         showNotice(radiantObjective(radiant), 4500);
         updateObjectiveHud();
       }
+    }
+    // **The last blow of the quest.** Tharn's death is the only thing that earns `won`; the
+    // quest machine refuses it until `tharnSlain`, so this cannot fire early even if another
+    // path kills him.
+    if (spawn.boss === 'jagar' && !quest.ended) {
+      const slain = applyQuestEvent(quest, 'tharnSlain', { chain });
+      if (slain.ok) quest = slain.state;
+      const victory = applyQuestEvent(quest, 'won', { chain });
+      if (victory.ok) quest = victory.state;
+      saveQuestState(quest);
+      dbg.finalBattle = { ...(dbg.finalBattle ?? {}), boss: 'jagar', slainAt: dbg.seconds, ended: quest.ended };
+      showNotice('Jagar Tharn falls. The Jewel of Fire is the Emperor\'s again.', 6000);
+      updateObjectiveHud();
+      refreshObjective();
+      if (quest.ended) playTheEnding();
     }
   }
 
@@ -6568,7 +10839,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   async function castSpell(name = null, opts = {}) {
     const lib = await ensureSpellLibrary();
-    const entry = spellFromLibrary(lib, name ?? dbg.lastSpell ?? '');
+    const entry = opts.entry ?? customSpell(player, name ?? dbg.lastSpell ?? '') ?? spellFromLibrary(lib, name ?? dbg.lastSpell ?? '');
     if (!entry) {
       showNotice(name ? `${name} is not a spell this game has.` : 'Nothing is ready to cast — C opens the spellbook.', 2600);
       return { ok: false, reason: 'no such spell' };
@@ -6582,6 +10853,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ? { ...player, knownSpells: [...knownBefore, entry.name], spellPoints: Math.max(Number(pointsBefore) || 0, entry.points) }
       : player;
     const target = spellTarget();
+    if (opts.entry && entry.effects.some(e=>['damage','drain','fatigueDrain','spellDrain','silence','fear','poison','disease'].includes(e.kind)) && !target) {
+      showNotice('No target is in reach.',2400);return {ok:false,reason:'no target'};
+    }
     const result = applySpell(entry, {
       character: caster,
       targetName: target?.spawn?.monster?.name ?? null,
@@ -6596,13 +10870,34 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ? { ...result.character, spellPoints: pointsBefore, knownSpells: knownBefore }
       : result.character;
     dbg.lastSpell = entry.name;
+    playSfx('cast', { element: result.events.find((event) => event.kind === 'damage')?.element });
+    // **The spell's own world-side state** (`spells.js`'s events, already applied to the
+    // character): a light has to reach the renderer, and a hold broken has to let go.
+    if (entry.effects?.some((effect) => effect.kind === 'light')) applyPlayerLightNow();
+    if (entry.effects?.some((effect) => effect.kind === 'freeAction')) heldUntil = 0;
     const outcomes = [];
     for (const event of result.events) {
       if (event.kind === 'damage') {
         const spawn = target?.spawn;
         if (!spawn) { outcomes.push('nothing was in reach to burn'); continue; }
-        const after = damageMonster(spawn, event.power, entry.name);
-        outcomes.push(`${event.power} to ${after.name}${after.health === 0 ? ' (dead)' : ` (${after.health} left)`}`);
+        // **What the creature is, applied to magic too** (`game/bestiary.js`): an ice golem
+        // takes double from fire, a fire daemon halves it, and the iron golem *drinks*
+        // lightning — UESP's own "avoid using shock magic as they will use the energy to
+        // recover from damage".
+        const multiplier = damageMultiplier(spawn.monster, { element: event.element });
+        if (multiplier === 0 && event.element === 'shock' && spawn.monster.id === 'irongolem') {
+          spawn.monster = {
+            ...spawn.monster,
+            health: Math.min(spawn.monster.maxHealth, spawn.monster.health + event.power),
+          };
+          outcomes.push(`the Iron Golem drinks the lightning (${spawn.monster.health} left)`);
+          continue;
+        }
+        const power = Math.max(0, Math.round(event.power * multiplier));
+        if (!power) { outcomes.push(`${spawn.monster.name} is unharmed by it`); continue; }
+        playSfx('spellHit', { element: event.element, volume: 0.85 });
+        const after = damageMonster(spawn, power, entry.name);
+        outcomes.push(`${power} to ${after.name}${after.health === 0 ? ' (dead)' : ` (${after.health} left)`}${multiplier !== 1 ? ` ×${multiplier}` : ''}`);
       } else if (event.kind === 'open') outcomes.push(shiftLock(true));
       else if (event.kind === 'lock') outcomes.push(shiftLock(false));
       else if (event.kind === 'passwall') outcomes.push('the stone here is too thick to walk through');
@@ -6610,23 +10905,108 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       else if (event.kind === 'levitate') outcomes.push('your feet leave the ground');
       else if (event.kind === 'ward') outcomes.push(`a ward of ${event.power}`);
       else if (event.kind === 'heal') outcomes.push(`${event.power} health back`);
+      // ── the spells whose effect is on the *creature*, not the caster ──────────
+      else if (event.kind === 'fatigueDrain') {
+        if (target?.spawn) {
+          const pool=target.spawn.stamina;
+          const left=Math.max(0,(Number(pool?.stamina ?? pool)||100)-event.power);
+          target.spawn.stamina=typeof pool==='object'?{...pool,stamina:left}: {stamina:left,max:100};
+          outcomes.push(`${event.power} fatigue drained`);
+        }
+      }
+      else if (event.kind === 'silence') {
+        if (!target?.spawn) { outcomes.push('nothing was in reach to silence'); continue; }
+        target.spawn.silencedUntil = dbg.seconds + 30;
+        outcomes.push(`${target.spawn.monster.name} is silenced`);
+      } else if (event.kind === 'fear') {
+        if (!target?.spawn) { outcomes.push('nothing was in reach to frighten'); continue; }
+        target.spawn.fearUntil = dbg.seconds + 10;
+        outcomes.push(`${target.spawn.monster.name} turns to flee`);
+      } else if (event.kind === 'poison' || event.kind === 'disease') {
+        if (!target?.spawn) { outcomes.push('nothing was in reach to poison'); continue; }
+        target.spawn.venom = { element: event.kind, power: Math.max(1, Math.round(event.power / 4)), until: dbg.seconds + 20 };
+        outcomes.push(`${target.spawn.monster.name} is ${event.kind === 'poison' ? 'poisoned' : 'diseased'}`);
+      } else if (event.kind === 'spellDrain') {
+        const spawn=target?.spawn;
+        if (spawn) {
+          const available=Number(spawn.spellPoints ?? (spawn.caster ? 100 : 0));
+          const drained=Math.min(available,event.power);
+          spawn.spellPoints=available-drained;
+          if(spawn.spellPoints===0)spawn.silencedUntil=dbg.seconds+30;
+          if(player.spellPoints!=null)player={...player,spellPoints:Math.min(player.maxSpellPoints??player.spellPoints,player.spellPoints+drained)};
+          outcomes.push(`${drained} spell points drained from ${spawn.monster.name}`);
+        }
+      } else if (event.kind === 'mirror') outcomes.push('a mirror waits for the next spell');
+      else if (event.kind === 'spellShield') outcomes.push(`spell shield ${event.power}`);
+      else if (event.kind === 'resist') outcomes.push(`hardened against ${event.element}`);
+      else if (event.kind === 'regeneration') outcomes.push('your wounds begin to close');
+      else if (event.kind === 'strength') outcomes.push(`+${event.power} Strength`);
+      else if (event.kind === 'freeAction') outcomes.push('nothing can hold you');
+      else if (event.kind === 'invisibility') outcomes.push('you fade from sight');
+      else if (event.kind === 'cure') outcomes.push(`the ${event.element} is gone`);
       else outcomes.push(event.kind);
     }
     savePlayer();
     updateCombatHud();
     updateInventoryPanel();
+    // **A cast is something the player can see** (the owner, 2026-10-18: *"particles for magic"*).
+    // Before this the spellbook worked and left no mark: the creature lost health and the screen
+    // said nothing. The tell is `combatFx.magicBurst` — the spell's own element out of the wound
+    // when it landed on a creature, and out of the caster's own hands when it was cast on
+    // themselves (a heal, a ward, a light) — reported on `lastCast` so a check can hold it.
+    const landed = Boolean(target?.spawn) && result.events.some((event) =>
+      ['damage', 'silence', 'fear', 'poison', 'disease'].includes(event.kind));
+    // **`none` is not an element.** A heal's own record carries `element: 'none'` (`spells.js`),
+    // and a colour table asked for `none` answers the spell-magic violet — so a mending is drawn
+    // green and a ward violet rather than every utility spell the same colour.
+    const elementOf = (value) => (value && value !== 'none' ? value : null);
+    const heals = entry.effects?.some((effect) => effect.kind === 'heal');
+    const castElement = (heals ? 'heal' : null)
+      ?? elementOf(entry.element)
+      ?? elementOf(result.events.find((event) => event.element)?.element)
+      ?? 'magic';
+    const castPower = Math.max(1, Number(result.damage) || Number(result.heal) || Number(result.ward) || Number(entry.points) || 1);
+    let motes = 0;
+    if (landed) {
+      const feet = feetOf();
+      const spawn = target.spawn;
+      motes = combatFx.magicBurst(spawn.world.x, spawn.world.y + 0.9, spawn.world.z, {
+        element: castElement, power: castPower,
+        dir: [spawn.world.x - feet[0], spawn.world.z - feet[2]],
+      });
+    } else {
+      const feet = feetOf();
+      motes = combatFx.magicBurst(
+        feet[0] + Math.sin(cam.yaw) * 0.6, feet[1] + 1.2, feet[2] + Math.cos(cam.yaw) * 0.6,
+        { element: castElement, power: castPower },
+      );
+    }
     showNotice(`${result.note}${outcomes.length ? ` (${outcomes.join('; ')})` : ''}`, 3400);
+    // **A spell the player casts pins itself to the hotbar.** The bar fills with what is
+    // actually used, so the player never has to visit a setup screen to make it useful — the
+    // owner's *"adding a hotbar"* met by the habit a player already has.
+    // Casting does not pin: the spellbook's own `Pin` is how a spell reaches the bar.
     dbg.lastCast = {
       ok: true, spell: entry.name, cost: result.cost, damage: result.damage, heal: result.heal,
       ward: result.ward, events: result.events.map((event) => event.kind), outcomes,
       target: target?.spawn?.monster?.name ?? null, spellPoints: player.spellPoints, fromScroll: Boolean(opts.fromScroll),
+      fx: { particles: motes, element: castElement, at: landed ? 'target' : 'caster' },
     };
     return dbg.lastCast;
   }
 
-  /** The combat line: who the player is, and what is in front of them. */
+  /**
+   * The fight band: who the player is, what is in front of them, and how the fight is going.
+   *
+   * This was the whole of the second GUI — its own box in the bottom-right corner. It is a
+   * **band of the one panel** now (`#hud-fight`, see the note on `hud` above), and its rows
+   * are the ones a player reads at a glance: the vitals, the foe, the flags that are up, and
+   * one short control line. The long explanation of the combat formulas that used to sit at
+   * its foot is **not** here: a panel that has to be condensed cannot spend four lines on
+   * arithmetic the player cannot use mid-swing, and the same words are in the docs.
+   */
   function updateCombatHud() {
-    const el = document.getElementById('combat');
+    const el = hudFight;
     if (!el) return;
     // The corpus arrives late on a page that never entered a town (a dungeon boot names
     // nothing yet): the HUD's own once-per-page ask re-renders the line when it lands, so
@@ -6640,11 +11020,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // (2026-10-16). It is Arena's cue for **gaining a level**, so it plays where the level is
     // taken (`takeLevel`) and nowhere else. Nothing is lost but an invented greeting — and
     // `FANFARE2.VOC` is the second half of the same cue, played by `fanfare.js` itself.
-    // The HUD's own panel is bottom-left too, and both are several lines tall: with
-    // nothing keeping them apart the fight line drew straight over the level line
-    // (visible in the first playable build). The class lets the HUD step up out of
-    // the way while the combat panel is on screen; see index.html.
-    document.body.classList.toggle('combat-on', true);
     const nearest = monsters
       .filter((s) => s.monster.health > 0)
       .sort((a, b) => (a.distance ?? 1e9) - (b.distance ?? 1e9))[0];
@@ -6655,39 +11030,302 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // the number the fight has been paying into, and the one a player watches.
     const progress = progressOf({ ...player, xp });
     const owed = pendingLevels({ ...player, xp });
-    el.innerHTML = `<b>${player.name}</b> — level <b>${player.level}</b> · ${player.health}/${player.maxHealth} health`
-      + ` · ${xp} experience${progress.next ? ` (${progress.needed} to level ${progress.earned + 1})` : ''}`
-      + ` · ${kills} slain<br>`
-      + (owed > 0 ? `<span class="level">${owed} level${owed === 1 ? '' : 's'} owed — press L to place the points</span><br>` : '')
-      + (nearest
-        ? `${nearest.monster.proper ? `${nearest.monster.proper} — ${nearest.monster.name}` : nearest.monster.name} ${nearest.monster.health}/${nearest.monster.maxHealth} · ${Math.round(nearest.distance ?? 0)} m away`
-        : 'Nothing stirs here.')
-      + (guarding() ? `<br><span class="guard">guard up — half of any blow is turned aside</span>` : '')
-      // The stairways the level's own art marks, when the player is standing at one: the
-      // original's way up and down is walking into it, and a player who cannot see that
-      // presses `E` and is told where it leads instead.
-      + (stairHint() ? `<br><span class="stair">${stairHint()}</span>` : '')
-      + (dbg.inWater === 'wet'
-        ? '<br><span class="water">you are wading — water is slow to cross</span>'
-        : dbg.inWater === 'lava'
-          ? `<br><span class="lava">the lava is burning you — ${LAVA_DAMAGE_PER_SECOND} health a second</span>`
-          : '')
-      // The weapon is a picture in the first person, and a picture this install may not have:
-      // a flail or a bow is drawn from a `.CIF` Arena did not ship here, which the player is
-      // told rather than left wondering why their hand is empty (see `game/weaponView.js`).
-      + (weaponMissing
-        ? `<br><span class="hint">this install has no ${escapeHtml(weaponMissing)} — a drawn ${escapeHtml(weaponName(weaponRig.weapon).toLowerCase())} has no first-person art</span>`
-        : view === 'first' && weaponRig.drawn
-          ? `<br><span class="hint">${escapeHtml(weaponRig.file)} ${escapeHtml(weaponRig.state)}${weaponRig.direction ? ` (${escapeHtml(weaponRig.direction)})` : ''} — V for the third person</span>`
-          : '')
-      + `<br><span class="hint">F or click to strike · B / right-click to block or parry · Q roll · I pack · C spellbook · Z cast · V ${view === 'third' ? 'first' : 'third'} person</span>`
-      + `<br><span class="hint">${HIT_FORMULA_NOTE} ${BLOCK_NOTE}</span>`;
-    el.classList.add('on');
+    // The vitals row: the four numbers a player watches (level, health, the experience the
+    // fight is paying into, the count of what is down) and nothing else.
+    // Health and magicka live in the vitals plate, so this row keeps only what that plate has
+    // no room for: who the player is, the experience, and the count of what is down.
+    const rows = [`<b>${escapeHtml(player.name)}</b> — level <b>${player.level}</b>`
+      + ` · ${xp} xp${progress.next ? ` (${progress.needed} to level ${progress.earned + 1})` : ''}`
+      + ` · ${kills} slain`];
+    // The foe in front of them, or the plain fact that the field is clear.
+    rows.push(nearest
+      ? `${nearest.monster.proper ? `${escapeHtml(nearest.monster.proper)} — ${escapeHtml(nearest.monster.name)}` : escapeHtml(nearest.monster.name)} <b>${nearest.monster.health}</b>/${nearest.monster.maxHealth} · ${Math.round(nearest.distance ?? 0)} m`
+      : 'Nothing stirs here.');
+    // **The flags, on one row, joined**: a level owed, a guard up, a stairway underfoot, the
+    // water the player is standing in, and a weapon whose first-person art this install does
+    // not carry. Each was its own full sentence with its own line before; a player needs the
+    // fact, not the grammar.
+    const flags = [];
+    if (owed > 0) flags.push(`<span class="level">${owed} level${owed === 1 ? '' : 's'} owed (L)</span>`);
+    if (guarding()) flags.push('<span class="guard">guard up</span>');
+    // The lasting magic, on the same row: a ward with points left, the player's own light,
+    // a regeneration that is closing wounds, invisibility, and a hold (with the way out).
+    if ((Number(player.ward) || 0) > 0) flags.push(`<span class="ward">ward ${player.ward}</span>`);
+    if ((Number(player.regeneration) || 0) > 0) flags.push('<span class="regen">wounds closing</span>');
+    if (player.light?.radius) flags.push(`<span class="light">light ${player.light.radius}</span>`);
+    if (player.invisible) flags.push('<span class="hidden">unseen</span>');
+    if (dbg.seconds < heldUntil) flags.push('<span class="held">held — Free Action breaks it</span>');
+    if (Array.isArray(player.afflictions) && player.afflictions.length)
+      flags.push(`<span class="afflicted">${player.afflictions.join(' · ')}</span>`);
+    // The stairways the level's own art marks, when the player is standing at one: the
+    // original's way up and down is walking into it, and a player who cannot see that
+    // presses `E` and is told where it leads instead.
+    if (stairHint()) flags.push(`<span class="stair">${escapeHtml(stairHint())}</span>`);
+    // **The way out is part of the fact.** A deep pool and a pit are the two places this game can
+    // leave a player standing still wondering what to press, so the line is not only what they are
+    // standing in but what gets them out of it: the engine's ledge climb, on a held `W` at the
+    // bank (`motor.js`), which the player has no other way of discovering.
+    if (dbg.inWater === 'wet') flags.push('<span class="water">wading — W at the bank hauls you out</span>');
+    if (dbg.inWater === 'lava') flags.push(`<span class="lava">burning — ${LAVA_DAMAGE_PER_SECOND} health a second · W gets you out</span>`);
+    if (dbg.inPit) flags.push('<span class="hint">in a pit — W at its wall hauls you up</span>');
+    // The weapon is a picture in the first person, and a picture this install may not have:
+    // a flail or a bow is drawn from a `.CIF` Arena did not ship here, which the player is
+    // told rather than left wondering why their hand is empty (see `game/weaponView.js`).
+    if (weaponMissing) flags.push(`<span class="hint">no ${escapeHtml(weaponMissing)} first-person art for a drawn ${escapeHtml(weaponName(weaponRig.weapon).toLowerCase())}</span>`);
+    else if (weaponRig.substitute) flags.push(`<span class="hint">${escapeHtml(weaponRig.ownFile)} is not in this install — drawn from ${escapeHtml(weaponRig.file)}</span>`);
+    else if (view === 'first' && weaponRig.drawn) flags.push(`<span class="hint">${escapeHtml(weaponRig.file)} ${escapeHtml(weaponRig.state)}</span>`);
+    if (flags.length) rows.push(flags.join(' · '));
+    // **The HUD is the fight's, not the manual's.** The owner, 2026-10-21: *"this part of the
+    // gui should not be there anymore instead in the settings"*. Two permanent lines of key
+    // list and table provenance sat under every fight and every corridor; the keys live in
+    // the pause menu's Settings section (`MENU_CONTROLS`) and the provenance in the pack
+    // panel, where a player looks when they want them. The HUD keeps only what is happening.
+    el.innerHTML = rows.join('<br>');
     // The guard line is written on events, so a guard raised mid-fight shows up as soon
     // as anything else changes; this is the cheap nudge that makes it show up when the
     // player raises it and nothing else is happening.
     dbg.guard = guarding();
+    renderStatusBar();
+    renderHotbar();
   }
+
+  /**
+   * **The stamina bar belongs to the character, not to a placeholder.**
+   *
+   * `game/combatStyle.js`'s pool takes `{endurance, level}` and derives its ceiling from
+   * them, and the scene's pool was declared with the defaults — 50 and 1 — and never read
+   * the sheet. So the third well was a lie twice over: a level-12 character with marathon
+   * Endurance still had a 30-point pool, and the bar sat under the hit-points and magicka
+   * wells as a number that never matched the hero it belonged to.
+   *
+   * Endurance is attribute 5 (`character.js`'s `ATTRIBUTES` order: strength, intelligence,
+   * willpower, agility, speed, endurance, personality, luck) and buffs ride on top of it
+   * (`attributeOf` adds `attributeBuffs`), so a Fortify Endurance spell grows the pool the
+   * same way the sheet shows it. A change of ceiling keeps the bar's own share — a character
+   * who levels up mid-fight is not handed a full bar — except on the very first frame, where
+   * there is no share to keep and the bar begins full.
+   *
+   * @returns {object|null} the pool, for a caller that wants the numbers
+   */
+  function syncStaminaPool() {
+    if (!player) return null;
+    return syncStamina(defence?.stamina, {
+      endurance: attributeOf(player, 'endurance', 5, 50),
+      level: player.level,
+    });
+  }
+
+  // ── ARENA'S STATUS BAR (`P1.IMG`) ───────────────────────────────────────────
+  //
+  // The original's own bar, written: the health well, the spell well, the purse and the level.
+  // It is one function because every one of those numbers is read from the same sheet, and
+  // because a bar that only updates when a fight does is a bar that lies while a player rests.
+  // The scene calls it from `updateCombatHud` (every event) and from the step at a slow tick.
+  function renderStatusBar() {
+    if (!sbHealth) return;
+    syncStaminaPool();
+    const health = Math.max(0, Math.round(Number(player.health) || 0));
+    const maxHealth = Math.max(1, Math.round(Number(player.maxHealth) || 1));
+    sbHealth.textContent = `${health} / ${maxHealth}`;
+    const healthShare = Math.max(0, Math.min(1, health / maxHealth));
+    sbHealthBar.style.width = `${(healthShare * 100).toFixed(1)}%`;
+    sbHealthBar.style.background = healthShare < 0.3
+      ? 'linear-gradient(#e2564a, #7c1d12)' : 'linear-gradient(#c8402e, #7c1d12)';
+    // **Stamina** is the fight's own pool (`defence.stamina`, spent by a guard, a parry and a
+    // roll) — the third well a Daggerfall HUD carries beside health and magicka.
+    if (sbStamina) {
+      const pool = defence?.stamina ?? {};
+      const stamina = Math.max(0, Math.round(Number(pool.stamina) || 0));
+      const maxStamina = Math.max(1, Math.round(Number(pool.max ?? staminaMax(player)) || 1));
+      sbStamina.textContent = `${stamina} / ${maxStamina}`;
+      sbStaminaBar.style.width = `${(Math.max(0, Math.min(1, stamina / maxStamina)) * 100).toFixed(1)}%`;
+    }
+    if (player.spellPoints == null) {
+      sbSpell.textContent = 'none';
+      sbSpellBar.style.width = '0%';
+    } else {
+      const points = Math.max(0, Math.round(Number(player.spellPoints) || 0));
+      const maxPoints = Math.max(1, Math.round(Number(player.maxSpellPoints ?? points) || 1));
+      sbSpell.textContent = `${points} / ${maxPoints}`;
+      sbSpellBar.style.width = `${(Math.max(0, Math.min(1, points / maxPoints)) * 100).toFixed(1)}%`;
+    }
+    if (sbGold) sbGold.textContent = String(Math.max(0, Math.round(Number(player.gold) || 0)));
+    if (sbLevel) sbLevel.textContent = `level ${Math.round(Number(player.level) || 1)}`;
+    if (sbHotbarHint) {
+      const keys = (player.keys ?? []).length;
+      sbHotbarHint.textContent = keys ? `${keys} key${keys === 1 ? '' : 's'}` : '';
+    }
+  }
+
+  // ── THE HOTBAR (`S2.IMG`, `game/hotbar.js`) ─────────────────────────────────
+  //
+  // Ten cells for **the player's own things**: a potion, a scroll, a spell. The owner,
+  // 2026-10-22: *"the hotbar should be for you to put things you have in the inventory and
+  // spells into, not the normal features of arena you can already click buttons to use"*.
+  // A cell is filled from the pack's `Pin`/`Unpin` button or the spellbook's, and emptied by a
+  // right-click (or a long press) on the cell itself. It starts empty.
+
+  /** What `describeEntry` needs to tell a live pin from a dead one. */
+  function hotbarWorld() {
+    return {
+      knownSpells: knownSpells(player).map((spell) => spell.name),
+      hasItem: (id) => countInBag(bagOf(), id) > 0,
+      itemName: (id) => itemById(id)?.name ?? id,
+    };
+  }
+
+  /** The last strip written, so a frame that changes nothing does not rebuild the DOM. */
+  let hotbarShown = '';
+
+  function renderHotbar() {
+    if (!hotbarEl) return;
+    const rows = hotbarRows(player, hotbarWorld());
+    const signature = rows.map((row) => `${row.key}|${row.label}|${row.kind}|${row.available ? 1 : 0}`).join('~');
+    if (signature === hotbarShown) return;
+    hotbarShown = signature;
+    hotbarEl.innerHTML = rows.map((row) => {
+      const empty = row.kind === 'empty';
+      // **An empty cell is a slot, not a command.** It prints a dim plus and its digit; a
+      // pinned one carries the thing's initial in gold (Arena ships no item icon set this port
+      // can read) and its name under it.
+      const pinned = empty ? '' : ' pinned';
+      const dead = row.available ? '' : ' unavailable';
+      const glyph = empty ? '<span class="hb-plus">+</span>'
+        : `<span class="hb-glyph">${escapeHtml((row.label || '?').slice(0, 1).toUpperCase())}</span>`;
+      return `<button type="button" class="hb-cell${pinned}${dead}${empty ? ' empty' : ''}" data-hotbar="${row.index}" title="${escapeHtml(row.hint)}">`
+        + `<span class="hb-key">${row.key}</span>`
+        + glyph
+        + (empty ? '' : `<span class="hb-label">${escapeHtml(row.label)}</span>`)
+        + '</button>';
+    }).join('');
+  }
+
+  /**
+   * Pin a thing the player owns into the first empty cell.
+   *
+   * Pinning the same potion twice does not spend two cells; once every cell is spoken for the
+   * **last** one is replaced, so the bar never silently refuses a pin. The call is the pack's
+   * `Pin` button, the spellbook's, and the player's own choice — never a side effect of use.
+   *
+   * @param {{kind: 'spell'|'item', name?: string, id?: string}} entry
+   * @returns {boolean} whether a cell was written
+   */
+  function pinHotbar(entry) {
+    if (!entry || !['spell', 'item'].includes(entry.kind)) return false;
+    const rows = hotbarRows(player);
+    const wanted = entry.name ?? entry.id ?? '';
+    const already = rows.findIndex((row) => row.entry && row.entry.kind === entry.kind
+      && (row.entry.name ?? row.entry.id ?? '') === wanted);
+    const target = already >= 0 ? already : rows.findIndex((row) => row.kind === 'empty');
+    const slot = target >= 0 ? target : rows.length - 1;
+    player = assignSlot(player, slot, entry);
+    savePlayer();
+    renderHotbar();
+    // The pack's `Pin` / `Unpin` button is a function of the bar's own state, so the page that
+    // pressed it is redrawn — otherwise the button would still say `Pin` after it pinned.
+    updateInventoryPanel();
+    const label = entry.kind === 'spell' ? entry.name : (itemById(entry.id)?.name ?? entry.id);
+    showNotice(already >= 0 ? `${label} is already on the bar, cell ${slot + 1}.` : `${label} pinned to cell ${slot + 1}.`, 1800);
+    return true;
+  }
+
+  /** Pin a spell from the book, by name. */
+  function pinSpell(name) {
+    if (!name) return false;
+    if (!knownSpells(player).some((spell) => spell.name === name)) {
+      showNotice(`${name} is not in your book.`, 1600);
+      return false;
+    }
+    return pinHotbar({ kind: 'spell', name });
+  }
+
+  /** Pin a thing from the pack, by id. */
+  function pinItem(id) {
+    if (!id || countInBag(bagOf(), id) <= 0) {
+      showNotice('That is not in your pack.', 1600);
+      return false;
+    }
+    return pinHotbar({ kind: 'item', id });
+  }
+
+  /** Take a pin back out, leaving the cell empty. */
+  function unpinHotbar(index) {
+    const rows = hotbarRows(player);
+    if (!rows[index] || rows[index].kind === 'empty') return;
+    player = clearSlot(player, index);
+    savePlayer();
+    renderHotbar();
+    updateInventoryPanel();
+    showNotice(`Cell ${Number(index) + 1} is empty again.`, 1400);
+  }
+
+  /** Take a pinned thing off the bar by what it is — the pack's and the book's `Unpin`. */
+  function unpinThing(kind, key) {
+    const slot = slotOf(player, kind, key);
+    if (slot < 0) {
+      showNotice('That is not on the bar.', 1400);
+      return false;
+    }
+    return unpinHotbar(slot), true;
+  }
+
+  /**
+   * Press a hotbar cell, whatever it holds.
+   *
+   * An empty cell opens the pack — that is where a pin comes from — so a player who taps the
+   * bar to find out what it is learns the whole rule in one click.
+   *
+   * @param {number} index  0…9
+   */
+  function activateHotbar(index) {
+    const row = hotbarRows(player, hotbarWorld())[index];
+    if (!row) return;
+    if (row.kind === 'empty') {
+      showNotice('An empty cell. Open your pack and press Pin beside a potion or a spell.', 2400);
+      openBag();
+      return;
+    }
+    if (!row.available) {
+      showNotice(row.kind === 'item' ? `${row.label} is not in your pack.` : `${row.label} is not in your book.`, 1800);
+      return;
+    }
+    if (row.kind === 'spell') { void castSpell(row.entry.name); return; }
+    if (row.kind === 'item') void useThing(row.entry.id);
+  }
+
+  hotbarEl?.addEventListener('click', (e) => {
+    const cell = e.target?.closest?.('[data-hotbar]');
+    if (!cell) return;
+    activateHotbar(Number(cell.dataset.hotbar));
+  });
+  hotbarEl?.addEventListener('contextmenu', (e) => {
+    const cell = e.target?.closest?.('[data-hotbar]');
+    if (!cell) return;
+    e.preventDefault();
+    unpinHotbar(Number(cell.dataset.hotbar));
+  });
+
+  // **The message panel folds away.** The quest marker lives in the vitals now, so the panel
+  // is only the room's own notes; the corner plate closes it to a single button and opens it
+  // again.
+  const hudToggle = document.getElementById('hud-toggle');
+  hudToggle?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const folded = Boolean(hud?.classList.toggle('folded'));
+    hudToggle.textContent = folded ? '+' : '−';
+    hudToggle.title = folded ? 'Show the messages' : 'Hide the messages';
+    hudToggle.setAttribute('aria-expanded', String(!folded));
+  });
+  // **The install's own paintings, read once.** `loadArenaGui` publishes `P1.IMG`, `S2.IMG`,
+  // `PARCH.IMG` and the rest as CSS variables; until it answers (or if this install has none)
+  // the stylesheet's Arena-palette fallback is what draws, so nothing waits on a picture.
+  void loadArenaGui(data).then((gui) => {
+    guiArt = gui;
+    dbg.gui = { applied: gui.applied, slots: gui.slots.length };
+    hotbarShown = '';
+    renderHotbar();
+  }).catch((error) => { dbg.gui = { applied: [], error: String(error?.message ?? error) }; });
 
   /**
    * The first-person weapon as a test and the HUD see it.
@@ -6703,6 +11341,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       name: weaponName(weaponRig.weapon),
       family: weaponRig.family,
       file: weaponRig.file,
+      ownFile: weaponRig.ownFile,
+      substitute: weaponRig.substitute,
+      ranged: isBow(weaponRig.weapon),
       loaded: weaponLoaded,
       missing: weaponMissing,
       state: weaponRig.state,
@@ -6799,15 +11440,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // the off-centre ones, which is how it was caught.
     const { width, depth } = level;
     const at = (x, z) => (x < 0 || z < 0 || x >= depth || z >= width ? null : level.cells[x * width + z]);
-    // A wall is the only thing a player cannot cross. Doors open, chasms are jumped
-    // (`Space`), raised platforms are stepped onto, entity flats are decorations. A
-    // flood that stopped at a door would leave most of a dungeon "unreachable" and
-    // could put the objective behind one.
-    const walkable = (cell) => Boolean(cell) && cell.kind !== 'wall';
-    const start = {
-      x: Math.min(depth - 1, Math.max(0, Math.floor(level.spawn.x))),
-      z: Math.min(width - 1, Math.max(0, Math.floor(level.spawn.z))),
-    };
+    // A wall is the only thing a player cannot cross — **except a wall standing over a
+    // chasm**, whose band under the floor is the crawl tube the mesher leaves open (the owner,
+    // 2026-10-19: *"counting places reachable by tubes as reachable"*). Doors open, chasms are
+    // crossed, raised platforms are stepped onto, entity flats are decorations. A flood that
+    // stopped at a door would leave most of a dungeon "unreachable" and could put the objective
+    // behind one.
+    const walkable = (cell) => Boolean(cell) && (cell.kind !== 'wall' || Boolean(cell.floor?.chasm));
+    // **A level with no start point of its own is a grid this project assembled**, not a file
+    // that carries a header: a city and a country window are both built from other files and
+    // have no arrival of their own (`buildWildernessWindow` answers a level with no `spawn` at
+    // all), and the player's own arrival falls back to the middle of the grid for exactly that
+    // reason. The walk starts from the same place — the arithmetic centre — rather than from
+    // `undefined.x`, which threw on the first sea window a player walked into and took the whole
+    // boot with it (`refreshObjective` runs before the rest of the scene is wired, so the page
+    // died at "Could not read that folder: Cannot read properties of null (reading 'x')").
+    const start = level.spawn
+      ? {
+        x: Math.min(depth - 1, Math.max(0, Math.floor(level.spawn.x))),
+        z: Math.min(width - 1, Math.max(0, Math.floor(level.spawn.z))),
+      }
+      : { x: Math.floor(depth / 2), z: Math.floor(width / 2) };
     if (!walkable(at(start.x, start.z))) return { order: [], cells: 0 };
     const seen = new Uint8Array(width * depth);
     const queue = [{ ...start, depth: 0 }];
@@ -6824,10 +11477,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         queue.push({ x: nx, z: nz, depth: here.depth + 1 });
       }
     }
+    // **A marker goes on ground a player can stand on, not in a pool.** The walk itself
+    // still crosses chasms — a tube under a wall is a real way through, and the owner asked
+    // for those to count as reachable — but `order` is what the objectives and their pickup
+    // sprites are picked from, and a Staff piece in a lava lake or a water cell is the
+    // reported "placed in a non accessible way" (the Fortress of Ice's clue). The dry-floor
+    // answer is the ordering; `cells` stays the reachable count the HUD and the suites read.
+    const standable = ({ x, z }) => {
+      const cell = at(x, z);
+      return Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+    };
     // Deepest first, and by cell index within a depth so the answer is stable: the
     // same level must always put the piece in the same room.
     const order = queue
       .map(({ x, z, depth: d }) => ({ x, z, depth: d }))
+      .filter(standable)
       .sort((a, b) => (b.depth - a.depth) || (a.x - b.x) || (a.z - b.z));
     return { order, cells: queue.length };
   }
@@ -6844,36 +11508,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return first ? { ...first, cells: walk.cells } : null;
   }
 
-  /**
-   * The Imperial Palace's two rooms, on its bottom level.
-   *
-   * UESP's walkthrough of the finale puts the Jewel of Fire in a **magically locked
-   * cell** on the fourth and final level, and the mithril key that opens it in a room
-   * on the same island — two separate chambers, which is the one thing about the
-   * finale a player cannot miss. The rooms' own positions (UESP gives the key at
-   * `26,25` and the Jewel at `20,24`) do not survive into the `.MIF` this project
-   * ships and decodes: that level's cells hold no chasm at all, so the lava lake the
-   * walkthrough describes is not in this map, and the coordinates would name a wall.
-   * Rather than pretend, the two chambers are derived from the level: the deepest
-   * reachable cell is the Jewel's, and the key lies in the deepest cell at least
-   * `FINALE_CHAMBER_GAP` cells away from it. Logged as S24 in PROGRESS.md.
-   *
-   * @param {object} level
-   * @returns {{key: object, jewel: object, cells: number}|null}
-   */
-  function finaleChambers(level) {
-    const walk = deepestCells(level);
-    const jewel = walk.order[0];
-    if (!jewel) return null;
-    const key = walk.order.find((cell) => (
-      Math.abs(cell.x - jewel.x) + Math.abs(cell.z - jewel.z) >= FINALE_CHAMBER_GAP
-    )) ?? jewel;
-    return {
-      key: { ...key, cells: walk.cells },
-      jewel: { ...jewel, cells: walk.cells },
-      cells: walk.cells,
-    };
-  }
+  // Original fourth-floor coordinates, verified against this install's platform,
+  // Jewel entity and locked door. A mismatch is not replaced with generated rooms.
+  function finaleChambers(level) { return palaceChambers(level); }
 
   /**
    * What the player is here to do, if anything.
@@ -6892,7 +11529,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // ships it as `START.MIF` beside the game rather than among its provinces — so
     // it is recognised by its *filename* while every other stage is recognised by
     // the name the player travelled to.
-    if (stage?.kind === 'escape' && mapName.toUpperCase() === stage.mif.toUpperCase()) {
+    // **Only the dungeon itself, not a page built from its file.** The imperial prison is a
+    // bare `START.MIF` and so is the file the wilderness assembles its windows from, so a
+    // country page carried `map: "START.MIF"` and the escape's objective — "the way out of the
+    // Imperial Dungeons · N paces · the gate the level's own art marks" — was placed on the
+    // open country and on every city built from that skeleton. The stage is the dungeon's own;
+    // a page with a country, a city or an assembled level is not standing in it.
+    if (stage?.kind === 'escape' && mapName.toUpperCase() === stage.mif.toUpperCase()
+      && !wildRequest && !cityRequest && !generated) {
       return { owner: 'main', event: 'escaped', what: 'the way out of the Imperial Dungeons' };
     }
 
@@ -6909,28 +11553,97 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (current.index !== levelCount - 1) return null;
       const chambers = finaleChambers(current.level);
       if (!chambers) return null;
-      if (!quest.mithrilKey) return { owner: 'main', event: 'mithrilKey', what: 'the mithril key', cell: chambers.key };
+      if (!quest.mithrilKey && !quest.skeletonKey) return { owner: 'main', event: 'mithrilKey', what: 'the mithril key', cell: chambers.key };
       if (!quest.hasKeyItem) return { owner: 'main', event: 'jewelOfFire', what: 'the Jewel of Fire', cell: chambers.jewel };
-      return { owner: 'main', event: 'won', what: 'the Emperor\'s freedom', cell: chambers.jewel };
+      // The Jewel is in hand and the boss has not fallen: there is nothing left to *take*.
+      // The objective is a fight, and the HUD reads it from the quest machine's own line.
+      if (!quest.tharnSlain) return null;
+      return null;
+    }
+
+    // ── a job out in the country ────────────────────────────────────────────
+    //
+    // A wild target is a **cell**, not a settlement: the page can hold the spot and still be
+    // a hundred paces from it, so the objective is only placed once the target cell is inside
+    // this window (`wildTargetCell`). It is checked before the `place` test because a country
+    // page booted straight from a job marker may have no settlement record at all.
+    const active = radiant.active;
+    if (active && active.targetKind === 'wild' && !active.completed) {
+      const local = wildTargetCell(active);
+      const event = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+        hunt: 'killed', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
+      if (local && event) {
+        const person = ['rescue', 'deliver', 'investigate'].includes(active.kind);
+        const combat = active.kind === 'hunt' || active.kind === 'slay';
+        return { owner: 'side', event, what: active.subject, wild: true, marker: !combat,
+          cell: { x: local.row, z: local.col }, markerArt: person ? PERSON_MARKER_ART : OBJECTIVE_MARKER_ART };
+      }
     }
 
     if (!place) return null;
 
     if (stage?.kind === 'piece') {
-      if (!quest.mapKnown && same(stage.clue?.title)) {
+      if (!quest.mapKnown && same(stage.clue?.title) && current.index === CLUE_PICKUP_LEVELS[stage.piece - 1]) {
         return { owner: 'main', event: 'foundClue', what: `the map to ${stage.title}` };
       }
-      if (quest.mapKnown && same(stage.title)) {
+      if (quest.mapKnown && same(stage.title) && current.index === STAFF_PICKUP_LEVELS[stage.piece - 1]) {
         return { owner: 'main', event: 'foundPiece', what: `piece ${stage.piece} of the Staff of Chaos` };
       }
     }
 
-    const active = radiant.active;
-    if (active && active.kind !== 'slay' && !active.completed && same(active.target)) {
-      const event = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
-      return event ? { owner: 'side', event, what: active.subject } : null;
+    if (active && active.kind !== 'slay' && active.kind !== 'hunt' && !active.completed && same(active.target)) {
+      const event = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+        slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
+      const person = ['rescue', 'deliver', 'investigate'].includes(active.kind);
+      return event ? { owner: 'side', event, what: active.subject,
+        marker: active.kind !== 'hunt' && active.kind !== 'slay',
+        markerArt: person ? PERSON_MARKER_ART : OBJECTIVE_MARKER_ART } : null;
     }
     return null;
+  }
+
+  /**
+   * The target cell of a country job, in **this window's** coordinates, or null.
+   *
+   * A wild target is a world cell (`radiantQuests.js`'s `targetCell`); the page owns a
+   * 128-cell window of that world (`current.wild.originRow/originCol`), and only the cell
+   * inside it is on this level. When the player walks the window on, the same job is found
+   * again in the new window — that is what makes the country one place rather than a scene.
+   */
+  function wildTargetCell(active = radiant.active) {
+    const cell = active?.targetCell;
+    const wild = current?.wild;
+    if (!cell || !wild) return null;
+    const row = Math.round(Number(cell.row) - Number(wild.originRow));
+    const col = Math.round(Number(cell.col) - Number(wild.originCol));
+    if (!Number.isFinite(row) || !Number.isFinite(col)) return null;
+    if (row < 0 || col < 0 || row >= WILD_WINDOW || col >= WILD_WINDOW) return null;
+    return { row, col };
+  }
+
+  /**
+   * The nearest standable cell to a country job's mark.
+   *
+   * A world pixel's centre can land on a tree, a fence or water. The marker and the quarry
+   * both want a cell a body can stand on, so the search walks outward a ring at a time from
+   * the target and takes the first real floor. A page with nowhere standable answers the
+   * target itself; the marker is then only a picture, which is better than no job.
+   */
+  function standableNear(level, row, col, radius = 8) {
+    if (!level?.cells) return { x: row, z: col, depth: 0 };
+    const ok = (r, c) => {
+      if (r < 1 || c < 1 || r >= level.depth - 1 || c >= level.width - 1) return false;
+      const cell = level.cells[r * level.width + c];
+      return Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+    };
+    if (ok(row, col)) return { x: row, z: col, depth: 0 };
+    for (let r = 1; r <= radius; r++) {
+      for (let dr = -r; dr <= r; dr++) for (let dc = -r; dc <= r; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== r) continue;
+        if (ok(row + dr, col + dc)) return { x: row + dr, z: col + dc, depth: 0 };
+      }
+    }
+    return { x: row, z: col, depth: 0 };
   }
 
   /**
@@ -6940,14 +11653,108 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * Jewel end up in two different rooms; everything else takes the level's deepest
    * reachable chamber.
    */
+  /**
+   * **Where the job's thing is, on this level** — the cell a pickup stands on.
+   *
+   * One answer for the objective and for its picture: the marker sprite is placed from this in
+   * `loadLevel` and the E-pickup is checked against the same cell, so a sprite that says "take me"
+   * can never stand anywhere the key would not take it.
+   *
+   * @param {object|null} wanted  `objectiveHere()`'s answer
+   * @param {object|null} level
+   * @returns {{x: number, z: number, depth: number, cells: number}|null}
+   */
+  function objectiveCellFor(wanted, level) {
+    let deep = wanted?.cell ?? null;
+    // A country mark is a world cell's centre; the floor under it may be a tree or a pool,
+    // so the marker and the E-pickup both stand on the nearest real cell instead.
+    if (deep && wanted?.wild && level) deep = standableNear(level, deep.x, deep.z);
+    if (!deep && wanted?.event === 'escaped' && level) {
+      const out = wayOutCell(level);
+      const walk = out ? deepestCells(level) : null;
+      const at = walk ? walk.order.find((cell) => cell.x === out.x && cell.z === out.z) ?? null : null;
+      if (at) deep = { x: at.x, z: at.z, depth: at.depth, cells: walk.cells };
+    }
+    if (!deep) deep = level ? deepestCell(level) : null;
+    return deep;
+  }
+
   function refreshObjective() {
     const wanted = objectiveHere();
-    const deep = wanted?.cell ?? (current.level ? deepestCell(current.level) : null);
+    // **The escape's target is where the exit really is** (`mifLevel.js`'s `wayOutCell`): the
+    // owner, 2026-10-17, *"move the exit from the imperial prison target really where the exit
+    // is"*. Every other stage sends the player to the deepest chamber, which is what a treasure
+    // is; the way out of the Imperial Dungeons is the level's own stair art (`GATE.IMG` at x 48,
+    // z 46 in `START.MIF`, the one stair that file carries, with the corridor that reaches it at
+    // x 47), and a target in the deepest cell of a 50×50 maze pointed away from the door.
+    //
+    // The cell is looked up in the walk's own order first (`deepestCells`, which answers
+    // `{ order, cells }` — the ordering **deepest-first**), so a way out the player cannot reach
+    // falls back to the old target instead of stranding them. Reading `walk.find` here rather
+    // than `walk.order.find` threw on the first page of the game — `walk.find is not a function`,
+    // the whole escape failing to boot — because the walk is the ordering *and* its count, not a
+    // bare array.
+    const deep = objectiveCellFor(wanted, current.level);
     current.objective = wanted && deep
       ? { ...wanted, cellX: deep.x, cellZ: deep.z, depth: deep.depth, cells: deep.cells, done: false }
       : null;
+    // **The marker stands where the thing is, and goes when it is taken.** See
+    // `placeObjectiveMarker` — the sprite is placed from this same cell, so the picture and the
+    // E-pickup can never disagree. `objectiveTaken` survives the rebuild because this function
+    // re-makes the objective with `done: false` every time it is called.
+    const marker = current?.objectiveMarker;
+    if (marker) {
+      const show = Boolean(current.objective) && !objectiveTaken
+        && current.objective.cellX === marker.row && current.objective.cellZ === marker.col;
+      marker.taken = !show;
+      marker.batchRecord?.sync();
+    }
+    // **The duel is a place's state, not a pickup.** A player who leaves the chamber and
+    // comes back (a reload, a descent, a walk out and in) finds Tharn still standing between
+    // them and the Emperor until he falls — the same reason the mithril key's cell stays
+    // sealed. The summon is idempotent (`beginTharnDuel` holds one at a time).
+    if (quest.step === 9 && quest.hasKeyItem && !quest.tharnSlain
+      && mapName.toUpperCase() === (chain.stages[9]?.mif ?? '').toUpperCase()
+      && current.index === levelCount - 1 && !(tharnSpawn?.monster?.health > 0)) {
+      void beginTharnDuel();
+    }
     updateObjectiveHud();
     return current.objective;
+  }
+
+  /**
+   * **A body for the job's own thing.**
+   *
+   * The owner, 2026-10-18: *"the radiant quest given by npcs should spawn sprites at the
+   * questmark location so the player knows that it needs to be picked up with e"*. The objective
+   * has always been a cell and a line on the HUD; a cell in a dungeon is not a picture, so the
+   * thing now stands on the floor as a loot-shaped billboard — the same batch machinery the
+   * level's own chests use (`loadLoot`), one record for the level — and `E` still takes it through
+   * `takeObjective` (the marker is skipped by `lootNear`, or it would be looted as a chest).
+   *
+   * @returns {Promise<object|null>} the spot, or null when this level has nothing to take
+   */
+  async function placeObjectiveMarker() {
+    objectiveTaken = false;
+    const objective = current?.objective;
+    if (!objective || objective.done || objective.marker === false || !current?.level) return null;
+    const spot = {
+      row: objective.cellX,
+      col: objective.cellZ,
+      kind: 'questmark',
+      name: objective.what,
+      art: objective.markerArt ?? OBJECTIVE_MARKER_ART,
+      drawn: true,
+      taken: false,
+      marker: true,
+      yOffset: 0,
+    };
+    const batches = await loadLoot([spot], current.level);
+    current.loot.push(spot);
+    current.lootBatches.push(...batches);
+    current.objectiveMarker = spot;
+    dbg.objectiveMarker = { row: spot.row, col: spot.col, art: spot.art, what: spot.name };
+    return spot;
   }
 
   /**
@@ -6968,47 +11775,192 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return `Somewhere below this floor is the Jewel of Fire — ] descends (you are on level ${current.index + 1} of ${levelCount}).`;
   }
 
+  // ── THE PLACE'S OWN MUSIC (`game/arenaMusic.js`) ────────────────────────────
+  //
+  // Arena ships its soundtrack inside `GLOBAL.BSA` — `CITY`, `TOWN`, `VILLAGE` and the desert's
+  // `ARABCITY`/`ARABTOWN`/`ARAB_VLG`, `TAVERN`/`SQUARE`, `TEMPLE`, `EQUIPMNT`, `MAGIC_2`, `PALACE`,
+  // `DUNGEON1…5`, `NIGHT`, the four weather songs, `SWIMMING` and `COMBAT` — and the owner's
+  // request was to use them *by the place the player is standing in*. The choice is the pure law
+  // (`musicFor`); this half reads the live scene into its context once a second and asks for the
+  // song. A change of place, of the hour, of the weather, of the water or of a fight changes it.
+
+  /** The stable number a dungeon's song is picked by: its own seed, or its file name. */
+  function dungeonMusicSeed() {
+    const seed = Number(place?.dungeonSeed);
+    if (Number.isFinite(seed) && seed > 0) return seed;
+    let hash = 0;
+    for (const c of String(mapName).toUpperCase()) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
+    return hash;
+  }
+
   /**
-   * The HUD's own lines: what is here to be taken, how far off it is, and — in the
-   * palace — which way down.
+   * The place, for the music's own law — one object, read from the live scene.
+   *
+   * `wild` and `city` are the scene's own two outdoor kinds; a building is neither, and answers
+   * with its trade (`interiorMusicKind`). The weather is the level's own `.INF` letter (the same
+   * reading the sky and the falling precipitation use), and the night is the clock's.
+   *
+   * @returns {object|null}
+   */
+  function musicContextNow() {
+    if (!current?.level) return null;
+    // The music's own clock (06:19 / 17:45), not the daylight shader's dawn and dusk.
+    const night = nightMusicActive(clockNow().minutes);
+    const sky = skyClimateOf(current.infName ?? mapName);
+    const weather = sky.weather;
+    const overcast = weather === 'R';
+    if (current.wild || wildRequest) return { wild: true, night, weather, overcast };
+    if (current.city) {
+      return {
+        city: true, night, weather, overcast,
+        kind: cityRequest?.kind ?? place?.kind ?? 'city',
+        desert: sky.climate === 'D'
+          || String(cityRequest?.climate ?? place?.climate ?? '').toLowerCase() === 'desert',
+      };
+    }
+    // The seed also picks among a tavern's two songs (`SQUARE`/`TAVERN`), as the reference
+    // does, so a town's tavern is not always the same tune.
+    return { interior: interiorMusicKind(mapName), seed: dungeonMusicSeed() };
+  }
+
+  /**
+   * Ask for the place's song, when the place has changed.
+   *
+   * Called from the level load, the frame loop (every sixteenth frame) and — because those are
+   * the two edges a player crosses — after a door and after a gate. `musicPlayer` keeps the same
+   * song playing, so this is cheap enough to ask often and honest when the answer is the same.
+   */
+  function updateMusic() {
+    // A story movie owns the soundtrack while it is up (`playStoryMovie` set its own cue);
+    // the place's song is asked for again when the movie is over.
+    if (moviePlaying || !life.alive || life.leaving || !current?.level) return;
+    const context = musicContextNow();
+    if (!context) return;
+    const swimming = Boolean(current.motor?._inWater?.());
+    const combat = monsters.some((s) => s.monster.health > 0 && s.awake
+      && (s.distance ?? Infinity) < 24);
+    const song = musicFor({ ...context, swimming, combat });
+    if (song === musicSong) return;
+    musicSong = song;
+    dbg.music = { song, context, swimming, combat };
+    void playMusic(song, { arenaPath: source?.arenaPath ?? params.get('arena') ?? 'C:/arenaproject/arena/ARENA' });
+  }
+
+  /** The eight arrows the marker's bearing is read as, clockwise from the look. */
+  const QUEST_ARROWS = Object.freeze(['\u2191', '\u2197', '\u2192', '\u2198', '\u2193', '\u2199', '\u2190', '\u2196']);
+  /** The last marker written, so a frame that changed nothing costs no DOM write. */
+  let questMarkerText = '';
+
+  /**
+   * **THE QUEST MARKER, FOLLOWING THE PLAYER'S WALK.**
+   *
+   * The owner, 2026-10-19: *"pressing E every time to know where your quest marker is is tiring
+   * it should be removed and instead the quest marker in the gui should be updated more often"*.
+   * The distance to the objective used to live in the reach panel, which is rebuilt on *events* —
+   * so a player walking toward the thing they were sent for saw a number that only changed when
+   * they happened to open a door, and `E` therefore answered the question (`interact`'s old
+   * "you are not there yet — N paces" notice). The marker now has a band of its own and is read
+   * once a frame: the arrow is the bearing **relative to the look**, the distance is the walk's
+   * own paces (the same measurement the E notice used), and the line says whether the thing is a
+   * Staff piece, a clue, a gate out or a job's own target. `E` at nothing now says nothing about
+   * the quest; the panel already did.
+   *
+   * Written only when the rounded distance or the bearing changes, so a still player writes
+   * nothing and a walk writes a handful of times a second at most.
+   */
+  function updateQuestMarker() {
+    if (!hudQuest) return;
+    let text = '';
+    const objective = current?.objective;
+    if (objective && !objective.done) {
+      const cell = motorCell(current, objective);
+      const dx = -cell.x;
+      const dz = -cell.z;
+      const distance = Math.round(Math.hypot(dx, dz));
+      let arrow = '';
+      if (Number.isFinite(dx) && Number.isFinite(dz)) {
+        // The look is `(sin yaw, 0, cos yaw)`; the target's own bearing minus that is the
+        // arrow's octant. A hair of negative zero is normalised before the index is taken.
+        const turn = Math.atan2(dx, dz) - (cam?.yaw ?? 0);
+        const relative = ((turn % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        arrow = `${QUEST_ARROWS[Math.round(relative / (Math.PI / 4)) % 8]} `;
+      }
+      const what = String(objective.what ?? 'the objective');
+      text = `${arrow}${what[0].toUpperCase()}${what.slice(1)} \u00b7 ${distance} pace${distance === 1 ? '' : 's'}`;
+      if (objective.event === 'escaped') text += ' \u00b7 the gate the level\u2019s own art marks';
+      else if (objective.event === 'foundPiece') text += ` \u00b7 piece ${objective.piece ?? ''} of the Staff`;
+      else if (objective.event === 'foundClue') text += ' \u00b7 the map that names the piece';
+    } else if (objective?.done) {
+      text = 'Taken \u2014 nothing else waits here.';
+    }
+    // **A country job is pointed at from anywhere in the country.** Its cell stands 130–175
+    // cells out of its anchor's gate, so for most of the walk it is outside the window the
+    // marker is placed in and `current.objective` is null — the panel then said only *"Travel
+    // to the wilds near X"* and nothing else, which is the owner's *"difficulty pointing you
+    // towards … even if you're close to their supposed position"*. The arrow and the paces are
+    // measured in **world cells** (`worldCellNow`), so they hold across every window slide and
+    // outside the level's own coordinates, and the line says when the spot is under the feet.
+    let sideLead = '';
+    const job = radiant?.active;
+    if (job && job.targetKind === 'wild' && !job.completed && job.targetCell) {
+      const here = worldCellNow();
+      if (here) {
+        const dx = (job.targetCell.row - here.row) * CELL_SIZE;
+        const dz = (job.targetCell.col - here.col) * CELL_SIZE;
+        const paces = Math.round(Math.hypot(dx, dz) / CELL_SIZE);
+        const turn = Math.atan2(dx, dz) - (cam?.yaw ?? 0);
+        const relative = ((turn % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+        const arrow = QUEST_ARROWS[Math.round(relative / (Math.PI / 4)) % 8];
+        sideLead = paces <= 2 ? `${arrow} the spot is under your feet` : `${arrow} the spot \u00b7 ${paces} paces`;
+      }
+    }
+    const side = [sideLead, radiantObjective(radiant)].filter(Boolean).join('\n');
+    if (side) text = text ? `${text}\n${side}` : side;
+    if (text === questMarkerText) return;
+    questMarkerText = text;
+    hudQuest.textContent = text;
+    hudQuest.style.whiteSpace = 'pre-line';
+  }
+
+  /**
+   * The HUD's own lines: what is here to be taken and — in the palace — which way down.
    */
   function updateObjectiveHud() {
     if (!hud || !current) return;
     const lines = [];
-    const objective = current.objective;
-    if (objective && !objective.done) {
-      const dx = motorCell(current, objective).x;
-      const dz = motorCell(current, objective).z;
-      // **“The the way out…”** — every `what` is already a noun phrase with its article (`the
-    // mithril key`, `the map to Stonekeep`), so the line capitalises it rather than prefixing
-    // another "The": the objective panel read "The the way out of the Imperial Dungeons lies
-    // 110 paces from here" for every objective in the game.
-    const what = String(objective.what ?? 'objective');
-    lines.push(`${what[0].toUpperCase()}${what.slice(1)} lies ${Math.round(Math.hypot(dx, dz))} paces from here — find the deepest chamber, then press E.`);
-    } else if (objective?.done) {
-      lines.push('Taken. Nothing else waits here.');
+    const cell = worldCellNow();
+    if (cell) {
+      const here = youAreHere(world, cell.row, cell.col, { settlement: current.city ? place : null });
+      lines.push(`${here.label} · ${here.provinceName ?? 'open sea'} · ${here.climate} · world ${here.pixel.x},${here.pixel.y} · cell ${cell.row},${cell.col}`);
     }
-    // A job somebody in the street gave the player: where to go, and where to be paid. It is
-    // on the level HUD because work in hand is the one thing a player should not have to open
-    // the map to remember (`radiantObjective`, the same line the journal carries).
-    const side = radiantObjective(radiant);
-    if (side) lines.push(side);
+    // **The objective is not in this panel** (see `updateQuestMarker`): it follows the walk on
+    // a band of its own, so the reach panel keeps only what is under the player's feet.
     const hint = descentHint();
     if (hint) lines.push(hint);
     // The doorway: the one line that tells a player a building can be walked into. It is
-    // the *sign* that is announced, because the sign is what the game itself draws over
-    // the door (`game/shops.js`) — and it is only up while the player is in the doorway.
+    // the **door's own art** that is announced, because that is what the game draws on the
+    // wall and what the reference opens (`game/shops.js`, `tryMakeVoxelTransitionDefGenInfo`)
+    // — and it is only up while the player stands at the door. A hinged sign beside it is
+    // decoration and is not what the line is about.
     const found = doorNear();
     if (found) {
-      lines.push(`The sign over this door says ${found.door.name} — press E to go in.`);
+      const what = SHOP_KINDS[found.door.kind]?.name ?? found.door.name ?? 'a door';
+      lines.push(found.door.wall
+        ? `This is ${what} — press E at the door to go in.`
+        : `The way in is ${what} — press E to go in.`);
     } else if (current.doors?.length) {
-      lines.push(`${current.doors.length} shop doors in this ${cityRequest?.kind ?? 'city'}; the sign is over each one.`);
+      // The country's doors are buildings in the landscape (a farmhouse, a barn, a crypt),
+      // not a settlement's street of shops, so the line says which place the player is in.
+      const where = current.wild ? 'stretch of country' : (cityRequest?.kind ?? 'city');
+      lines.push(`${current.doors.length} doors in this ${where}; stand at one and press E to go in.`);
     }
     // A dungeon's own door: what it is, whether it is locked, and how hard the lock is
     // (`game/doors.js`). Only up while the player stands at it, like the doorway line.
     const leaf = leafNear();
     if (leaf) lines.push(doorLine({ ...leaf, open: leaf.open > 0.5 }));
     // What the map's item flats left lying about: a key, a chest, a treasure, a corpse.
+    const corpse = corpseNear();
+    if (corpse) lines.push(`${corpse.monster.name}'s body — ${corpseRows(corpse.loot).map((row) => `${row.name} ×${row.qty}`).join(', ') || 'empty'}. E searches it.`);
     const ground = lootNear();
     if (ground) lines.push(`On the floor here: ${ground.name}. Press E to take it.`);
     else {
@@ -7037,17 +11989,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // open, and what the person nearest is about. Read rather than simulated — the same clock
     // `enterDoor` refuses a door with.
     for (const line of livingLines()) lines.push(line);
-    if (townsfolk.length) {
+    // **Who keeps this place** is the map's own worker when it paints one (`SMITH.DFA`,
+    // `BARTEND.DFA` …) and the walking keeper otherwise (`keeperHere`), so an equipment store
+    // where nobody walks still says who is behind the counter — the smith is a still person.
+    const keeper = keeperHere();
+    if (keeper?.shop) {
+      lines.push(`${keeper.description} keeps this place; press T to speak.`);
+    } else if (townsfolk.length) {
       // **How many are *about*, not how many the town holds.** Since the day can put somebody
       // indoors (`stepTownsfolk`'s rest branch), a line counting the roster would promise a
       // street full of people at midnight; the count the player is owed is the one they can see.
       const about = townsfolk.filter((person) => !person.atHome);
       const indoors = townsfolk.length - about.length;
-      lines.push(townsfolk.length === 1 && townsfolk[0].shop
-        ? `${townsfolk[0].description} keeps this place; press T to speak.`
-        : `${about.length} ${about.length === 1 ? 'person is' : 'people are'} about${indoors ? `, ${indoors} indoors` : ''}; press T to speak to whoever is nearest.`);
+      lines.push(`${about.length} ${about.length === 1 ? 'person is' : 'people are'} about${indoors ? `, ${indoors} indoors` : ''}; press T to speak to whoever is nearest.`);
     }
-    hud.textContent = (current.hudBase ?? '') + lines.map((line) => `\n${line}`).join('');
+    // The band under the fight's: everything here to be found, taken, entered or spoken to.
+    // Each line is plain text in the install's own words, so it is escaped into the band's
+    // markup rather than trusted (`textContent` was safe by construction; the panel is HTML
+    // now that the two GUIs are one).
+    hudHere.innerHTML = lines.map((line) => escapeHtml(line)).join('<br>');
   }
 
   /**
@@ -7094,6 +12054,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * final word on whether the event was legitimate.
    */
   async function interact() {
+    const body = corpseNear();
+    if (body) return searchCorpse(body);
     const objective = current.objective ?? refreshObjective();
     if (objective && !objective.done && atObjective(objective).distance <= 3) return takeObjective(objective);
     // ── the stairway ───────────────────────────────────────────────────────────
@@ -7150,10 +12112,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (ground && (!leaf || ground.distance < leaf.distance)) return takeLoot(ground);
     if (leaf) return useLeaf(leaf);
     if (ground) return takeLoot(ground);
-    if (objective && !objective.done) {
-      showNotice(`You are not there yet — ${Math.round(atObjective(objective).distance)} paces from ${objective.what}.`, 1400);
-      return false;
-    }
+    // **No quest answer from `E`.** It used to report "you are not there yet — N paces", which
+    // made the key the way a player learned where the quest was (the owner, 2026-10-19). The
+    // marker band follows the walk now, so `E` at nothing keeps only the things it can act on.
     if (exitCell) {
       const back = Math.round(atObjective({ cellX: exitCell.row, cellZ: exitCell.col }).distance);
       showNotice(`The street door is behind you — ${back} paces back to it.`, 1600);
@@ -7169,27 +12130,61 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const result = applyQuestEvent(quest, objective.event, { chain });
       if (!result.ok) { showNotice(result.reason, 2000); return false; }
       quest = result.state;
+      // **The staff is assembled when the eighth piece lands**, and the beat is the install's own
+      // movie. `staffAssembled` was an event nothing ever fired: a player could hold all eight
+      // pieces and see no scene, no line and no change, which is the middle of the main story
+      // missing. The machine refuses it before eight, so this can only fire on the last one.
+      if (objective.event === 'foundPiece' && quest.pieces >= 8) {
+        const assembled = applyQuestEvent({ ...quest }, 'staffAssembled', { chain });
+        if (assembled.ok) {
+          quest = assembled.state;
+          showNotice('The Staff of Chaos is whole.', 4000);
+        }
+      }
+      // **The Jewel does not end the quest — it starts the last fight.** The owner,
+      // 2026-10-21: *"the ending doesnt properly work the final boss battle is not
+      // scripted"*. Taking the Jewel used to fire `won` in the same frame, so the game's
+      // final boss was a pickup and the ending played over an empty chamber. Jagar Tharn
+      // now rises in the chamber, and the ending is earned by his death.
+      if (objective.event === 'jewelOfFire') {
+        void beginTharnDuel();
+      }
       saveQuestState(quest);
       // The last event of all is not a pickup: the Emperor is free, and the game is
       // over, so it gets the install's closing movie and then a page of its own
       // instead of a line on the notice bar. The page is awaited so the movie is
       // *finished* before it appears — and `dbg.ending` is set by the page, so a
       // scripted run that skips the movie sees the same ending it always did.
-      if (quest.ended) void showEndingMovie().then((played) => showEndingPanel(played));
-      else {
+      if (quest.ended) {
+        playTheEnding();
+      } else {
         showNotice(`Taken: ${objective.what}.\n\n${currentObjective(quest, chain)}`, 6000);
-        // …and a beat that Arena answers with a vision gets one: the world stops and the
-        // install's own movie plays (`playStoryMovie`), with the notice still under it.
-        void maybeStoryMovie(objective.event);
+        // …and a beat that Arena answers with a movie gets one: the world stops and the
+        // install's own film plays (`playStoryMovie`), with the notice still under it.
+        void maybeStoryMovie(objective.event, quest);
       }
     } else {
-      const result = applyRadiantEvent(radiant, objective.event, { where: place?.name });
+      if (radiant.active?.kind === 'artifact' && objective.event === 'found') {
+        const normalize = s => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const artifact = ARTIFACTS.find(a => normalize(a.name) === normalize(radiant.active.subject));
+        if (!artifact) { showNotice('The artifact named by this quest is not recognized.',3000); return false; }
+        if (bagOf().some(s=>itemById(s.id)?.artifact && s.id!==artifact.id)) { showNotice('Arena permits carrying only one artifact at a time.',3000); return false; }
+        setBag(addToBag(bagOf(), artifact.id)); savePlayer();
+      }
+      const result = applyRadiantEvent(radiant, objective.event, {
+        where: place?.name, cell: worldCellNow(),
+      });
       if (!result.ok) { showNotice(result.reason, 2000); return false; }
       radiant = result.state;
       saveRadiantState(radiant);
       showNotice(`Done: ${radiant.active?.title ?? 'the job'}.\n\n${radiantObjective(radiant) ?? ''}`, 6000);
     }
     objective.done = true;
+    // **The picture goes with the thing.** The marker is a loot-shaped billboard drawn from
+    // `current.lootBatches`, so hiding it is the same `.taken` the chests use.
+    objectiveTaken = true;
+    const marker = current.objectiveMarker;
+    if (marker) { marker.taken = true; marker.batchRecord?.sync(); }
     // Look again *now*: taking one thing can put the next in front of the player in
     // the same level — the finale's mithril key opens the Jewel's cell, and the Jewel
     // ends the quest — and an objective that stayed "done" would leave them with
@@ -7199,6 +12194,112 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /** A short line on the HUD, in the game's voice. */
+  // ── a riddle door (`game/doors.js`'s `riddleDoors`) ────────────────────────
+  //
+  // The install's quest dungeons ask their way in: a sign beside a sealed door, the riddle in
+  // the `.INF`'s own `*TEXT`, the answer in the same record. The port used to show the riddle as
+  // a line of prose and then let the door be forced or picked with any key — the owner's
+  // *"puzzles that are not working"*. The panel is the door's own question.
+  /** What is being asked, or null: `{entry, leaf}`. */
+  let riddleAsking = null;
+
+  /** Put the riddle panel away without answering. */
+  function closeRiddle() {
+    riddleAsking = null;
+    document.getElementById('riddle')?.classList.remove('on');
+  }
+
+  /**
+   * Ask the riddle a sign (or a door) carries.
+   *
+   * @param {{trigger:object, riddle:object, leaves:object[]}} entry  one row of `current.riddles`
+   * @returns {boolean}
+   */
+  function openRiddle(entry) {
+    const el = document.getElementById('riddle');
+    if (!el || !entry?.riddle) return false;
+    riddleAsking = entry;
+    el.innerHTML = '<h2>the sign on the door</h2>'
+      + `<p class="line">${escapeHtml(String(entry.riddle.riddle ?? '').trim())}</p>`
+      + '<form><input id="riddle-answer" autocomplete="off" spellcheck="false" maxlength="80" placeholder="speak your answer">'
+      + '<button type="submit">Answer</button></form>'
+      + '<p class="src" id="riddle-said"></p>'
+      + '<p class="hint">Type what the sign asks \u00b7 Escape leaves it unanswered</p>';
+    el.classList.add('on');
+    const input = el.querySelector('#riddle-answer');
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeRiddle(); }
+    });
+    el.querySelector('form').onsubmit = (event) => {
+      event.preventDefault();
+      answerRiddle(input.value);
+      return false;
+    };
+    input.focus();
+    dbg.riddle = { text: String(entry.riddle.riddle ?? '').trim().slice(0, 80),
+      doors: entry.leaves.map((leaf) => `${leaf.row},${leaf.col}`) };
+    return true;
+  }
+
+  /** The riddle a leaf's own sign asks, if it has one. */
+  function openRiddleForLeaf(leaf) {
+    const entry = current?.riddles?.find((row) => row.leaves.includes(leaf));
+    if (!entry) {
+      showNotice('The door is held by its riddle, and its sign is not in this room.', 2400);
+      return false;
+    }
+    return openRiddle(entry);
+  }
+
+  /**
+   * Answer the question on the panel.
+   *
+   * Right: every door the sign speaks for is unbarred (`game/doors.js`'s `riddleDoors`), the
+   * file's own words for a correct answer are shown, and a door the player is standing at swings
+   * open. Wrong: the file's own refusal and another try — the sign stays for as long as the
+   * player wants to think about it.
+   *
+   * @param {string} answer
+   * @returns {boolean}
+   */
+  function answerRiddle(answer) {
+    const entry = riddleAsking;
+    if (!entry) return false;
+    if (!riddleAnswerMatches(entry.riddle, answer)) {
+      const said = document.getElementById('riddle-said');
+      if (said) said.textContent = String(entry.riddle.wrong ?? '').trim() || 'That is not the answer the door wants.';
+      dbg.riddleResult = 'wrong';
+      return false;
+    }
+    const solved = [];
+    for (const door of entry.leaves) {
+      const leaf = current?.leaves?.find((row) => row.row === door.row && row.col === door.col);
+      if (!leaf) continue;
+      leaf.riddleSolved = true;
+      leaf.locked = false;
+      rememberDoor(leaf);
+      solved.push(`${leaf.row},${leaf.col}`);
+    }
+    closeRiddle();
+    // **The answer opens the door it was given for.** The sign stands in the cell *beside* its
+    // door (Dagoth-Ur's stands in the middle of four), and `leafNear` answers only the nearest
+    // leaf within arm's reach — so a player who answered from the sign's own cell could be
+    // told "the door opens" with the door still shut. Every door the sign speaks for is
+    // unbarred by the answer and swings now; the ones across the room were already solved by
+    // the same act, and `useLeaf` on a leaf that is already open only shuts it, so the doors
+    // are swung through the same door a hand would use.
+    for (const door of solved) {
+      const [row, col] = door.split(',').map(Number);
+      const leaf = current?.leaves?.find((candidate) => candidate.row === row && candidate.col === col);
+      if (leaf && !(leaf.open > 0.01)) useLeaf(leaf);
+    }
+    const correct = String(entry.riddle.correct ?? '').trim();
+    showNotice(correct || 'The door opens.', 4200);
+    dbg.lastRiddle = { result: 'solved', doors: solved };
+    updateObjectiveHud();
+    return true;
+  }
+
   function showNotice(text, ms) {
     const el = document.getElementById('notice');
     if (!el) return;
@@ -7228,7 +12329,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * ends, silently and honestly: `showMovie` answers `played: false` and this returns.
    */
   async function showEndingMovie() {
-    return playStoryMovie('END01.FLC');
+    // **Tharn falls, then Arena closes the story.** Two movies in order, each waiting for the
+    // one before: a player who skips the first lands on the second, and the ending page waits
+    // for both. `ENDING_MOVIES` is the one list (`game/storyBeats.js`).
+    let played = null;
+    for (const name of ENDING_MOVIES) played = await playStoryMovie(name);
+    return played;
   }
 
   /**
@@ -7240,16 +12346,105 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * original's jump table — `A.EXE` holds that, and this data set does not ship it (D11) — so
    * it is named as a decision rather than as a fact.
    */
-  const STORY_MOVIES = { escaped: 'VISION.FLC' };
+  // **The whole story's movies are wired** (`game/storyBeats.js`): the opening in
+  // `newGame.js`, then the vision at the escape, the scroll at each clue, the Staff on the
+  // first piece and the chaos vision on the assembly, the Emperor at the palace, Tharn's shield
+  // at the key, his breaking hold at the Jewel, and his fall followed by Arena's closing movie.
+  // The catalogue's alternates (`END02`, `AFLC2`, `WALK`) remain the `?cutscene=` door's.
+
+  /** The player as the script fills it: `%pcf` is the first name. */
+  function storyPlayer() {
+    const name = String(player?.name ?? '');
+    return { name, firstName: name.split(/\s+/)[0] || name };
+  }
 
   /**
-   * Play the movie one of the main quest's events earns, if it has one.
-   * @param {string} event the quest event that just landed
+   * Play one beat of the game's own script — the speaker's movie, their words, and the speech's
+   * own length.
+   *
+   * The movie loops under the narration, which is how Arena plays a speech scene (OpenTESArena's
+   * `TextCinematicUiState::update` wraps the animation while the voice clips run). The captions are
+   * the install's text (`game/storyLines.js`), one sentence group at a time.
+   *
+   * @param {number} key a `TEMPLATE.DAT` key of the main quest
+   * @returns {Promise<object|null>} null when this install has no such line
    */
-  function maybeStoryMovie(event) {
-    const name = STORY_MOVIES[event];
-    if (!name) return null;
-    return playStoryMovie(name);
+  async function playStoryScene(key) {
+    const who = storyPlayer();
+    const text = storyText(key, who);
+    if (!text) return null;
+    return playStoryMovie(storyMovie(key), {
+      captions: dreamCaptions([text], { pcf: who.firstName, pcn: who.name }),
+      narrationMs: narrationMs(key),
+      speech: narrationFiles(key),
+      textKey: key,
+      speaker: storySpeaker(key),
+    });
+  }
+
+  /** Record that a beat has been played, so a save does not repeat it. */
+  function markStorySeen(field, key) {
+    const seen = new Set(quest[field] ?? []);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    quest = { ...quest, [field]: [...seen] };
+    saveQuestState(quest);
+    return true;
+  }
+
+  /**
+   * The dream a sleep owes the player.
+   *
+   * UESP's order, and the executable's speech bases: the first sleep after level 2 is Ria's
+   * Staff dream (`1500`); the next names Fang Lair's seekers (`1294`); after a piece, the next
+   * sleep is `1294 + pieces`, naming the next place. The dream is **sleep's**, not the piece's.
+   */
+  async function maybeDreamScene() {
+    const key = dueDream(quest, player);
+    if (!key) return null;
+    markStorySeen('dreamsSeen', key);
+    return playStoryScene(key);
+  }
+
+  /**
+   * Tharn's vision at the next encounter.
+   *
+   * UESP: after each piece his vision comes at a random monster encounter, and his minions follow
+   * once it ends (speech `1392 + pieces - 1`). The port plays the vision on entering the next
+   * level — the encounter that follows is the level's own spawns.
+   */
+  async function maybeAmbushScene() {
+    const key = dueAmbush(quest);
+    if (!key) return null;
+    markStorySeen('ambushSeen', key);
+    const played = await playStoryScene(key);
+    // **And his minions come.** The install's words promise the attack in the vision itself; the
+    // bodies were placed when this level was built (`populate`, marked `ambush`), so the scene
+    // does not have to conjure figures with no sheets. A roused creature walks to the player from
+    // wherever it stands (`encounters.js`'s `isRoused`), which is the "they arrive" the text
+    // describes. Only Tharn's own group is roused: the level's ordinary creatures keep their
+    // bands.
+    const minions = monsters.filter((spawn) => spawn.ambush === key);
+    if (minions.length) stirTheLevel(minions, dbg.seconds);
+    return played;
+  }
+
+  /**
+   * Play the scenes one of the main quest's events earns, in order.
+   *
+   * Only the Jewel's cry is immediate (`storyScenesFor`): the clue is a parchment, and the piece
+   * is answered by Tharn at the next encounter and by Ria at the next sleep. A scene pauses the
+   * world, so this is fire-and-forget from the take: the player skips it with any key, and the
+   * next press of `E` acts on the level once the scene is gone.
+   *
+   * @param {string} event the quest event that just landed
+   * @param {object} [state] the quest **after** the event
+   */
+  async function maybeStoryMovie(event, state = quest) {
+    for (const scene of storyScenesFor(event, state)) {
+      if (scene.textKey) await playStoryScene(scene.textKey);
+      else if (scene.movie) await playStoryMovie(scene.movie);
+    }
   }
 
   /**
@@ -7265,8 +12460,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * @returns {Promise<{played: boolean, skipped: boolean, frames: number, file: string|null,
    *   reason: string|null}>} `played: false` when the install does not ship the movie
    */
-  async function playStoryMovie(name) {
-    const state = { name, played: false, skipped: false, frames: 0, file: null, reason: null };
+  async function playStoryMovie(name, opts = {}) {
+    const state = {
+      name, played: false, skipped: false, frames: 0, file: null, reason: null,
+      textKey: opts.textKey ?? null, speaker: opts.speaker ?? null,
+      narrationMs: Number.isFinite(opts.narrationMs) ? opts.narrationMs : null,
+    };
     let showMovie = null;
     try {
       ({ showMovie } = await import('./cutscenePlayer.js'));
@@ -7280,12 +12479,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     keys.clear();
     pressed.clear();
     life.paused = true;
+    // **The movie's own cue**, not the place's song: the world is held still, so the street or
+    // dungeon ambience would be scoring a scene the player is not standing in. `musicSong` is
+    // set to the cue so `updateMusic` (which still runs while paused) leaves it alone, and the
+    // place's song is asked for again when the movie is out of the way.
+    const cue = cutsceneSong(name);
+    if (cue) {
+      // The player starts the cue itself (every caller gets the movie's own music); this only
+      // keeps `updateMusic` from putting the place's song back under the movie.
+      musicSong = cue;
+      dbg.music = { song: cue, cutscene: name };
+    }
     try {
       const played = await showMovie(name, {
         source,
         arenaPath: source?.arenaPath ?? params.get('arena') ?? null,
         status: (text) => showNotice(text, 1200),
-        onState: (live) => { dbg.movie = { ...live }; },
+        // The live state carries the movie's own facts; the beat's key and speaker ride with it, so
+        // a reader (the suite) can tell *which* line of the script is on screen, not just the file.
+        onState: (live) => {
+          dbg.movie = {
+            ...live,
+            textKey: state.textKey,
+            speaker: state.speaker,
+            narrationMs: state.narrationMs,
+          };
+        },
+        // A scripted beat carries its own words and its speech's length; a plain movie does not.
+        ...(Array.isArray(opts.captions) && opts.captions.length ? { captions: opts.captions } : {}),
+        ...(Number.isFinite(opts.narrationMs) && opts.narrationMs > 0 ? { narrationMs: opts.narrationMs } : {}),
+        ...(Array.isArray(opts.speech) && opts.speech.length ? { speech: opts.speech } : {}),
       });
       // The beat's outcome **and the player's own final state**: `done`, `framesDrawn` and the
       // pacing live in the latter, and a summary without them left the seam claiming a movie
@@ -7304,7 +12527,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       state.reason = String(err?.message ?? err);
     } finally {
       moviePlaying = false;
-      if (!wasPaused) life.paused = false;
+      // **A movie never leaves the world paused with nothing open.** Restoring a stale pause
+      // (measured: the palace's `KING.FLC` left `paused: true` and `]` could not descend) was
+      // how a skipped beat froze the game. The pause is kept only when a panel is actually up.
+      life.paused = Boolean(wasPaused && (life.menuOpen || automapOpen || life.mapOpen));
+      // Back to the place the movie interrupted (or to silence on a scene that has none).
+      musicSong = null;
+      updateMusic();
       // Every path through here answers a **finished** beat: a movie that could not be read
       // (`reason`) and a beat that never got as far as a player are both done, so a caller
       // waiting on `dbg.movie.done` is never left waiting for something that already happened.
@@ -7321,9 +12550,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!el) return null;
     const character = loadCharacter();
     const days = radiant.day ?? 0;
+    // **Arena's own words**, from the install's `TEMPLATE.DAT` (`game/storyLines.js`): Tharn's cry
+    // as the Jewel is taken, the Emperor's thanks, and the naming of the Eternal Champion.
+    const who = storyPlayer();
     const lines = [
-      'Jagar Tharn: "You must not! The jewel holds my lifeforce!"',
-      'Emperor Uriel Septim VII: "Thou art truly a child of the Empire. I thank thee for thy assistance. From this day forth, thou art named Eternal Champion. Arise my Champion, and take thy rightful place at my side."',
+      `Jagar Tharn: "${storyText(JEWEL_CRY, who)}"`,
+      `Emperor Uriel Septim VII: "${storyText(EMPEROR_THANKS, who)}"`,
+      `Emperor Uriel Septim VII: "${storyText(ETERNAL_CHAMPION, who)}"`,
     ];
     const record = [
       `<b>${character?.name ?? player.name}</b>, ${character?.className ?? player.className ?? 'adventurer'} of level ${character?.level ?? player.level ?? 1}`,
@@ -7337,7 +12570,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     el.innerHTML = '<h2>The Eternal Champion</h2>'
       + lines.map((line) => `<p class="quote">${wrapText(line, 62).join('<br>')}</p>`).join('')
       + '<div class="record">' + record.map((line) => `<p>${line}</p>`).join('') + '</div>'
-      + `<p class="src">Arena\'s closing scene, in its own words (UESP transcription) · ${movieLine}</p>`
+      + `<p class="src">Arena\'s closing scene, in its own words (the install\'s TEMPLATE.DAT) · ${movieLine}</p>`
       + '<p class="hint">Press any key to stand in the throne room, or M for the world map.</p>';
     el.classList.add('on');
     dbg.ending = true;
@@ -7358,6 +12591,34 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   const arrival = showArrival();
   refreshObjective();
+  // **Ria's explanation, once per save** (`TEMPLATE.DAT` 1400). It is the main quest's start
+  // cinematic — the cell's own words, and the reason the Staff matters at all — so it is played
+  // the moment a new game's first level stands, before anything else is owed. The start menu
+  // sets the handshake (`cellDreamPending`) and an older save that never heard her is given it
+  // once; `markStorySeen` writes the ledger before the movie starts, so a reload cannot repeat
+  // it. A dev link that boots a scene is not a game start and is handed nothing.
+  if (cellDreamPending()) {
+    clearCellDreamPending();
+    const cellDream = dueCellDream(quest);
+    if (cellDream) {
+      markStorySeen('dreamsSeen', cellDream);
+      void playStoryScene(cellDream);
+    }
+  } else if (!levelInhabited && !/^IMPPAL/i.test(String(mapName))) {
+    // **Tharn answers the piece at the next encounter** (`1392 + pieces - 1`): UESP has his
+    // vision at a random monster encounter, with his minions following, so the port plays it on
+    // entering the next level **that has creatures in it** — not inside a shop, and not the
+    // palace, which has his own scene (`1447`).
+    void maybeAmbushScene();
+  }
+  // **A picture must never stop a level.** The marker is a convenience — it is placed after the
+  // world is already standing — so a missing texture or a refused batch loses the picture and not
+  // the arrival. (A boot that rejected here would leave a page that never becomes ready.)
+  try {
+    await placeObjectiveMarker();
+  } catch (err) {
+    console.warn('[objective] no marker on this level', err?.message ?? err);
+  }
 
   // ── input ──────────────────────────────────────────────────────────────────
   /**
@@ -7374,26 +12635,61 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   async function openWorldMap() {
     if (mapScene || life.mapOpen) return mapScene;
+    // **The Imperial Dungeons are the one place with no map of Tamriel.** The owner,
+    // 2026-10-22: *"whenever you are in the Imperial Prison dungeon you shouldn't be able to
+    // open the Tamriel map so you can't leave unless you exit manually"*. The escape is the
+    // game's own first quest (the ruby key, the north wall, the sewers), and fast travel from
+    // the cell was a way around it — so the map closes here, with the reason said out loud
+    // rather than a key that silently does nothing. `Tab` still draws the level itself.
+    if (inImperialDungeons()) {
+      showNotice('The Imperial Dungeons are not on any map you can read. The ruby key and the sewers are the way out.', 3000);
+      dbg.mapLocked = true;
+      return null;
+    }
     life.mapOpen = true;
-    try {
-      localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({
-        name: place?.name ?? mapName,
-        dungeon: place?.kind === 'dungeon',
-      }));
-    } catch { /* ignoring storage is fine; the map falls back to the continent's centre */ }
+    // **Where the player is, and nothing else.** This used to write `{name, dungeon}` — the page's own
+    // `?location=` — which is how a player standing in a field came to be told they were in Daggerfall:
+    // the map's mark was the *named* location, not the ground under their feet. It writes the same
+    // record the level load wrote now, world cell and country included (B26).
+    rememberLastLocation();
+    rememberClock();
     const { bootWorldMap } = await import('./worldmap.js');
     mapScene = await bootWorldMap(canvas, renderer, params, status, source, {
       overlay: true,
+      clock: () => clockNow(),
       onTravel: (location) => {
+        // The map has already priced and saved the journey. Adopt its arrival clock so
+        // goInPlace's final save cannot overwrite it with this scene's departure hour.
+        const arrival = worldClock(loadWorldState());
+        if (arrival) {
+          clockBaseDay = arrival.day; clockBaseMinutes = arrival.minutes;
+          clockBaseSeconds = dbg.seconds ?? 0;
+          radiant = loadRadiantState();
+        }
         closeWorldMap();
+        // Hand the promise back, not `true`: the world map's travel card is a **loading
+        // screen**, so it has to stay up until this build is standing rather than being
+        // dismissed the moment the map's click handler returns.
         const promise = travelTo(location);
         dbg.travel = { to: location.name, kind: location.kind, promise };
-        return true;
+        return promise;
       },
       onClose: () => { life.mapOpen = false; mapScene = null; },
     });
     dbg.mapOpen = true;
     return mapScene;
+  }
+
+  /**
+   * **Is the player in the Imperial Dungeons?** The opening `.MIF` (`START.MIF`), on any of its
+   * levels — the cell, the sewers, the shift gate's halls. The map is shut there (see
+   * `openWorldMap`), which is the owner's rule and the story's own: the first quest is the
+   * escape, and a fast travel out of the cell would skip it.
+   *
+   * @returns {boolean}
+   */
+  function inImperialDungeons() {
+    return String(mapName ?? '').toUpperCase() === START_INTERIOR;
   }
 
   /** Put the world map away, leaving the game exactly where it was. */
@@ -7404,6 +12700,124 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     dbg.mapOpen = false;
     if (scene) scene.close();
     return true;
+  }
+
+  // ── the automap (`Tab`, in a dungeon or a building) ─────────────────────────
+  //
+  // Arena's other map. `M` has always opened **Tamriel** here, and in a city that is the right
+  // answer; in a dungeon, a shop, a guildhall or the palace it is the one map that cannot say
+  // where the player is. OpenTESArena's `AutomapUiMVC` is the reference (block B21,
+  // `game/automap.js` carries the colours and the arrow): the level's own cells, a wall brown, a
+  // door red, an up-stair green, a down-stair blue, water and lava their own, and the player as
+  // a 3×3 arrow pointing the way the camera faces. `game/automap.js`'s header says what is the
+  // install's, what is OpenTESArena's and what is this project's presentation.
+
+  /**
+   * **Whether `Tab` has a level to show.** A dungeon and every interior building are one level
+   * the player can be lost in; a **city** and the **country** have no local sheet, because there
+   * the continent is the thing a player needs to see (and `M` is Tamriel from everywhere).
+   * @returns {boolean}
+   */
+  function automapEligible() {
+    return Boolean(current?.level) && !current?.city && !current?.wild;
+  }
+
+  /** The two lines above the sheet: what place this is, and what level of it. */
+  function automapHeading() {
+    const where = place?.name ?? null;
+    return {
+      title: where && where !== mapName ? `${where} — ${mapName}` : mapName,
+      sub: `level ${(current?.index ?? 0) + 1} of ${levelCount} · `
+        + `${current?.level?.width ?? 0}×${current?.level?.depth ?? 0} cells · ${current?.infName ?? ''}`,
+    };
+  }
+
+  /**
+   * The automap as the seam reports it: open or not, whether this page has one, where the arrow
+   * is, and what the level holds. A reader only — opening is `toggleAutomap`.
+   */
+  function automapReport() {
+    const marker = automapMap && current?.motor?.pos
+      ? automapMarker(automapMap, current.motor.pos, cam.yaw)
+      : null;
+    return {
+      open: automapOpen,
+      eligible: automapEligible(),
+      map: mapName,
+      level: current?.index ?? 0,
+      levels: levelCount,
+      ...automapHeading(),
+      marker,
+      summary: automapSummary(automapMap),
+      drawn: dbg.automapDrawn ?? null,
+    };
+  }
+
+  /** The legend, built from the one table the colours live in. */
+  function renderAutomapLegend() {
+    const el = document.getElementById('automap-legend');
+    if (!el) return;
+    el.innerHTML = AUTOMAP_LEGEND.map(({ kind, label }) =>
+      `<span><i style="background:${AUTOMAP_COLORS[kind]}"></i>${escapeHtml(label)}</span>`).join('');
+  }
+
+  /** Draw the current level's sheet and keep what was drawn for the seam. */
+  function paintAutomap() {
+    const canvasEl = document.getElementById('automap-canvas');
+    if (!canvasEl || !automapMap || !current?.motor?.pos) return null;
+    const heading = automapHeading();
+    const marker = automapMarker(automapMap, current.motor.pos, cam.yaw);
+    const drawn = drawAutomap(canvasEl, { map: automapMap, marker });
+    dbg.automapDrawn = drawn;
+    dbg.automapMarker = marker;
+    const title = document.getElementById('automap-title');
+    const sub = document.getElementById('automap-sub');
+    if (title) title.textContent = heading.title;
+    if (sub) sub.textContent = heading.sub;
+    return drawn;
+  }
+
+  /**
+   * Open or close the automap — and with it the world's own pause.
+   *
+   * A map is a page the player is reading, not a window they fight through: the simulation is
+   * stopped exactly as the menu stops it (`life.paused`), and a pause that was already standing
+   * is left standing rather than resumed out from under its owner. The panel is only offered
+   * where it means something (`automapEligible`); in a city or the country the notice says where
+   * the world map is instead of opening an empty sheet.
+   *
+   * @param {boolean} [force] `true`/`false` to open/close, `undefined` to toggle
+   * @returns {boolean|null} whether it is up now, or null where no automap applies
+   */
+  function toggleAutomap(force) {
+    const el = document.getElementById('automap');
+    if (!el) return null;
+    const on = typeof force === 'boolean' ? force : !el.classList.contains('on');
+    // **Idempotent.** Opening a panel that is already open must not take a second pause's note —
+    // `automapPaused` would then read `false` (the world was already paused) and closing would
+    // leave it stopped. The latch is the state, the DOM is its mirror.
+    if (on === automapOpen && el.classList.contains('on') === on) return on;
+    if (on && !automapEligible()) {
+      showNotice('There is no automap here — Tab is for a dungeon or a building. M is the world map.', 2200);
+      return null;
+    }
+    el.classList.toggle('on', on);
+    automapOpen = on;
+    life.automapOpen = on;
+    dbg.automapOpen = on;
+    if (on) {
+      keys.clear();
+      pressed.clear();
+      automapPaused = !life.paused;
+      if (automapPaused) life.paused = true;
+      renderAutomapLegend();
+      paintAutomap();
+    } else {
+      if (automapPaused) life.paused = false;
+      automapPaused = false;
+    }
+    dbg.automap = automapReport();
+    return on;
   }
 
   /**
@@ -7420,8 +12834,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   async function travelTo(location) {
     const next = new URLSearchParams();
     if (location.kind === 'palace') next.set('interior', 'IMPPAL.MIF');
-    else if (location.kind === 'dungeon') next.set('dungeon', location.name);
-    else next.set('location', location.name);
+    else if (location.kind === 'dungeon') {
+      if (location.dungeonSeed != null) next.set('dungeonSeed', String(location.dungeonSeed));
+      else next.set('dungeon', location.name);
+    } else if (location.kind === 'wild') {
+      next.set('wild', `${location.cell.row},${location.cell.col}`);
+      if (location.name) next.set('location', location.name);
+    } else next.set('location', location.name);
+    if (location.provinceID != null) next.set('province', String(location.provinceID));
+    if (location.id != null) next.set('placeId', String(location.id));
     const folder = source?.arenaPath ?? params.get('arena') ?? null;
     if (folder) next.set('arena', folder);
     dbg.travelling = { to: location.name, kind: location.kind, query: next.toString() };
@@ -7432,6 +12853,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   addEventListener('keydown', (e) => {
+    if (e.target?.closest?.('input, select, textarea')) return;
+    // **A riddle door owns the keyboard while it is asking.** Escape puts it away; nothing else
+    // moves, swings or opens a map behind a question the player is reading.
+    if (riddleAsking) {
+      if (e.code === 'Escape') closeRiddle();
+      e.preventDefault();
+      return;
+    }
+    if (panelMode === 'portrait' && panelIsOpen('inventory') && !['KeyP', 'KeyI', 'KeyC', 'Escape'].includes(e.code)) return;
     // A story movie owns the keyboard while it is up: its own skip listener is on `window`,
     // and the world behind it gets nothing — no swing, no step, no map. (The ending's own
     // movie is skipped with the key that skips it, not by opening the pause menu behind it.)
@@ -7443,12 +12873,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // world gets nothing but the Escape that closes it, so a swing or a step cannot be
     // queued up behind a panel the player is reading.
     if (life.menuOpen && e.code !== 'Escape') return;
+    // …and the automap is a third layer, with three keys of its own: `Tab` puts it away, `Escape`
+    // backs out, and `M` hands over to the world map (the owner's correction: **Tamriel must be
+    // reachable from inside a dungeon**, and it was not while the automap owned `M`). A swing or a
+    // step must not queue up behind a sheet the player is reading.
+    if (automapOpen && e.code !== 'Escape' && e.code !== 'KeyM' && e.code !== 'Tab') return;
+    if (searchedCorpse && panelIsOpen('inventory')) {
+      if (e.code === 'Escape') { searchedCorpse = null; toggleInventory(false); }
+      e.preventDefault(); return;
+    }
     if (!e.repeat && !keys.has(e.code)) pressed.add(e.code);
     keys.add(e.code);
     if (e.code === 'Space') e.preventDefault();
     if (e.code === 'BracketRight') void descend(1);
     if (e.code === 'BracketLeft') void descend(-1);
-    if (e.code === 'KeyM') void openWorldMap();
+    // `M` is **the world map, always** — the whole of Tamriel, in a city, in the country and in a
+    // dungeon. It owned the key before the automap existed, and taking it was the owner's report
+    // of 2026-10-17: *"your local map made it impossible to open the entire tamriel map the game
+    // had cause you put it on M"*. The automap has its own key (`Tab`) and a button on its sheet,
+    // so neither map is ever out of reach.
+    if (e.code === 'KeyM') {
+      if (automapOpen) toggleAutomap(false);
+      void openWorldMap();
+    }
+    // `Tab` is **the automap of the level the player is standing in** (`game/automap.js`), where a
+    // dungeon, a shop, a guildhall or the palace has one. The browser's own focus traversal is
+    // suppressed, because this is a game key. `Escape` still closes the sheet.
+    if (e.code === 'Tab') {
+      e.preventDefault();
+      if (automapOpen || automapEligible()) toggleAutomap();
+    }
     if (e.code === 'KeyE' && !e.repeat) void interact();
     if (e.code === 'KeyR' && !e.repeat) restHere();
     if (e.code === 'KeyQ' && !e.repeat) startRoll();
@@ -7459,6 +12913,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // `I` the pack and `C` the spellbook are two pages of **one** panel (`toggleInventory`),
     // and the key of the page already on screen puts the panel away — which is what a player
     // expects of the key that opened it.
+    if (e.code === 'KeyP' && !e.repeat) openPortrait();
     if (e.code === 'KeyI') openBag();
     if (e.code === 'KeyC') void openSpellbook();
     // ── the level-up (`game/progression.js`) ──────────────────────────────────
@@ -7468,9 +12923,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // still run, which is the one thing a modal in a live dungeon should not take away.
     if (levelUp && /^Digit[1-8]$/.test(e.code)) { placeLevelPoint(Number(e.code.slice(5)) - 1); return; }
     if (levelUp && (e.code === 'Enter' || e.code === 'NumpadEnter')) { takeLevel(); return; }
-    // `L` brings the panel back after it was postponed, and says what is waiting otherwise.
+    // ── the hotbar's ten keys (`game/hotbar.js`) ─────────────────────────────
+    // Below the level-up's digits, deliberately: the level panel owns `1`…`8` while it is up.
+    const hotbarSlot = slotFromCode(e.code);
+    if (hotbarSlot >= 0 && !e.repeat) { activateHotbar(hotbarSlot); return; }
+    // `L` **shows or puts away** the panel (`game/progression.js`): postponed with `Escape`, it
+    // is the key that brings the points back, and with the panel already up it is the key that
+    // puts it away again — the owner's *"L doesnt close it"*. The points are kept either way; a
+    // level is only taken with `Enter`, so this can never spend them by accident.
     if (e.code === 'KeyL') {
-      if (levelUp) renderLevelUp();
+      if (levelUp && panelIsOpen('levelup')) {
+        document.getElementById('levelup')?.classList.remove('on');
+      } else if (levelUp) renderLevelUp();
       else {
         const due = pendingLevels(player);
         showNotice(due > 0 ? `${due} level${due === 1 ? '' : 's'} owed — press L to place the points.` : 'Nothing is owed.', 2200);
@@ -7484,12 +12948,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (e.code === 'Escape') {
       // Escape backs out of whatever is up, and the menu is what it does when nothing is:
       // a player who wants out of a conversation should not be handed a menu on the way.
-      const up = ['arrival', 'ending', 'talk', 'inventory', 'levelup']
+      const up = ['arrival', 'ending', 'talk', 'inventory', 'levelup', 'automap']
         .some((id) => document.getElementById(id)?.classList.contains('on'));
       document.getElementById('arrival')?.classList.remove('on');
       document.getElementById('ending')?.classList.remove('on');
       closeTalk();
       toggleInventory(false);
+      // Escape closes the automap before it is allowed to become the pause menu.
+      if (automapOpen) toggleAutomap(false);
       // Postponed, not discarded: the points stay in `levelUp` and `L` brings the panel back,
       // so `Escape` is a way to keep playing rather than a way to lose a level's points.
       if (levelUp) document.getElementById('levelup')?.classList.remove('on');
@@ -7502,6 +12968,30 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   addEventListener('keydown', () => document.getElementById('arrival')?.classList.remove('on'), { once: false, signal });
   addEventListener('keyup', (e) => keys.delete(e.code), { signal });
   addEventListener('blur', () => keys.clear(), { signal });
+
+  // ── THE PHONE IN HAND ───────────────────────────────────────────────────────
+  //
+  // `engine/ui/touchControls.js` attaches only where the device reports a finger, and then
+  // presses the game's own keys: the stick walks (and runs at a full push), a drag turns the
+  // head through the same `lookFilter` the mouse uses, and the buttons are `F`, `E`, `T`, `Z`,
+  // `B`, `Space`, `I`, `C`, `M`, `Tab` and `Escape`. A tap on the world is the same `E` the
+  // key is — aimed, because there is no cursor to aim with. **Nothing in the game is altered
+  // for a phone**: the same page, the same keys, the same save.
+  touchLayer = attachTouchControls(canvas, {
+    // **A phone's first touch is the sound's own key.** iOS only lets an audio context start
+    // inside a gesture; the layer spends the gesture here instead of leaving the fight silent.
+    onFirstTouch: () => { void unlockSfx(); },
+    look: (dx, dy) => {
+      if (moviePlaying) return;
+      lookFilter.add(dx * 1.9 * lookScale(), -dy * 1.9 * lookScale() * lookInvert());
+    },
+    tap: () => {
+      if (moviePlaying || life.mapOpen || life.menuOpen) return;
+      void interact();
+    },
+    paused: () => Boolean(moviePlaying || life.mapOpen || life.menuOpen),
+  });
+  life.abort.signal.addEventListener('abort', () => { touchLayer?.dispose(); touchLayer = null; });
   /**
    * Change level, and bring its own population with it.
    *
@@ -7513,6 +13003,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     await loadLevel(next);
     await populate(current);
     refreshObjective();
+    // A stair is a level, and the job's thing may be on this one; its picture is placed from the
+    // objective the line above just chose.
+    try { await placeObjectiveMarker(); } catch (err) { console.warn('[objective] no marker on this level', err?.message ?? err); }
     return current;
   }
 
@@ -7538,32 +13031,47 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   canvas.addEventListener('contextmenu', (e) => e.preventDefault(), { signal });
   canvas.addEventListener('pointerdown', (e) => {
     if (moviePlaying || life.mapOpen || life.menuOpen) return;
+    // **A finger is not a mouse.** `engine/ui/touchControls.js` owns every touch gesture —
+    // its own stick, its own look drag, and its own tap as an interaction. Without this guard
+    // the scene's mouse handler fired on the very same event: asking for a pointer lock a
+    // phone cannot take, and swinging the sword at whatever the player touched.
+    if (e.pointerType === 'touch') return;
     // Right button: the guard. The swing below is the left button's (and any non-right
     // press), because a player who blocks with the mouse still expects the left to hit.
     if (e.button === 2) { mouseGuard = true; startParry(); updateCombatHud(); return; }
+    // **A click on the mirror is not a swing.** The owner's own words for it: *"add a mirror wall
+    // inside the house that if you click you can change your third person character"*. If the
+    // owner is in their own house, close to the mirror and looking at it, the press opens the
+    // body chooser; anywhere else the press is the blow it always was.
+    const mirror = dbg.houseMirror;
+    if (mirror && ownedHouseHere()) {
+      const feet = feetOf();
+      const dx = (mirror.row + 0.5) * CELL_SIZE - feet[0];
+      const dz = (mirror.col + 0.5) * CELL_SIZE - feet[2];
+      const distance = Math.hypot(dx, dz) || 1;
+      const facing = (dx * Math.sin(cam.yaw) + dz * Math.cos(cam.yaw)) / distance;
+      if (distance < 4.5 && facing > 0.85) { void openMirror(); return; }
+    }
     requestLook(canvas);
     // A click in the world is a swing, which is how a player expects to fight. It is
     // NOT gated on the pointer being locked: the first click is the one that asks for
     // the lock, so gating here made the very first swing do nothing — and a browser
     // that refuses pointer lock (or a headless one, which has no lock at all) could
     // never fight by mouse. Measured by `tests/run-browser.mjs combat`.
-    // A press in the world *charges* the strike (xElden-ring Shape: the hold is the heavy).
-    // The blow itself lands on `pointerup`, with the seconds held — so a tap is the light
-    // swing the click always was, only a beat later, and a hold is the heavy.
-    defence.charging = true;
-    defence.chargeStart = dbg.seconds;
-    defence.chargeHeld = Infinity;
+    // **The press is the blow.** There is no hold-and-release any more: the owner asked for the
+    // ordinary strike alone. The swing resolves on the same press the pointer lock is requested
+    // on, which also keeps the first click of a headless page able to fight.
+    defence.charging = false;
+    defence.chargeArmed = false;
+    defence.chargeProgress = 0;
+    const blow = strike();
+    dbg.lastStrike = blow;
+    updateCombatHud();
   }, { signal });
   addEventListener('pointerup', (e) => {
     if (moviePlaying) return;
     if (e.button === 2 || mouseGuard) { mouseGuard = false; updateCombatHud(); return; }
-    if (defence.charging) {
-      defence.charging = false;
-      defence.chargeHeld = Math.max(0, dbg.seconds - defence.chargeStart);
-      const blow = strike({ held: defence.chargeHeld });
-      dbg.lastStrike = blow;
-      updateCombatHud();
-    }
+    // The left button does nothing on release: the strike landed on the press (see above).
   }, { signal });
   addEventListener('mousemove', (e) => {
     if (moviePlaying) return;
@@ -7571,8 +13079,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     lookFilter.add(e.movementX * lookScale(), -e.movementY * lookScale() * lookInvert());
   }, { signal });  // ── the debug seam ─────────────────────────────────────────────────────────
   Object.assign(window.__debug, {
+    portrait: () => dbg.portrait ?? null,
+    portraitError: () => dbg.portraitError ?? null,
     scene: 'interior',
     map: mapName,
+    /** The live clock (`clockNow`), as a scripted run reads it: day, minutes and the turn. */
+    clock: () => {
+      const c = clockNow();
+      return { day: c.day, minutes: c.minutes, turned: c.turned ?? 0, hour: c.hour ?? null, phase: c.phase ?? null };
+    },
     /** The place's own words, or null when Arena's data has none. */
     arrival: () => (arrival ? { title: arrival.title, text: arrival.text, source: arrival.source, shown: document.getElementById('arrival')?.classList.contains('on') ?? false } : null),
     /** What is here to be taken, where it is, and how far away it is. */
@@ -7580,10 +13095,75 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ? {
         ...current.objective,
         paces: Math.round(Math.hypot(motorCell(current, current.objective).x, motorCell(current, current.objective).z)),
+        // **The ground under the marker**, so a suite can hold every quest to "not in a
+        // pool": dry ground that is not masonry.
+        dry: (() => {
+          const level = current.level;
+          const cell = level?.cells?.[current.objective.cellX * level.width + current.objective.cellZ];
+          return cell ? !cell.solid && !cell.floor?.chasm : null;
+        })(),
       }
       : null),
     /** Take it, exactly as `E` does. */
     interact: () => interact(),
+    /** The fight's own voice: the last cue's file and whether it came from the install. */
+    sfx: () => sfxState(),
+    /** The hotbar as the strip draws it: key, label, kind and whether it can be pressed. */
+    hotbar: () => hotbarRows(player, hotbarWorld()),
+    /** Press a hotbar cell, exactly as its digit does. */
+    pressHotbar: (index) => { activateHotbar(Number(index)); return true; },
+    /** Which of the install's own paintings the interface is wearing. */
+    gui: () => dbg.gui ?? null,
+    /**
+     * **The dungeon's own locks and keys**, as the level built them: every door leaf with its
+     * lock, whether it is a riddle or the quest's seal, every key lying in the level and what
+     * the player carries. The owner's *"the keys still not work as intended"* is a claim about
+     * these three lists together, so a run can hold the key that opens a door to that door.
+     */
+    dungeonLocks: () => ({
+      doors: (current?.leaves ?? []).map((leaf) => ({
+        row: leaf.row, col: leaf.col, lock: leaf.lockLevel, locked: Boolean(leaf.locked),
+        open: Boolean(leaf.open), riddle: Boolean(leaf.riddle), questSeal: Boolean(leaf.questSeal),
+      })),
+      keys: (current?.loot ?? []).filter((spot) => spot.kind === 'key').map((spot) => ({
+        row: spot.row, col: spot.col, lock: spot.lock ?? 0, taken: Boolean(spot.taken),
+        door: spot.door ?? null, label: spot.label ?? null,
+      })),
+      carried: (player.keys ?? []).map((key) => ({ lock: key.lock ?? 0, label: key.label ?? null })),
+    }),
+    /** Stand on a cell of the level, for a run that must not walk a dungeon to test a door. */
+    standAt: (row, col) => {
+      const at = standAt(Number(row), Number(col));
+      return at ? { row: at.row, col: at.col } : null;
+    },
+    /**
+     * A riddle door: the question on the panel, the doors it speaks for, and the answer field.
+     *
+     * `answerRiddle` is the panel's own submit, so a test drives the same path a player's typing
+     * does rather than reaching into the door state.
+     */
+    riddle: () => ({
+      asking: Boolean(riddleAsking),
+      shown: document.getElementById('riddle')?.classList.contains('on') ?? false,
+      text: riddleAsking?.riddle?.riddle ?? null,
+      wrong: document.getElementById('riddle-said')?.textContent ?? null,
+      doors: riddleAsking
+        ? riddleAsking.leaves.map((leaf) => ({ row: leaf.row, col: leaf.col, lock: leaf.lockLevel,
+          locked: leaf.locked, solved: Boolean(leaf.riddleSolved) }))
+        : [],
+      result: dbg.lastRiddle ?? null,
+    }),
+    answerRiddle: (text) => answerRiddle(String(text)),
+    /**
+     * Arm a townsperson's rationed spell clock, for a check of the owner's "angry npcs cast
+     * too" without waiting out the rare first minute. `index` follows `townsfolk()`.
+     */
+    townspersonSpellReady: (index = 0) => {
+      const person = townsfolk[index];
+      if (!person) return null;
+      person.spellClock = 0;
+      return { hostile: Boolean(person.hostile), fighter: Boolean(person.fighter), name: person.name ?? null };
+    },
     /** The main quest, as this scene sees it. */
     quest: () => ({
       step: quest.step,
@@ -7593,9 +13173,35 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       mapKnown: quest.mapKnown,
       mithrilKey: quest.mithrilKey,
       hasJewel: quest.hasKeyItem,
+      // **The last blow's own fact.** The boss fight's check reads it to hold the order the quest
+      // machine enforces (the Jewel, then Tharn, then the Emperor); without it the seam could
+      // only say the quest had ended, never that he was the one who ended it.
+      tharnSlain: Boolean(quest.tharnSlain),
       ended: quest.ended,
       entries: quest.log,
+      dreamsSeen: [...(quest.dreamsSeen ?? [])],
+      ambushSeen: [...(quest.ambushSeen ?? [])],
     }),
+    /**
+     * The story's own state: the beats this save has played, and the ones it owes.
+     *
+     * `dream` is the dream the next sleep would bring (`game/storyScript.js`'s `dueDream`), and
+     * `ambush` the vision the next encounter would bring. A test can hold the level-2 gate and the
+     * piece order to these without waiting on a scene to finish.
+     */
+    story: () => ({
+      dream: dueDream(quest, player),
+      ambush: dueAmbush(quest),
+      dreamsSeen: [...(quest.dreamsSeen ?? [])],
+      ambushSeen: [...(quest.ambushSeen ?? [])],
+      last: dbg.movie ?? null,
+    }),
+    /**
+     * A sleep's dream without the room's bill, for a fixture that tests the dream's own gate
+     * (the level-2 requirement) rather than the tavern's price. The dream the quest owes plays,
+     * exactly as `restIn` plays it.
+     */
+    sleep: () => maybeDreamScene(),
     /** The ending, if it has been reached in this session or this save. */
     ending: () => ({
       reached: Boolean(quest.ended),
@@ -7692,29 +13298,83 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     },
     /** Hand in the job the person in front of the player is owed for, if any. */
     handIn: () => handInJob(),
-    /** The talk corpus, as the scene loaded it from the player's install. */
-    talkLines: () => ({
-      plain: talkLines.plain.length,
-      province: talkLines.province.length,
-      total: talkLines.total,
-      parts: talkLines.parts,
-      dropped: talkLines.dropped,
-      unfillable: talkLines.unfillable,
-    }),
+    /**
+     * **The banks, as the scene loaded them from the player's install** — one number per key group
+     * (`game/dialogue.js`), which is what a suite can hold the *file* to rather than a run.
+     */
+    talkLines: () => ({ ...speech.census }),
+    /**
+     * What one person can be answered with, without walking up to them: their persona, their trade,
+     * and the words this game can fill for them. A test's own `speakerFor`, through the scene.
+     *
+     * @param {number|'nearest'|'keeper'} [which]
+     */
+    talkVoice: (which = 'nearest') => {
+      const feet = feetOf();
+      const crowd = [...townsfolk, ...stillPeople];
+      const byRole = typeof which === 'string' && which !== 'nearest' && which !== 'keeper'
+        ? crowd.find((p) => String(p.role ?? '').toLowerCase() === which) ?? null
+        : null;
+      const person = which === 'keeper'
+        ? keeperHere()
+        : which === 'nearest'
+          ? crowd.slice().sort((a, b) => (
+            Math.hypot(a.world.x - feet[0], a.world.z - feet[2]) - Math.hypot(b.world.x - feet[0], b.world.z - feet[2])
+          ))[0]
+          : (byRole ?? townsfolk[which] ?? stillPeople[which] ?? null);
+      if (!person) return null;
+      const where = whereAmI();
+      const speaker = speakerFor({
+        person, banks: speech, place: where, provinceID: where?.provinceID ?? null, player, seed: talkSeedFor(person),
+        nearby: nearbyBuildings(),
+      });
+      return {
+        who: person.description,
+        persona: speaker.persona.key,
+        personaName: speaker.persona.name,
+        occupation: speaker.occupation ? { row: speaker.occupation.row, name: speaker.occupation.name, line: speaker.occupation.line.text } : null,
+        values: { ...speaker.values },
+        // The way to each building the street offers, and the questions that came of it — the
+        // same two calls the panel makes, so a suite can hold the answers against the doors.
+        nearby: speaker.nearby,
+        topics: topicsFor(speaker, speech, 0).map((topic) => ({
+          key: topic.key, label: topic.label, text: topic.text, id: topic.id, subject: topic.subject ?? null,
+          credit: topic.credit ?? null,
+        })),
+        // What they would say on a first meeting and on a second, without walking to them: the
+        // same two calls `talk()` makes, so a suite can hold a bank to a figure it never stood beside.
+        first: greetingFor(speaker, speech, { turn: 0, met: false }),
+        again: greetingFor(speaker, speech, { turn: 1, met: true }),
+        // …and the trade's own bank, which a keeper speaks **before** the town's talk
+        // (`talk()` prefers it: a tavern's line from `tavern.dat` rather than a citizen's from
+        // `template.dat`). Reported beside the other two so a suite can tell which half spoke.
+        service: (() => {
+          const bank = person.bank ? serviceGreetings(library.service, person.bank) : [];
+          const greeting = bank.length ? serviceGreeting(bank, talkSeedFor(person), 0) : null;
+          return greeting ? { text: greeting.text, source: greeting.source } : null;
+        })(),
+      };
+    },
     /**
      * Stand next to one of the town's people, for a test that must not walk a city.
      *
-     * @param {number|'nearest'} [which]
+     * @param {number|'nearest'|'keeper'|string} [which]  an index into the walking crowd,
+     *   `'nearest'`, `'keeper'` for whoever keeps the building, or **a role word** (`'patron'`,
+     *   `'priest'`, `'smith'`) for the first figure whose art names that trade — the way a suite
+     *   reaches a tavern's drinker without walking to every still person in the room.
      */
     teleportToPerson: (which = 0) => {
       const feet = feetOf();
+      const byRole = typeof which === 'string' && which !== 'nearest' && which !== 'keeper'
+        ? [...townsfolk, ...stillPeople].find((p) => String(p.role ?? '').toLowerCase() === which) ?? null
+        : null;
       const person = which === 'nearest'
         ? townsfolk.slice().sort((a, b) => (
           Math.hypot(a.world.x - feet[0], a.world.z - feet[2]) - Math.hypot(b.world.x - feet[0], b.world.z - feet[2])
         ))[0]
         : which === 'keeper'
-          ? townsfolk.find((t) => t.keeper) ?? townsfolk[0]
-          : townsfolk[which];
+          ? keeperHere() ?? townsfolk.find((t) => t.keeper) ?? townsfolk[0]
+          : byRole ?? townsfolk[which];
       if (!person) return null;
       // **The cell they are standing in now**, not the one they were placed on: a person
       // walking a route keeps `place` at the last cell they *arrived* on until they reach the
@@ -7816,17 +13476,74 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const byKind = typeof which === 'string' && SHOP_KIND_NAMES.includes(which);
       const pool = byKind ? doors.filter((d) => d.kind === which) : doors;
       if (!pool.length) return null;
+      // **Only a door with somewhere to stand is a door a test can walk to.** A wall door's
+      // own cell is the building; `door.stand` is the paving in front of it.
+      const reachable = pool.filter((door) => door.stand);
+      const list = reachable.length ? reachable : pool;
       const door = byKind || which === 'nearest'
-        ? pool.slice().sort((a, b) => distanceTo(a) - distanceTo(b))[0]
-        : pool[which] ?? pool[0];
+        ? list.slice().sort((a, b) => distanceTo(a) - distanceTo(b))[0]
+        : list[which] ?? list[0];
       if (!door) return null;
-      standAt(door.row, door.col);
+      const stand = door.stand ?? (() => {
+        const c = standAt(door.row, door.col);
+        return c;
+      })();
+      if (stand) standAt(stand.row, stand.col);
       refreshObjective();
       refreshNearDoor();
-      return { row: door.row, col: door.col, kind: door.kind, name: door.name, file: door.file, sign: door.sign };
+      return { row: door.row, col: door.col, kind: door.kind, name: door.name, file: door.file, sign: door.sign, stand };
     },
     /** Walk out of the building through the door the player came in by, as `E` does. */
     leaveBuilding: () => leaveDoor(),
+    /**
+     * **The king's own offer, and the sale, without a walk to the throne.** The owner's brief
+     * asks the house to work when the player has ten friends and the money; this is the same
+     * `houseOffer` the king's panel shows and the same `buyHouseFromKing` its button calls, so a
+     * scripted run measures the sale itself rather than a second copy of the rule.
+     */
+    house: () => {
+      const city = fromPlace?.name ?? null;
+      const day = radiant.day ?? 0;
+      const friends = friendsInPlace(regard, city, day);
+      const owns = Boolean(player?.house && String(player.house.city ?? '').toLowerCase() === String(city ?? '').toLowerCase());
+      return {
+        city,
+        friends,
+        gold: player?.gold ?? 0,
+        owns,
+        deed: player?.house ?? null,
+        offer: houseOffer({ friends, gold: player?.gold, owns, city }),
+        bought: dbg.house ?? null,
+        mirror: dbg.houseMirror ?? null,
+      };
+    },
+    /** Be a friend of the city, `count` times — the ledger the king reads, not a bypass of it. */
+    befriendCity: (count = HOUSE_FRIENDS_REQUIRED) => {
+      const city = fromPlace?.name ?? null;
+      if (!city) return 0;
+      const day = radiant.day ?? 0;
+      const next = { ...regard, people: { ...(regard.people ?? {}) } };
+      for (let i = 0; i < Math.max(0, Math.min(40, Math.round(Number(count) || 0))); i++) {
+        next.people[`${city}#test,${i}`] = { r: 60, seen: day };
+      }
+      regard = next;
+      saveRegard(regard);
+      return friendsInPlace(regard, city, day);
+    },
+    buyHouse: () => buyHouseFromKing(),
+    /** Coin for a scripted visit to the throne — the purse the king's price is measured against. */
+    giveGold: (amount = 0) => {
+      const n = Math.max(0, Math.round(Number(amount) || 0));
+      player = { ...player, gold: (Number(player.gold) || 0) + n };
+      savePlayer();
+      return player.gold;
+    },
+    /** Open the mirror's page, and wear a body from its catalogue. */
+    mirror: () => openMirror(),
+    chooseBody: (id) => chooseMirrorBody(id),
+    /** Where the house's own front door is, and where the player stands after the sale. */
+    houseRoom: () => ({ owned: ownedHouseHere(), map: mapName, entryCell,
+      mirror: dbg.houseMirror ?? null, chest: dbg.homeChest ?? null }),
     /** Speak to whoever is nearest, exactly as `T` does. */
     talk: () => talk(),
     /** Take the job the person in front of the player is offering, as their button does. */
@@ -7844,6 +13561,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         ? {
           who: person.description, id: offer.id, kind: offer.kind, title: offer.title,
           target: offer.target, targetMif: offer.targetMif, province: offer.targetProvince,
+          // **Where the work is.** A wild job has no `.MIF`; it has a world cell and the
+          // landmark it stands near, and a suite (or the map) checks those instead.
+          targetKind: offer.targetKind ?? null, targetCell: offer.targetCell ?? null,
+          targetNear: offer.targetNear ?? null, targetAnchor: offer.targetAnchor ?? null,
           days: offer.days, reward: offer.reward, dataText: offer.dataText, source: offer.source,
           draftDungeons: (jobDungeons ?? []).length,
         }
@@ -7861,6 +13582,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         line: el?.querySelector('p.line')?.textContent ?? null,
         source: el?.querySelector('p.src')?.textContent ?? null,
         topics: [...(el?.querySelectorAll('button[data-topic]') ?? [])].map((b) => ({ key: b.dataset.topic, label: b.textContent })),
+        // Why the panel closed on its own, if it did: the earshot rule's own record.
+        closed: dbg.talkClosed ?? null,
         // The job the person is offering, exactly as the panel shows it: the prose, the
         // credit line, and the button a player would click.
         job: el?.querySelector('.job .offer')?.textContent ?? null,
@@ -7887,6 +13610,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         world: { x: talking.person.world.x, z: talking.person.world.z },
         walking: Boolean(talking.person.walking),
         inTownsfolk: townsfolk.includes(talking.person),
+        inStillPeople: stillPeople.includes(talking.person),
         distance: Math.hypot(talking.person.world.x - feetOf()[0], talking.person.world.z - feetOf()[2]),
       }
       : null),
@@ -7929,10 +13653,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     finishJob: () => {
       const active = radiant.active;
       if (!active) return { ok: false, reason: 'nothing in hand' };
-      if (active.kind === 'slay') return { ok: false, reason: 'defeat the contracted creatures in their lair' };
-      const event = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
+      if (active.kind === 'slay' || active.kind === 'hunt') return { ok: false, reason: 'defeat the contracted creatures in their lair' };
+      const event = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+        slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
       if (!event) return { ok: false, reason: `no finish for ${active.kind}` };
-      const result = applyRadiantEvent(radiant, event, { where: active.target });
+      // The seam simulates standing on the job's own spot; a wild job's cell is what its
+      // state machine checks, so hand it over rather than relying on a page name.
+      const result = applyRadiantEvent(radiant, event, { where: active.target, cell: active.targetCell });
       if (!result.ok) return { ok: false, reason: result.reason };
       radiant = result.state;
       saveRadiantState(radiant);
@@ -7951,19 +13678,41 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         weapon: player.weapon, material: player.material, created: Boolean(player.created),
         gold: player.gold ?? 0,
         carrying: weaponCarried(player),
+        // **What is on the body**, so a test can see that a thing which left the pack came
+        // off the hand, the arm or the finger with it (`unequipItem`'s law, 2026-10-22).
+        weaponItem: player.weaponItem ?? null,
+        shield: player.shield ?? null,
+        armour: player.armour ?? null,
+        jewelry: player.jewelry ?? null,
       },
       guarding: guarding(),
-      guardNote: BLOCK_NOTE,
-      // The attack in progress for each creature: its phase, how far through it, and whether
-      // its blow has been decided (`strikeFromMonster`).
-      attacks: monsters.filter((s) => s.attack).map((s) => {
+      guardNote: BLOCK_NOTE,        // The attack in progress for each creature: its phase, how far through it, and whether
+      // its blow has been decided (`strikeFromMonster`). Spell casts are reported apart
+      // (`castingAttacks` / `casting`) because they wear the attack animation without a melee
+      // ring — a probe that asks "is there a ring" must not count a caster's arm.
+      attacks: monsters.filter((s) => s.attack && !s.attack.spell).map((s) => {
         const at = attackPhase(s.attack.profile, s.attack.elapsed);
         return { serial: s.serial, name: s.monster.name, phase: at.phase, progress: at.progress, elapsed: s.attack.elapsed,
           windup: s.attack.profile.windup, active: s.attack.profile.active, charge: s.attack.profile.charge,
           struck: s.attack.struck, origin: { ...s.attack.origin }, yaw: s.attack.yaw,
           reach: s.attack.profile.reach, x: s.world.x, z: s.world.z };
       }),
+      castingAttacks: monsters.filter((s) => s.attack?.spell).map((s) => {
+        const at = attackPhase(s.attack.profile, s.attack.elapsed);
+        return { serial: s.serial, name: s.monster.name, phase: at.phase, progress: at.progress,
+          elapsed: s.attack.elapsed, windup: s.attack.profile.windup, struck: s.attack.struck };
+      }),
       telegraphs: combatFx.telegraphs,
+      // **The dungeon's own pathfinding** (`game/navFlow.js`): the last search's goal and how
+      // many cells it reached, and how many creatures have dropped a committed blow to run —
+      // the owner's *"if they decide to do that mid attack their animation brakes and the
+      // circle on the ground gets stuck there"*.
+      nav: dbg.nav ?? null,
+      fledMidBlow: dbg.fledMidBlow ?? 0,
+      // The bolt count, and where every bolt in flight is — the ranged half of the fight is
+      // visible on the page as a spark and here as its record.
+      casts: dbg.casts ?? 0,
+      bolts: bolts.map((bolt) => ({ x: bolt.x, y: bolt.y, z: bolt.z, caster: bolt.caster ?? null, element: bolt.element ?? null })),
       effects: { space: 'world', depthTested: true, particles: combatFx.particles.length, vertices: combatFx.count, bursts: combatFx.bursts, hitStop },
       defence: { rollT: defence.rollT, parryT: defence.parryT, direction: defence.rollDirection, live: liveDefence(), riposte: defence.riposte, stamina: defence.stamina.stamina ?? null, max: defence.stamina.max ?? null,
         // The player's own heavy, as the step reads it: whether the hold has armed the blow and
@@ -7976,13 +13725,44 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         health: s.monster.health, maxHealth: s.monster.maxHealth,
         file: s.file, cell: { row: s.place.row, col: s.place.col },
         bounty: s.bounty ?? null,
+        // **Which of Tharn's minions this is** (`1392`…`1399`): the group placed with his vision,
+        // so a scripted run can tell them from the level's own creatures and read that they came.
+        ambush: s.ambush ?? null,
         world: { x: s.world.x, y: s.world.y, z: s.world.z },
         distance: s.distance ?? null, awake: Boolean(s.awake),
+        // **Whether a camp woke it and its hunt has not run out** (`encounters.js`'s
+        // `isRoused`). Reported apart from `awake` because the two license different things —
+        // a creature roused from the far side of the level walks in without ever seeing the
+        // player — and a test that read only `awake` could not tell a hunt from a statue.
+        roused: isRoused(s, dbg.seconds),
         circling: Boolean(s.circling), baitT: Number.isFinite(s.baitT) ? s.baitT : 0,
         // **Whether it can see the player at all** (`sightClear`): what wakes a monster and
         // what lets its blow land. Reported because "it hit me through the wall" is a claim
         // about this flag, and a test should read the flag rather than infer it from health.
         sees: Boolean(s.sees),
+        // **What the fight's own state says about it** — a caster, a silenced one, a
+        // frightened one, a poisoned one — so a suite can read the spell's consequence
+        // rather than infer it from a death.
+        caster: Boolean(s.caster),
+        fleeing: Boolean(s.fleeing),
+        // **Whether a melee blow is committed right now**: the ring on the ground and the
+        // melee attack animation are both this one flag (`spawn.attack`), so a test of the
+        // owner's "circle stuck there until they die" reads it rather than the picture. A
+        // spell cast is `casting` instead: it wears the attack sheet but draws no ring.
+        attacking: Boolean(s.attack) && !s.attack.spell,
+        casting: Boolean(s.attack?.spell),
+        // The last blow it decided, as the fight recorded it: `hit`, or `whiff` / `dodged` /
+        // `parried` — and `guaranteed` on a blow inside the circle (the owner's 2026-10-19 rule).
+        lastBlow: s.lastBlow ?? null,
+        silenced: (s.silencedUntil ?? 0) > dbg.seconds,
+        fear: Math.max(0, (s.fearUntil ?? 0) - dbg.seconds),
+        venom: s.venom ? { element: s.venom.element, power: s.venom.power, until: s.venom.until } : null,
+        // **A human foe's own record** (UESP's Human Enemies, D-67): the class, the race,
+        // their two abilities and the weapon the class carries, so a suite can hold the
+        // page's claims against a living spawn rather than against the table that rolled it.
+        human: s.monster.human ?? null,
+        kind: s.monster.kind ?? 'monster',
+        xpBase: s.monster.xpBase ?? null,
         frame: s.renderFrame ?? null,
         walking: Boolean(s.walking),
         dying: Boolean(s.death),
@@ -8006,6 +13786,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       dodges: dbg.dodges ?? 0,
       playerSprite: playerSet?.file ?? null,
       attackSprite: attackSet?.file ?? null,
+      // **The chosen body**, as the creator saved it, and the five-view stage that draws it.
+      appearance: { ...(playerLook ?? normalizeAppearance(player?.appearance, player)) },
+      playerViews: [...playerSets.keys()],
+      playerView: dbg.playerView ?? null,
+      attackFrames: attackFrames ? [...attackFrames] : null,
       swinging: swingAnim > 0,
       // The weapon in the player's hands, and what this install could give up for it.
       weaponView: weaponViewReport(),
@@ -8016,6 +13801,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     },
     /** Swing, exactly as `F` and a click do. */
     strike: (opts) => { const blow = strike(opts); dbg.lastStrike = blow; return blow; },
+    /**
+     * **Loose an arrow at a named creature**, for a suite that cannot walk round a dungeon and
+     * aim — the same courtesy `teleportToPerson` does for a conversation. The shot is the real
+     * one (`looseArrowNow` with an aim at the creature's chest); only the aiming is the seam's.
+     *
+     * @param {number} [which]  index into this level's creatures (`state().monsters` order)
+     * @returns {{ok: boolean, reason?: string, target?: string, from?: object, at?: object}}
+     */
+    shootAt: (which = 0) => {
+      const spawn = monsters[which];
+      if (!spawn || spawn.monster?.health <= 0) return { ok: false, reason: 'no such creature' };
+      const feet = feetOf();
+      const from = { x: feet[0], y: feet[1] + SIGHT_EYE, z: feet[2] };
+      const at = { x: spawn.world.x, y: spawn.world.y + 1.0, z: spawn.world.z };
+      const shot = looseArrowNow({ aim: { x: at.x - from.x, y: at.y - from.y, z: at.z - from.z } });
+      return shot.loosed ? { ok: true, target: spawn.monster.name, from, at } : { ok: false, reason: shot.reason ?? 'no shot' };
+    },
     /**
      * Open (or shut) one of this level's own doors, by its cell — the seam a test uses for
      * a door it cannot walk to. Real players press `E` at it (`useLeaf` is the same call).
@@ -8087,11 +13889,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         levels: levelCount,
         levelUpIndex: level.inf?.levelUpIndex ?? null,
         levelDownIndex: level.inf?.levelDownIndex ?? null,
-        near: near ? { row: near.row, col: near.col, stair: near.cell.stair, distance: near.distance } : null,
+        near: near ? { row: near.row, col: near.col, stair: near.cell.stair, distance: near.distance,
+          stand: standBeside(near.row, near.col) } : null,
+        // Every stair the level carries, with the cell a player may stand on to use it — a stair
+        // is a wall, so "go to the stair" always needs the paving beside it.
+        list: level.cells
+          .map((cell, i) => (cell?.stair ? { row: Math.floor(i / level.width), col: i % level.width, stair: cell.stair } : null))
+          .filter(Boolean)
+          .slice(0, 16)
+          .map((cell) => ({ ...cell, stand: standBeside(cell.row, cell.col) })),
         exitCell: current?.exitCell ?? null,
         cooldown: stairCooldown,
         last: dbg.stair ?? null,
         history: dbg.stairHistory ?? [],
+        // **The half the archive did not draw** (`mifLevel.js`'s `fillStairPair`, D-53): the
+        // cells this level's own stair pair was completed at, or null when the pair was whole.
+        // `stand` is the walkable cell beside each — a stair is a wall, so a test that wants to
+        // walk to one has to be told where a player may stand.
+        filled: dbg.stairFill
+          ? { ...dbg.stairFill, at: dbg.stairFill.at.map((cell) => ({ ...cell, stand: standBeside(cell.row, cell.col) })) }
+          : null,
       };
     },
     /** Take the stairway in reach, exactly as walking into it or pressing `E` does. */
@@ -8110,6 +13927,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     /** Open the pack page, and the spellbook page, as the keys do. */
     openBag: () => openBag(),
     openSpellbook: () => openSpellbook(),
+    /**
+     * The automap, as `M` opens it indoors (`game/automap.js`): the level's own marks, where the
+     * arrow stands, and what the panel drew. `toggleAutomap(true)` is the key's own hand.
+     */
+    automap: () => automapReport(),
+    toggleAutomap: (on) => toggleAutomap(on),
     /** The panel, as it is on screen: which page, and what is on it. */
     panel: () => ({
       open: Boolean(document.getElementById('inventory')?.classList.contains('on')),
@@ -8149,6 +13972,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     shop: () => ({ kind: shopTrade(), shelf: shopShelf() }),
     /** The install's own fanfare: decoded, and whether it played or waits for a gesture. */
     fanfare: () => fanfareState(),
+    /** Arena's own music: the song this place asked for and what it is doing. */
+    music: () => ({ ...musicState(), place: dbg.music ?? null, jingleRequested: dbg.jingleRequested ?? null }),
     /**
      * Stand the player in a named cell (row, col) — the trigger proof's own door: a
      * test warps into a level's `*TRIG` cell and the next frame fires it. Refuses a
@@ -8224,7 +14049,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     setClock: (minutes) => {
       const wanted = ((Math.trunc(Number(minutes) || 0) % 1440) + 1440) % 1440;
       const elapsed = wanted - arrivalMinutes();
-      dbg.seconds = Math.max(0, secondsForMinutes(elapsed < 0 ? elapsed + 1440 : elapsed));
+      dbg.seconds = clockBaseSeconds + Math.max(0, secondsForMinutes(elapsed < 0 ? elapsed + 1440 : elapsed));
       updateObjectiveHud();
       return clockNow();
     },
@@ -8311,6 +14136,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       speedScale: current.motor.swimSpeedScale,
     }),
     /**
+     * **The armour as the fight reads it** (D-68's probe): the protection over each body
+     * area, the average the sheet prints, and which areas are bare. The pieces and the areas
+     * are UESP's (`game/armour.js`); the weights of the blow's area roll are this project's
+     * and say so there.
+     */
+    armour: () => armourCoverage(player),
+    /**
+     * **The ledge climb as the motor sees it** (D-65's probe).
+     *
+     * `probe` is what the motor's own `_ledgeProbe` answers for the look the player is
+     * holding right now (`null` when there is no lip in reach), `hauling` whether a haul is
+     * running, and `reach` how far over the feet a lip may stand — measured from the water
+     * line when the body is in water. A player who cannot climb out of a pool has to be told
+     * *why* (no face, a face above the reach, no room to stand), and that answer lives in the
+     * motor, not in a guess made from the feet.
+     */
+    ledge: () => {
+      const motor = current.motor;
+      const probe = motor._ledgeProbe(cam.yaw);
+      return {
+        hauling: Boolean(motor._ledge),
+        grounded: Boolean(motor.grounded),
+        inWater: motor._inWater(),
+        waterSurfaceY: motor.waterSurfaceY,
+        reach: motor._ledgeMaxReach(),
+        yaw: cam.yaw,
+        feet: feetOf(),
+        probe: probe ? { lip: probe.lip, lipY: probe.lipY, topY: probe.topY } : null,
+        target: motor._ledge ? { lipY: motor._ledge.lipY, topY: motor._ledge.topY, t: motor._ledge.t } : null,
+      };
+    },
+    /**
      * What every figure is showing this frame, as `FILE#frame`.
      *
      * A walk cycle belongs to walking, so this is how a test holds the game to it: a
@@ -8361,10 +14218,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // got a walk frame from every angle (the suite's own flake, and the reason this field
       // is here at all).
       walking: Boolean(person.walking),
+      // **Whether this one is standing at their post** rather than walking their day (D-44): the
+      // scene's own flag, reported because the player-visible half of that law is a browser check
+      // and a flag nothing can read is not a seam (`docs/PORT_BLOCKS.md` rule 5).
+      atPost: Boolean(person.atPost),
       frame: person.renderFrame ?? null,
       mirrored: Boolean(person.renderMirrored),
       world: { x: person.world.x, z: person.world.z },
-      view: PEOPLE_VIEWS.find((v) => viewFileFor(person.outfit, v) === person.file) ?? null,
+      view: PEOPLE_VIEWS.find((v) => raceSheetKey(person.skin, viewFileFor(person.outfit, v)) === person.file) ?? null,
+      race: person.race ?? null,
+      // What their figure *is*, when the race is drawn as a whole figure rather than as a skin
+      // (`raceSkin.js`'s `RACE_FIGURE`): `ARGONIAN` for the marsh's lizard-folk, null for a body
+      // painted with a race's palette.
+      figure: person.figure ?? null,
+      skin: person.skin ?? null,
+      // The head's own draw (`raceSkin.js`'s `hairForPerson`) — reported beside the skin because
+      // "a street is not one auburn" is a visible claim, and a colour nothing can read is not a
+      // seam (`docs/PORT_BLOCKS.md` rule 5).
+      hair: person.hair ?? null,
       // Where this one is **going**, when they are on their way somewhere: the door their plan
       // named, the reason in the plan's own words, and how far along the walk they are. This is
       // what "the town's people go about their day" is checked against — a person mid-route is
@@ -8394,7 +14265,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     townWalks: () => ({
       people: townsfolk.length,
       moving: townsfolk.filter((person) => person.route).length,
-      keepers: townsfolk.filter((person) => person.shop).length,
+      keepers: [...townsfolk, ...stillPeople].filter((person) => person.shop).length,
       goals: townsfolk.filter((person) => person.route).map((person) => ({
         file: person.file, role: person.role, reason: person.route.reason,
         goal: { row: person.route.goal.row, col: person.route.goal.col },
@@ -8481,6 +14352,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      *
      * @param {string} id  a `MONSTERS` id
      */
+    /**
+     * Land a blow on a creature already on the level — a test's own sword.
+     *
+     * The last fight is 500 hit points of it, so a scripted run needs the same wound a
+     * player's swing makes rather than a second death path. `'jagar'` names the boss wherever
+     * he stands; anything else is a `MONSTERS` id.
+     *
+     * @param {string} id @param {number} amount
+     * @returns {{name: string, health: number, dead: boolean}|null}
+     */
+    hurtMonster: (id, amount = 25) => {
+      const key = String(id).toLowerCase();
+      const spawn = monsters.find((m) => m.monster.id === key && m.monster.health > 0);
+      if (!spawn) return null;
+      const monster = damageMonster(spawn, amount, 'a test blow');
+      updateCombatHud();
+      return { name: monster.name, health: monster.health, dead: monster.health <= 0 };
+    },
     spawnMonster: async (id) => {
       const kind = MONSTERS.find((m) => m.id === String(id).toLowerCase());
       if (!kind) return null;
@@ -8495,6 +14384,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const monster = rollMonster(kind, battle);
       const spawn = {
         monster,
+        sprite: kind.sprite,
+        skin: null,
         file,
         place: { row: 0, col: 0 },
         world: { x: feet[0] + fx * placed, y: feet[1], z: feet[2] + fz * placed },
@@ -8505,6 +14396,109 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       monsters.push(spawn);
       updateCombatHud();
       return { name: monster.name, health: monster.health, maxHealth: monster.maxHealth, file };
+    },
+    /**
+     * **Fight a classed human** (UESP's Human Enemies, D-67).
+     *
+     * The same seam as `spawnMonster`, for the foe that has no `MONSTERS` row to name: the class
+     * and race come from `character.js`'s tables, the level from the caller (so a probe can ask
+     * for "a level-12 Breton Battlemage" and get exactly that), and the art is the install's one
+     * human combat set (`GUARD01.CFA`…`GUARD06.CFA`, `humans.js`'s `HUMAN_SPRITE`).
+     *
+     * @param {{classId?: string, raceId?: string, level?: number}} [opts]
+     * @returns {Promise<object|null>} the foe's class, race, level, health, xp and guard
+     */
+    spawnHuman: async (opts = {}) => {
+      const monster = rollHuman({
+        level: opts.level ?? player.level ?? 1,
+        classId: opts.classId, raceId: opts.raceId, random: battle,
+      });
+      // **The same figure the crowd's race law draws** (`figureForMonster`): the Lizard Man
+      // for an Argonian, the repainted snow wolf for a Khajiit, the combat set for everyone else.
+      const figure = figureForMonster(monster, monsters.length);
+      const file = figure.sprite ? `${figure.sprite}1.CFA` : null;
+      const skin = figure.skin;
+      if (!file || !await loadSpriteSet(file, 1, skin)) return null;
+      const base = file.slice(0, -5);
+      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${base}${action}.CFA`, 1, skin);
+      const feet = feetOf();
+      const fx = Math.sin(cam.yaw);
+      const fz = Math.cos(cam.yaw);
+      const placed = 1.4;
+      // **A fixture can ask for a cell**, the way `placeMonster` can: a body dropped a
+      // step ahead of the player may land inside the wall they are facing, and a test of
+      // sight or of a bolt then proves nothing. The cell must be one a body can stand in.
+      const at = opts.cell && current.level
+        ? { row: Math.trunc(Number(opts.cell.row)), col: Math.trunc(Number(opts.cell.col)) }
+        : null;
+      const cell = at ? current.level.cells[at.row * current.level.width + at.col] : null;
+      const world = cell && !cell.solid && !cell.floor?.chasm
+        // The player's own footing, not the level's base floor: a raised room's floor is not
+        // where the player stands, and an eye below it sees nothing but the slab.
+        ? { x: (at.row + 0.5) * CELL_SIZE, y: feet[1], z: (at.col + 0.5) * CELL_SIZE }
+        : { x: feet[0] + fx * placed, y: feet[1], z: feet[2] + fz * placed };
+      monster.nextAttack = attackInterval(monster) * (0.5 + battle.nextBelow(100) / 100);
+      const spawn = {
+        monster,
+        skin,
+        sprite: figure.sprite,
+        file,
+        place: at && cell && !cell.solid && !cell.floor?.chasm ? at : { row: 0, col: 0 },
+        world,
+        nextAttack: monster.nextAttack,
+        awake: true,
+        distance: placed,
+      };
+      monsters.push(spawn);
+      updateCombatHud();
+      return {
+        name: monster.name, classId: monster.human.classId, raceId: monster.human.raceId,
+        level: monster.level, health: monster.health, maxHealth: monster.maxHealth,
+        xp: monster.xpBase, guard: monster.armourFlat, skin, file, sheet: raceSheetKey(skin, file),
+      };
+    },
+    /**
+     * Put a named monster at a named cell of this level, for a test of a law about *distance*.
+     *
+     * `spawnMonster` answers "fight this thing": it stands 1.4 m ahead, because a test of a blow
+     * needs the body in reach. Some laws are the other way round — a hunt is one, and it is the
+     * one this seam exists for: a creature roused by a camp walks in **from beyond its own band**
+     * (`interior.js`'s movement gate, `encounters.js`'s `isRoused`), which no body placed inside
+     * the band can show. The cell must be one a body can stand on, or the answer is `null`
+     * rather than a creature standing in rock.
+     *
+     * @param {string} id  a `MONSTERS` id
+     * @param {{row?: number, col?: number}} at  a cell of the level now loaded
+     * @returns {Promise<{name: string, cell: {row: number, col: number}, index: number, distance: number}|null>}
+     *   `index` is the creature's place in `combat().monsters`, which is the live array rather
+     *   than a copy — a serial number is handed out on first read (`combat`), so it would be
+     *   `null` here.
+     */
+    placeMonster: async (id, at) => {
+      const kind = MONSTERS.find((m) => m.id === String(id).toLowerCase());
+      if (!kind || !kind.sprite) return null;
+      const row = Math.trunc(Number(at?.row));
+      const col = Math.trunc(Number(at?.col));
+      const cell = current.level ? current.level.cells[row * current.level.width + col] : null;
+      if (!cell || cell.solid || cell.floor?.chasm) return null;
+      const file = `${kind.sprite}1.CFA`;
+      if (!await loadSpriteSet(file, 1)) return null;
+      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${kind.sprite}${action}.CFA`, 1);
+      const monster = rollMonster(kind, battle);
+      const world = { x: (row + 0.5) * CELL_SIZE, y: current.level.floorY * CELL_SIZE, z: (col + 0.5) * CELL_SIZE };
+      const spawn = {
+        monster,
+        sprite: kind.sprite,
+        file,
+        place: { row, col },
+        world,
+        nextAttack: monster.nextAttack,
+        awake: false,
+        distance: Math.hypot(world.x - feetOf()[0], world.z - feetOf()[2]),
+      };
+      monsters.push(spawn);
+      updateCombatHud();
+      return { name: monster.name, cell: { row, col }, index: monsters.length - 1, distance: spawn.distance };
     },
     /** Deterministic test setup, using the same attack/damage rules as ordinary encounters. */
     prepareCombat: (index = monsters.length - 1, opts = {}) => {
@@ -8525,12 +14519,49 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       spawn.stamina = { stamina: staminaMax(spawn.monster), max: staminaMax(spawn.monster) };
       spawn.stagger = 0;
       if (opts.charge !== undefined) spawn.monster.charge = Boolean(opts.charge);
+      // A fixture's caster: a human foe that knows a spell is ordinarily rolled by chance
+      // (`SPELL_CHANCE`), so a test that has to see the bolt arms the caster here instead
+      // of spawning persons until one happens to roll a mage. `spellClock` puts the first
+      // cast `n` seconds away, which is how the "rare" cadence is held to its law.
+      if (opts.caster !== undefined) spawn.caster = Boolean(opts.caster);
+      if (opts.spellClock !== undefined) spawn.spellClock = Math.max(0, Number(opts.spellClock) || 0);
       if (opts.begin) beginAttack(spawn, Math.hypot(feetOf()[0] - spawn.world.x, feetOf()[2] - spawn.world.z));
       return window.__debug.combat();
     },
     damageEnemy: (index, amount) => {
       const spawn = monsters[index];
       return spawn ? damageMonster(spawn, amount, 'test setup') : null;
+    },
+    /**
+     * **The pathfinder's answer for one cell**, for a suite that wants to prove a route around a
+     * wall rather than a line through it: the breadth-first distance from the player's cell (or
+     * -1 for unreachable) and the next step the field names.
+     *
+     * @param {number} row @param {number} col
+     */
+    navAt: (row, col) => {
+      // Built here when nobody has needed it yet (a still room asks the field no questions), so a
+      // suite can hold the search itself rather than the moment a creature happened to use it.
+      const flow = navFlowFor(feetOf());
+      if (!flow) return null;
+      const r = Math.trunc(row), c = Math.trunc(col);
+      if (r < 0 || c < 0 || r >= flow.depth || c >= flow.width) return null;
+      return { dist: flow.dist[r * flow.width + c], step: stepFrom(flow, r, c) };
+    },
+    /**
+     * **Make a creature give the fight up**, through the same field the Fear spell writes
+     * (`spawn.fearUntil`) — so a suite can watch a flight start mid-swing and hold the scene to
+     * the two things that has to mean: the ring and the attack animation end with it, and the
+     * body turns around instead of pressing into the wall.
+     *
+     * @param {number} [index]
+     * @param {number} [seconds]
+     */
+    forceFlee: (index = monsters.length - 1, seconds = 8) => {
+      const spawn = monsters[index];
+      if (!spawn) return null;
+      spawn.fearUntil = dbg.seconds + Math.max(0.5, Number(seconds) || 8);
+      return window.__debug.combat();
     },
     /**
      * **Can two cells see each other?** The wall test itself, for a test of it (`sightClear`).
@@ -8559,11 +14590,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       };
     },
     /** Take a blow from nowhere, for a test of the player's own health. */
-    hurt: (damage, from = 'A test blow') => { hurtPlayer(Math.max(0, Number(damage) || 0), from); return { health: player.health, deaths: dbg.deaths ?? 0 }; },
+    hurt: (damage, from = 'A test blow', opts = {}) => {
+      hurtPlayer(Math.max(0, Number(damage) || 0), from, opts);
+      return { health: player.health, deaths: dbg.deaths ?? 0, magic: stateMagic() };
+    },
     /** Fill the defence bar, so a test can fight with a body that is not already winded. */
     restoreStamina: () => { defence.stamina.stamina = staminaMax(player); defence.stamina.regenIn = 0; return defence.stamina.stamina; },
     /** Fill the player's health, for a fixture that must outlive a corridor of blows. */
     heal: () => { player = { ...player, health: player.maxHealth ?? player.health ?? 1 }; return player.health; },
+    /** Drop the lasting magic a fixture cast, so one check's invisibility is not the next's. */
+    clearMagic: () => {
+      player = { ...player, invisible: false, ward: 0, resistances: {}, light: null };
+      return stateMagic();
+    },
     /** The sight test, exposed so a fixture can argue with the *same* ray the fight sees. */
     losProbe: (from, to) => sightClear(Number(from[0]), Number(from[1]), Number(from[2]), Number(to[0]), Number(to[1]), Number(to[2])),
     /** The player's own character, as the scene sees it. */
@@ -8597,10 +14636,55 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // and a line that names what woke them — and a `dbg` field nothing can read is not a
       // seam (see `docs/PORT_BLOCKS.md` rule 5).
       lastRest: dbg.lastRest ?? null,
+      // **The last human's corpse** (D-67): the purse and the pieces UESP's loot line paid out,
+      // recorded when a human falls, so a suite can hold the page's table to a real death
+      // rather than to the function that rolled it.
+      humanLoot: dbg.humanLoot ?? null,
+      // **The country's window moving** (`maybeSlideWilderness`): where it was, where it went,
+      // how far the creatures on the ground had to move with it, and whether the page stayed
+      // the same page. A slide that re-boots now would show as `frames` resetting here.
+      windowSlide: dbg.windowSlide ?? null,
+      wildArrival: dbg.wildArrival ?? null,
+      // **The country's own frame** — the world rectangle this page holds, and the last job's
+      // quarry that arrived with it (`ensureRadiantCamp`). A job's creatures are not part of the
+      // level's own population, so a suite that counts them needs the seam that says why they came.
+      wild: current.wild ? {
+        // The field names the world grid already speaks (`originRow`/`originCol`); the array
+        // is kept beside them because one caller reads a pair. Publishing only the pair made
+        // `originRow` `undefined` for every check that asked for it, and a `NaN` teleport put
+        // the country's window at its old corner.
+        origin: [current.wild.originRow, current.wild.originCol],
+        originRow: current.wild.originRow,
+        originCol: current.wild.originCol,
+        cell: worldCellNow(),
+        climate: current.wild.climate ?? null,
+        here: current.wild.here ?? null,
+      } : null,
+      radiantCamp: dbg.radiantCamp ?? null,
       feet: Array.from(current.motor.pos),
       eye: current.motor.eyeAt(),
       yaw: cam.yaw,
+      cameraShake: screenShake,
+      thirdCamera: dbg.thirdCamera ?? null,
+      finalBattle: dbg.finalBattle ?? null,
+      // **Where the player faces** (`game/compass.js`): the HUD's own reading, in Tamriel's
+      // points and degrees clockwise from north. A suite asks this the way a player reads the
+      // strip, and it is the same number the page writes.
+      compass: dbg.compass ?? compassReading(cam.yaw),
       pitch: cam.pitch,
+      // **The lasting magic**, as the fight reads it: the ward's points, what the player
+      // resists, the light, invisibility, regeneration, the Strength buff, a hold's remaining
+      // seconds and the afflictions still in the body. A browser check can hold each of these
+      // to its own effect without reading a private closure.
+      magic: stateMagic(),
+      // **The player's own archery** (`game/archery.js`): the shafts in the air, how many have
+      // been loosed and how many landed, and what the last one did. The weapon that was a club
+      // before this pass is held to its flight here rather than to a private counter.
+      arrows: arrows.map((a) => ({ x: a.x, y: a.y, z: a.z, weapon: a.weapon, material: a.material, life: a.life })),
+      arrowsLoosed: dbg.arrowsLoosed ?? 0,
+      arrowHits: dbg.arrowHits ?? 0,
+      arrowEnds: { wall: dbg.arrowWall ?? 0, out: dbg.arrowOut ?? 0 },
+      lastArrow: dbg.lastArrow ?? null,
       grounded: current.motor.grounded,
       spawn: current.spawn,
       draws: renderer.stats?.draws ?? null,
@@ -8625,14 +14709,28 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // says hang from the ceiling (`game/flats.js`) — the second number is 0 everywhere
       // but a dungeon, and it is what the ceiling-attachment rule is checked against.
       scenery: current.scenery ? { flats: current.scenery.flats.length, hanging: current.scenery.hanging,
+        // **Which pictures this room actually drew**, by record name: the court's own check reads
+        // it to see `KING.IMG`/`QUEEN.IMG` painted rather than merely listed, and a name that is
+        // absent here is a record this install does not ship.
+        names: (current.sceneryBatches ?? []).map(s => s.name),
         animated: (current.sceneryBatches ?? []).filter(s => s.frames > 1).map(s => ({ name: s.name, frames: s.frames, frame: s.batch.record })),
+        // **The people the level paints**, with the height each was drawn at: a guard standing
+        // 3.8 m tall in a palace is this list saying so (D-57).
+        people: (current.sceneryBatches ?? []).filter(s => isFolkArt(s.name))
+          .map(s => ({ name: s.name, height: Math.round(s.size.h * 100) / 100, width: Math.round(s.size.w * 100) / 100 })),
+        // Flats the map put on a chasm cell, dropped rather than drawn standing on the water
+        // (`flats.js`'s "nothing grows on water"): the owner's *"floating on top of water"*.
+        onWater: current.scenery.onWater ?? 0,
         missing: current.scenery.unresolved } : null,
       furniture: current.furniture ?? null,
       // The horizon the page is drawing: which climate's art, and how much of it.
       sky: skyArt ? { ...skyArt } : null,
       // Whether anything is falling out of it, and which pass draws it.
       weather: airWeather,
-      precipitation: precip ? { mode: airWeather, particles: PRECIP_MAX_PARTICLES } : null,
+      // The count the lane really draws: the port builds its weather on the enhanced volume
+      // (`drawWeather` above), whose profile is a count per weather rather than the classic
+      // splash cap of 1000.
+      precipitation: precip ? { mode: airWeather, particles: LAB_COUNTS[airWeather] ?? LAB_COUNTS.rain } : null,
       // **The settlement's gate, open for walking**: the wall's opening cells, whose art is drawn and
       // whose box is in nobody's collision soup (the owner's own request).
       gateway: (current?.gateway ?? []).map((g) => ({ row: g.row, col: g.col, axis: g.axis })),
@@ -8641,18 +14739,70 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // The people, and the art that is loaded for this level: a town's population is
       // a scene-level fact, not only a combat one, so `state()` reports it too.
       townsfolk: townsfolk.length,
+      // **What the room's own census came to** (`populateShop`'s `dbg.shopFolk`): the kind of
+      // building, the seats it wanted, the map's own people, and how many of the draw are women —
+      // the seam the owner's *"npcs variety in houses … only women"* is checked on.
+      shopFolk: dbg.shopFolk ?? null,
       monsters: monsters.filter((s) => s.monster.health > 0).length,
       spriteFiles: [...spriteSets.keys()],
       // How many billboards the last frame drew. Creatures and people go through one
       // pass, so "their art is uploaded" is not the claim "they are on screen" — the
       // first version of `townsfolk` checked the uploads and the people were invisible.
       figures: dbg.figures ?? 0,
+      // **The player's own body**, as the creator saved it: the chosen sprite, its repaint,
+      // the walk sheet in hand and the strike art. `playerViews` lists the five shipped angles
+      // the third person loaded, so a check can tell a real 360 from a single back view.
+      playerSprite: playerSet?.file ?? null,
+      attackSprite: attackSet?.file ?? null,
+      appearance: { ...(playerLook ?? normalizeAppearance(player?.appearance, player)) },
+      playerViews: [...playerSets.keys()],
+      playerView: dbg.playerView ?? null,
+      attackFrames: attackFrames ? [...attackFrames] : null,
+      swinging: swingAnim > 0,
+      // **The last spell, with its own tell** (`castSpell`'s `lastCast`): what was cast, what it
+      // cost, what it did — and how many motes `combatFx.magicBurst` threw and where. The owner,
+      // 2026-10-18: *"particles for magic and working magic"*.
+      lastCast: dbg.lastCast ?? null,
+      // **The job's own thing, as a picture** (`placeObjectiveMarker`): the cell it stands on and
+      // the art it wears. A seam because "the questmark is visible" is otherwise a claim about a
+      // private billboard batch, and `docs/PORT_BLOCKS.md` rule 5 says a thing nothing can read is
+      // not a seam.
+      objectiveMarker: dbg.objectiveMarker ?? null,
+      // The combat effects pool as the renderer has it this frame: particles alive, burst count,
+      // magic bursts, and the arrows/bolts in flight.
+      combatFx: { particles: combatFx.particles.length, bursts: combatFx.bursts, magicBursts: combatFx.magicBursts,
+        blood: combatFx.bloodSprays, arrows: combatFx.arrows.length, bolts: combatFx.bolts.length,
+        // **The install's own sprites on screen** (`SPPARTS.RCI` sparks, `BLOODEXP.CFA` sprays):
+        // the count the billboard pass drew this frame, which is what a player actually sees.
+        sparks: dbg.sparkSprites ?? 0, sprays: dbg.bloodSprites ?? 0 },
+      /** The last sound cue, and whether it was Arena's own `.VOC` or the fallback synth. */
+      sfx: sfxState(),
+      // **The palace's court** (`game/staticFolk.js`): the art each still figure is drawn from,
+      // where it stands in cells, and **how tall it was drawn** (`height`, world units) — the
+      // owner's *"GUARDS AND KINGS ARE WAY TOO BIG"* is a claim about that number. Empty outside
+      // a palace.
+      court: dbg.court ?? [],
+      // A tavern's still patrons (same census, `MAN01…04`/`WOMAN01…04`), the people the install
+      // paints and the room never used to hold.
+      patrons: dbg.patrons ?? [],
+      // **Every still person the map paints** (`game/staticFolk.js`'s `STILL_ROLES`): the
+      // innkeeper, the armourer, the priest, the guild's wizard, a palace's king and watch, a
+      // tavern's drinkers — with their art, the words a player reads, the cell they stand on and
+      // the height they were drawn at. A still person is scenery and a person at once, so a suite
+      // can see that the room's own keeper exists *and* that he is drawn as tall as a man.
+      stillPeople: dbg.stillFolk ?? [],
+      // **The dungeon's mouth in this country**: the `WDUNGDR1.IMG` flat that marks the way down,
+      // in the window's own cells. Null everywhere but a page booted by a dungeon's exit.
+      dungeonMouth: dbg.dungeonMouth ?? null,
       arrivalShown: document.getElementById('arrival')?.classList.contains('on') ?? false,
       objective: current.objective ? { what: current.objective.what, event: current.objective.event, done: current.objective.done, depth: current.objective.depth } : null,
       notice: dbg.notice,
       // Who this place is, when the player arrived by name rather than by URL file.
-      location: place
-        ? {
+      location: current.wild?.here
+        ? { name: current.wild.here.label, kind: 'wild', province: current.wild.here.provinceName,
+          climate: current.wild.climate, weather: current.wild.weather, global: current.wild.here.pixel,
+          nearest: current.wild.here.nearest?.name ?? null }
+        : place ? {
           name: place.name,
           kind: place.kind,
           province: place.province,
@@ -8667,6 +14817,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           architecture: place.architecture ?? place.climate,
           weather: place.weather ?? null,
           coastal: place.coastal,
+          // **The pixel the map draws this place's icon on** — the one fixed point a dungeon's
+          // door has to agree with, and the reading the owner's *"dungeons are not where they are
+          // supposed to be on the map"* is a claim about (2026-10-17). Reported so a suite can
+          // compare the door's own cell with the icon's pixel instead of trusting a Node run.
+          global: place.tamriel ? { ...place.tamriel } : null,
+          sourceGlobal: place.global ? { ...place.global } : null,
           citySeed: place.citySeed ?? null,
           dungeonSeed: place.dungeonSeed ?? null,
           mif: place.mif ?? mapName,
@@ -8716,6 +14872,35 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // `to` is `wilderness`, on a wilderness page `to` is `city`, and everywhere else
       // it is null.
       gate: gateAtPlayer(),
+      // ── where in the world this is (B26) ──────────────────────────────────────
+      // One reading, for any kind of page: **the world cell the player stands on**, the world-map
+      // pixel it is, the province and its own hand-drawn pixel, whether it is the sea, and the
+      // settlement whose ground it is (`game/tamrielGrid.js`'s `youAreHere`). A test that says "walk
+      // out of Daggerfall and the next town is that way" reads this and nothing else; the map screen
+      // draws its mark from the same call.
+      where: (() => {
+        const cell = worldCellNow();
+        if (!cell) return null;
+        const here = youAreHere(world, cell.row, cell.col, {
+          settlement: current.city ? place ?? null : settlementAt(footprintCache ?? [], cell.row, cell.col),
+        });
+        return {
+          row: here.row, col: here.col,
+          pixel: here.pixel,
+          local: here.local,
+          province: here.provinceName,
+          provinceID: here.provinceID,
+          sea: here.sea,
+          country: here.country,
+          climate: here.climate,
+          settlement: here.settlement?.name ?? null,
+          nearest: here.nearest?.name ?? null,
+          label: here.label,
+          page: wildRequest ? 'country' : current.city ? 'city' : 'interior',
+          footprint: current.city ? current.cityFootprint : current.country?.footprint ?? null,
+          held: current.country?.settlement?.name ?? null,
+        };
+      })(),
       // The sampler in force on this level's world textures: the engine's ground dial
       // (`?ground=off|default|max`), which is what keeps a plain sharp to the tree line.
       sampler: current.sampler,
@@ -8726,7 +14911,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // browser test needs to say "this is the country outside Daggerfall" without
       // reading a pixel.
       wild: wildRequest ? {
-        seed: wildGrid?.seed ?? null,
+        // **The world's own answer** (B26): the biome of the window's centre, which is the country's
+        // `.INF`, and the settlement whose own ground the window holds (usually none). `seed` is
+        // `null` now — a block of country is drawn from where it *is*, not from a settlement's seed —
+        // and the field is kept so a suite reading it does not have to change.
+        seed: null,
+        climate: current.wild?.climate ?? null,
+        held: current.country?.settlement?.name ?? null,
+        // **The settlement's own gate, as the window reads it** — the openings `openSettlementGate`
+        // found when the country built the city to copy its wall. Empty here while the city page
+        // has two is the wall-in-front-of-the-gate defect, stated as a fact instead of seen.
+        heldGates: (current.country?.gates ?? []).map((gate) => ({ row: gate.row, col: gate.col, axis: gate.axis })),
+        heldFootprint: current.country?.footprint
+          ? { row0: current.country.footprint.row0, col0: current.country.footprint.col0, width: current.country.footprint.width, depth: current.country.footprint.depth }
+          : null,
+        seaBlocks: current.wild?.seaBlocks ?? 0,
         inf: current.infName,
         blocks: current.wild?.blocks ?? [],
         missingBlocks: current.wild?.missing ?? [],
@@ -8741,10 +14940,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         })(),
         onCityCell: (() => {
           const feet = current.motor?.pos ?? [0, 0, 0];
-          return isCityCell(
-            Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0),
-            Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0),
-          );
+          const row = Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0);
+          const col = Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0);
+          return Boolean(settlementAt(footprintCache ?? [], row, col));
+        })(),
+        // **Where the player is in the world** (B26) — the one reading the map, the HUD and
+        // `game/tamrielGrid.js` all share, so "you are here" is the same answer everywhere.
+        here: (() => {
+          const feet = current.motor?.pos ?? [0, 0, 0];
+          const row = Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0);
+          const col = Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0);
+          const here = youAreHere(world, row, col, { settlement: settlementAt(footprintCache ?? [], row, col) });
+          return {
+            row: here.row, col: here.col, label: here.label, sea: here.sea,
+            global: here.global, local: here.local, provinceID: here.provinceID,
+            nearest: here.nearest?.name ?? null,
+          };
         })(),
         gate: gateAtPlayer(),
         // **The ruin, and whether the player is standing in it.** The country's own answer to
@@ -8795,7 +15006,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       doorKinds: [...new Set((current.doors ?? []).map((d) => d.kind))].sort(),
       // One record per street door, for a suite that walks to a *kind* of shop and
       // presses `E` from its own cell: the count and kind list above cannot say where.
-      doorList: (current.doors ?? []).map((d) => ({ row: d.row, col: d.col, kind: d.kind ?? null, name: d.name ?? null })),
+      doorList: (current.doors ?? []).map((d) => ({
+        row: d.row, col: d.col, kind: d.kind ?? null, name: d.name ?? null,
+        // Which room is behind it, so a suite can walk in and assert the building it got.
+        file: d.file ?? null, country: Boolean(d.country),
+        wall: Boolean(d.wall), sign: d.sign ?? null,
+        // The paving cell a wall door is opened from; `null` when the door faces masonry.
+        stand: d.stand ? { row: d.stand.row, col: d.stand.col } : null,
+      })),
       // The `0xB` doors of this level: where each one is, what it is, whether it is
       // locked and how far open (`game/doors.js`).
       leaves: (current.leaves ?? []).map((leaf) => ({
@@ -8815,6 +15033,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       },
       lastDoor: dbg.lastDoor ?? null,
       lastLoot: dbg.lastLoot ?? null,
+      homeChest: dbg.homeChest ?? null,
       // What this level's `.INF` says may live in it (the item table's monsters).
       monsterRoster: (current.roster ?? []).map((entry) => entry.monster),
       // Who the map put in this building, by their own trade (`smith`, `bartender`, …).
@@ -8841,10 +15060,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         // **The keeper, not whoever is first in the roster.** A house's family is drawn after
         // the room's own list and a temple's priest sits inside it, so "index zero" was only
         // ever the keeper by luck — the person is asked instead (`populateShop`'s `keeper`).
-        keeper: (townsfolk.find((person) => person.shop) ?? townsfolk[0])?.shop ?? null,
-        keeperBank: (townsfolk.find((person) => person.shop) ?? townsfolk[0])?.bank ?? null,
-        keeperLine: (townsfolk.find((person) => person.shop) ?? townsfolk[0])?.line ?? null,
-        keeperDescription: (townsfolk.find((person) => person.shop) ?? townsfolk[0])?.description ?? null,
+        // A still keeper is the room's own worker (`stillPeople`: `SMITH`, `BARTEND`, `PREST`,
+        // `WIZZ` — the map paints them and no walker takes the counter from them).
+        keeper: (keeperHere() ?? townsfolk[0])?.shop ?? null,
+        keeperBank: (keeperHere() ?? townsfolk[0])?.bank ?? null,
+        keeperLine: (keeperHere() ?? townsfolk[0])?.line ?? null,
+        keeperDescription: (keeperHere() ?? townsfolk[0])?.description ?? null,
         // What the *building* is (`game/shops.js`'s own kind for this interior's file) and
         // whether its doors are open at this hour — which a house and a noble house never are.
         kind: shopTrade(),
@@ -8871,8 +15092,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      */
     loadLevelAndSettle: async (i, seconds = 0.6) => { await loadLevel(i); step(seconds); },
     teleport: (x, y, z) => { current.motor.spawn(x, y, z); },
+    /**
+     * One cell of the level that is loaded — what it is, whether a body can stand on it, and
+     * whether the country marked it as a settlement's gateway. The seam a probe needs to say
+     * *why* an arrival cell was refused instead of guessing at it.
+     */
+    cellAt: (row, col) => {
+      const level = current?.level;
+      if (!level || row < 0 || col < 0 || row >= level.depth || col >= level.width) return null;
+      const cell = level.cells[row * level.width + col];
+      if (!cell) return null;
+      return {
+        kind: cell.kind, solid: Boolean(cell.solid), gateway: Boolean(cell.gateway),
+        chasm: cell.floor?.chasm ?? null, flat: cell.floor?.flatIndex ?? -1,
+        floorTexture: cell.floor?.texture ?? -1,
+      };
+    },
     /** Teleport to a cell of the current level, on its floor. */
     teleportCell: (row, col) => { current.motor.spawn(row * CELL_SIZE + CELL_SIZE / 2, current.level.floorY * CELL_SIZE, col * CELL_SIZE + CELL_SIZE / 2); },
+    /**
+     * **The pictures this level drew, with where they stand.** `state().scenery` counts them;
+     * a probe that has to *look* at one (the table's own cutout, D-62) needs the cell it is on,
+     * and a cell is not something a count can answer.
+     */
+    /** Hide the level's own pictures, so a probe can diff a flat against the room behind it. */
+    hideFlats: (on = true) => { dbg.flatsHidden = Boolean(on); return Boolean(dbg.flatsHidden); },
+    flats: (limit = 2000) => (current?.scenery?.flats ?? []).slice(0, limit).map((flat) => ({
+      name: flat.name,
+      row: flat.row,
+      col: flat.col,
+      yOffset: flat.yOffset ?? 0,
+      furniture: Boolean(flat.furniture),
+    })),
     look: (yaw, pitch = 0) => { cam.yaw = yaw; cam.pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch)); },
     input: (code, down = true) => { if (down) { if (!keys.has(code)) pressed.add(code); keys.add(code); } else keys.delete(code); },
     keys: () => Array.from(keys),
@@ -8888,18 +15139,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      * @param {number} limit
      */
     gateCells: (limit = 8) => {
-      const level = current?.level;
-      if (!level) return [];
-      /** @type {{row: number, col: number}[]} */
-      const out = [];
-      for (const [lr, lc] of settlementWallCells()) {
-        if (out.length >= limit) break;
-        const origin = current?.wild ?? null;
-        const row = origin ? lr - origin.originRow + CITY_ORIGIN : lr;
-        const col = origin ? lc - origin.originCol + CITY_ORIGIN : lc;
-        if (gateCellAt(row, col)) out.push({ row, col });
-      }
-      return out;
+      const held = current?.city
+        ? { footprint: current.cityFootprint, gates: current.gates }
+        : current?.country ?? null;
+      if (!held?.gates?.length) return [];
+      // **The settlement's own coordinates**, which on a city page *are* the level's — the suite reads
+      // a gate cell against `state().size`, and both are the settlement's. A country page reports the
+      // same cells (its own settlement's), because that is where the door is.
+      return held.gates.slice(0, limit).map((gate) => ({ row: gate.row, col: gate.col, axis: gate.axis }));
     },
     /** Find the nearest standable cell to a point, for tests that need a target. */
     /**
@@ -9000,7 +15247,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   });
 
   // ── the loop ───────────────────────────────────────────────────────────────
-  let last = performance.now();
+  // Use only animation-frame timestamps. A cached scene can boot in the middle of
+  // a frame batch: that batch's timestamp is OLDER than performance.now() here.
+  // Mixing the clocks made the first dt negative and damage-shake decay add shake.
+  let last = null;
   let painted = 0;
   const shotMode = params.has('shot');
   if (shotMode) window.__debug.shotPose();
@@ -9018,13 +15268,97 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * player below 60 fps armed crouch and stand alternately and `C` flickered instead of
    * toggling once. `FIXED_DT` is still the motor's step; it is simply the motor's.
    */
+  /** The lasting magic, in one object — the HUD's flags, `state().magic` and `hurt` share it. */
+  function stateMagic() {
+    return {
+      ward: Number(player.ward) || 0,
+      resistances: { ...(player.resistances ?? {}) },
+      light: player.light ?? null,
+      invisible: Boolean(player.invisible),
+      levitating: Boolean(player.levitating),
+      levitatingFor: Math.max(0, (levitatingUntil || 0) - (dbg.seconds ?? 0)),
+      regeneration: Number(player.regeneration) || 0,
+      strengthBuff: Number(player.strengthBuff) || 0,
+      freeAction: Boolean(player.freeAction),
+      held: Math.max(0, heldUntil - (dbg.seconds ?? 0)),
+      afflictions: Array.isArray(player.afflictions) ? [...player.afflictions] : [],
+    };
+  }
+
   function step(dt) {
     lookFilter.tick(dt, cam);
     const input = inputOf(keys, pressed, weaponRig.drawn);
+    // **A hold is a hold**: while a spider's venom or a medusa's spell has the player, the
+    // body does not answer the keys at all. The look is left alone — being held is not being
+    // blind — and the bar itself falls away when the clock does or a Free Action is taken.
+    const held = dbg.seconds < heldUntil && !player.freeAction;
+    if (held) {
+      input.forward = 0; input.strafe = 0; input.back = false; input.run = false; input.jump = false;
+      pressed.clear();
+    }
     // Dodge distance/timing is independent of walking statistics and uses the same swept
     // capsule as normal movement. Turning the camera cannot redirect a committed roll.
     const rolling = defence.rollT < DODGE.seconds;
     if (rolling) { input.forward = 0; input.strafe = 0; input.back = false; input.run = false; input.jump = false; }
+    // **A levitation the body can feel** (the owner, 2026-10-18: *"levitation doesnt levitate"*).
+    // The spell set `player.levitating` and nothing read it: the motor has a full levitation arm
+    // (camera-directed movement, no gravity, its own rise and sink keys, and a wall/ledge climb that
+    // stands down while it flies) but its flag was never handed over. It is now, every frame, and
+    // `Space` rises while `C`/`Ctrl` sinks — Arena's own two keys, and the reason the spell is a way
+    // over water and a way up a shaft rather than a line on the HUD.
+    // **It is a spell, so it ends.** Nothing else in the game clears the flag except a rest, and
+    // the owner's report was that it never ended at all (*"IM ALWAYS LEVITATING NOW"*), so the
+    // clock is real and short: **thirty seconds**, long enough to cross a lake or climb a shaft and
+    // short enough that a player is never wondering how to get down. A page load ends it too (see
+    // the clear beside `loadCharacter`), so it cannot follow a player through a reload.
+    if (player.levitating && !levitatingUntil) {
+      levitatingUntil = dbg.seconds + LEVITATE_SECONDS;
+      dbg.levitationCast = { at: dbg.seconds, seconds: LEVITATE_SECONDS };
+    }
+    // A word before it goes, so the drop is not a surprise mid-shaft.
+    if (player.levitating && !levitationWarned && levitatingUntil - dbg.seconds <= 5) {
+      levitationWarned = true;
+      showNotice('The Levitation is fading.', 2000);
+    }
+    // **A light is a minute, and it follows the player.** The spell's radius is applied to the
+    // room's ambient (`applyPlayerLight`) and to a point light carried at the body
+    // (`nearestSceneLights`'s `spellLight`); this clock is the one that ends it. A light made
+    // before this pass has no `seconds`, so it is given the full minute when first stepped.
+    if (player.light) {
+      if (!Number.isFinite(player.light.seconds)) player.light.seconds = LIGHT_SECONDS;
+      player.light.seconds = Math.max(0, player.light.seconds - dt);
+      if (player.light.seconds === 0) {
+        player = { ...player, light: null };
+        applyPlayerLightNow();
+        showNotice('The spell light gutters out.', 2200);
+      }
+    }
+    if (!player.levitating) levitationWarned = false;
+    if (!player.levitating) levitatingUntil = 0;
+    else if (dbg.seconds >= levitatingUntil) {
+      player.levitating = false;
+      levitatingUntil = 0;
+      showNotice('The Levitation fades, and your feet find the floor.', 2600);
+    }
+    const flying = Boolean(player.levitating);
+    if (current.motor.levitating !== flying) {
+      current.motor.levitating = flying;
+      dbg.levitating = flying;
+      showNotice(flying
+        ? 'Your feet leave the ground — hold Space to rise, C to sink.'
+        : 'Your feet find the floor again.', 2400);
+      updateCombatHud();
+    }
+    if (flying) {
+      input.up = keys.has('Space');
+      input.down = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC');
+    }
+    current.motor.stats.speed = 34 + Math.max(0, Number(player.attributeBuffs?.speed) || 0);
+    // **The step's own starting point**, so a body the correction cannot get round can still
+    // stop the player (`pushPlayerFromPeople`). A corridor one cell wide has its walkable rim
+    // where the wall is, and the first version of the body rule accepted only a walkable rim —
+    // so a wolf in a doorway could be walked straight through, which is the owner's report.
+    feetBeforeStep = { x: current.motor.pos[0], z: current.motor.pos[2] };
     current.motor.update(Math.min(dt, MAX_FRAME_DT), input, cam.yaw, cam.pitch);
     if (rolling) {
       const activeDt = Math.min(dt, DODGE.seconds - defence.rollT);
@@ -9051,7 +15385,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     swingCooldown = Math.max(0, swingCooldown - dt);
     defence.rollT += dt;
     defence.parryT += dt;
+    syncStaminaPool();
     stepStamina(defence.stamina, dt);
+    stepPlayerBuffs(dt);
+    // The vitals are the one part of the HUD that changes without an event (a bar refilling,
+    // a roll's cost, a spell's points), so they are written on their own slow clock.
+    statusBarIn -= dt;
+    if (statusBarIn <= 0) {
+      statusBarIn = 0.08;
+      renderStatusBar();
+    }
   // The guard is no longer free: held, it drains the same bar a roll and a parry pay into;
   // drained bare, it gives way, and it does not come back up until the bar has breath in it
   // again — which is what makes a long fight a fight about breathing, not about the button.
@@ -9064,32 +15407,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     defence.guardBroken = false;
   }
     combatFx.step(dt);
-    // ── the held heavy's own tell ────────────────────────────────────────────────
-    //
-    // **The blow announces itself in the weapon and the HUD, never in sparks out of the
-    // player's chest.** The owner, playing both games side by side (2026-10-16): "if i hold
-    // left click i just spawn in front of me piss yellow particles and a message that says
-    // heavy harmed release". Arena's own presentation has no wind-up particles at all — the
-    // amber pulse this replaces was this port's invention, and it fired a **burst of fourteen
-    // amber particles out of the player every 0.12 s** for as long as the hold ran, clear in
-    // front of the eye in first person. What a player gets instead is what the original gives:
-    // the drawn weapon held in its wind-up, and the charge the HUD and `__debug.combat()`
-    // report (`defence.charge`) so a test can still hold the heavy to its own law without
-    // reading a particle count. The one notice is plain, and it names the blow rather than a
-    // mechanic.
-    if (defence.charging) {
-      const charge = chargeScale(dbg.seconds - defence.chargeStart);
-      defence.chargeArmed = charge.heavy;
-      defence.chargeProgress = charge.progress;
-      if (charge.heavy && !chargeFullShown) {
-        chargeFullShown = true;
-        showNotice('Heavy blow armed — release.', 800);
-      }
-    } else {
-      chargeFullShown = false;
-      defence.chargeArmed = false;
-      defence.chargeProgress = 0;
-    }
+    // **There is no heavy, so there is no charge tell.** The charge clock, its notice and its
+    // HUD report were removed with the mechanic itself; the debug seam still answers
+    // `charge: {armed: false, progress: 0}` so older probes read a well-formed value.
     // The camera's wound decays in about half a second.
     screenShake = Math.max(0, screenShake - dt * 2.2);
     if (dbg.seconds > defence.riposteUntil) { defence.riposte = 0; defence.riposteTarget = null; }
@@ -9101,6 +15421,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     stepMonsters(simDt);
     stepHostileFolk(simDt);
     stepBoltsSim(simDt);
+    // …and the player's own shafts, on the same slowed clock: an arrow in flight is part of the
+    // fight, so a hit-stop arrests it too.
+    stepArrowsSim(simDt);
     // Water and lava, after the walk: where the player ended this step is what decides
     // whether they are in it (see `updateWater`).
     updateWater(dt);
@@ -9110,6 +15433,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // The doors swing on the same clock, for the same reason.
     stepDoors(dt);
     // …and the people of a settlement walk about it (`stepTownsfolk`).
+    stepTalk();
     stepTownsfolk(dt);
     // The street's dead are cleared only after their own death art has played: a body is
     // out of the crowd and out of the fight the instant it falls (`p.down`), but it lies
@@ -9206,7 +15530,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         lastTriggerCell = cellKey;
         const event = triggerEvent(current.inf, hit);
         dbg.trigger = { cell: cellKey, text: event.text?.kind ?? null, sound: event.sound };
-        if (event.text) showNotice(event.text.text, 5000);
+        // **A riddle is a question, not a notice.** Its cell stands in front of the door it
+        // seals; walking onto it opens the door's own panel. The cell is not crossed off the
+        // fired list, so a wrong answer (or simply walking away) leaves the sign readable again.
+        const riddleEntry = event.text?.kind === 'riddle'
+          ? current.riddles?.find((row) => row.trigger.row === hit.row && row.trigger.col === hit.col)
+          : null;
+        if (riddleEntry) {
+          firedTriggers.delete(hit);
+          openRiddle(riddleEntry);
+        } else if (event.text) showNotice(event.text.text, 5000);
         if (event.sound && dbg.seconds - lastTriggerSoundAt >= TRIGGER_SOUND_COOLDOWN) {
           lastTriggerSoundAt = dbg.seconds;
           const folder = source?.arenaPath ?? params.get('arena') ?? null;
@@ -9243,17 +15576,188 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const row = Math.round(feet[0] / CELL_SIZE - 0.5) + originRow;
     const col = Math.round(feet[2] / CELL_SIZE - 0.5) + originCol;
     const next = wildernessWindowOrigin(row, col);
-    if (next.row === originRow && next.col === originCol) return;
+    const pixel = pixelOfCell(row, col);
+    const sameWindow = next.row === originRow && next.col === originCol;
+    const prior = current.wild.here;
+    if (sameWindow && prior?.pixel.x === pixel.x && prior?.pixel.y === pixel.y) return;
+    const here = youAreHere(world, row, col);
+    current.wild.here = here;
+    if (sameWindow && here.climate === current.wild.climate && here.weather === current.wild.weather) {
+      rememberLastLocation(); updateObjectiveHud(); return;
+    }
     sliding = true;
     dbg.windowSlide = { at: { row, col }, from: [originRow, originCol], to: [next.row, next.col], yaw: cam.yaw };
-    const onward = new URLSearchParams(params);
-    onward.set('wild', `${row},${col}`);
-    // **The player keeps their bearing.** Since the slide boots a page for the very ground the
-    // player is standing on, the one thing it must not change is which way they are facing — and
-    // it did: measured, a walk on yaw 0.35 came back on yaw 0.00, which is a walk that turns you
-    // north every 64 cells (the owner: *"you dont understand where you are going"*).
-    onward.set('yaw', String(Math.round(cam.yaw * 1000) / 1000));
-    void goInPlace(onward);
+    void slideWildWindow({ row, col }, { row: originRow, col: originCol });
+  }
+
+  /**
+   * **Move the window, not the page** — the country's slide, without a re-boot.
+   *
+   * The original re-centres a 128-cell window on the player a block at a time
+   * (`wildernessWindowOrigin`), and this port did it by replacing the scene (`goInPlace`): every
+   * 64 cells walked, the whole page was torn down and rebuilt. A player felt it as the loudest
+   * defect in the country — *"the page reloads super frequently"* — and it was more than slow:
+   * the rebuild ran `populate()` again, so **the creatures and the people were re-rolled** and the
+   * world the player had just crossed was not the one they were crossing (*"enemies dont get
+   * ported and so everything feels not permanent"*).
+   *
+   * The window's own ground does not change when its origin moves — it is the same world grid, seen
+   * through another rectangle — so the scene, the player, the clock, the HUD and every creature
+   * stay exactly as they were, and only the level's geometry is assembled again around the cell
+   * the player is standing on. What follows the window is the *coordinates*: a creature standing
+   * on world cell (r,c) has `world` and `place` in the old window's local space, so both move by
+   * the same delta the window did. A creature the new rectangle no longer holds is left behind
+   * (its ground is not drawn any more), which is the one loss a slide can still make, and it is
+   * the creature walking out of the window, not the world forgetting it.
+   *
+   * Measured before: 60 s of walking crossed the window once, froze the page for ~2.5 s, reset
+   * `frames` to zero and re-rolled the four creatures to four different ones. After: the same
+   * walk slides at the same cell, the page never re-boots, `frames` keeps climbing, and the same
+   * four creatures are standing where they were (shifted by the window's own delta).
+   *
+   * @param {{row: number, col: number}} at  the player's world cell, the window's new anchor
+   * @param {{row: number, col: number}} from  the window's old origin
+   */
+  async function slideWildWindow(at, from) {
+    const oldOrigin = current?.wild
+      ? { row: current.wild.originRow, col: current.wild.originCol }
+      : from;
+    const index = current?.index ?? 0;
+    const yaw = cam.yaw;
+    const pitch = cam.pitch;
+    // **Where the player actually stands**, in metres, before the motor is replaced. A slide
+    // builds a new level and a new motor (`loadLevel` spawns it at the level's own arrival, which
+    // for a country window is its middle), so the old code then snapped the player back to a
+    // *cell* — a nudge to the cell's centre plus whatever `standNear` found when that centre was
+    // solid. Walking 160 m came out as a teleport to the window's middle and a slide back, which
+    // is the owner's *"realoads and perfect player position every time"*. The world moves by the
+    // origin's delta and nothing else, so the feet move by it too and land on the same ground.
+    const feetBefore = Array.from(current?.motor?.pos ?? [0, 0, 0]);
+    const crouchedBefore = Boolean(current?.motor?.crouching);
+    // The level's own builder reads the arrival off `wildRequest`, and it is the one field that
+    // is *this load's* rather than the page's: the slide is the same country at another cell.
+    if (wildRequest) wildRequest.cell = { row: at.row, col: at.col };
+    const held = { monsters: [...monsters], townsfolk: [...townsfolk] };
+    try {
+      // **The figures are not part of the ground** (D-63): the window moves under a world whose
+      // people and creatures are staying, so their art is kept rather than freed with the level.
+      await loadLevel(index, { keepFigures: true });
+    } catch (err) {
+      sliding = false;
+      console.error('[wild] the window would not move', err);
+      showNotice('The land here will not settle — the window stayed where it was.', 3000);
+      return;
+    }
+    // **Everything standing on the ground moves with the window.** Local coordinates are
+    // world-minus-origin, so the delta is the origin's own and applies to both axes.
+    const dRow = (oldOrigin.row - (current.wild?.originRow ?? oldOrigin.row));
+    const dCol = (oldOrigin.col - (current.wild?.originCol ?? oldOrigin.col));
+    // **The player stands exactly where they were standing — to the metre, not to the cell.**
+    // The motor is new (`loadLevel` built it and spawned it at the window's middle), so the
+    // position has to be handed to it by hand: the old feet, moved by the window's own delta.
+    // The exact spot is tried first; a slide that lands on masonry (a wall that was not there
+    // before) falls back to the nearest standable cell, which is the only case a player should
+    // ever feel a nudge in.
+    const standRow = at.row - (current.wild?.originRow ?? at.row);
+    const standCol = at.col - (current.wild?.originCol ?? at.col);
+    const exact = {
+      x: feetBefore[0] + dRow * CELL_SIZE,
+      y: feetBefore[1],
+      z: feetBefore[2] + dCol * CELL_SIZE,
+    };
+    const exactCell = {
+      row: Math.round(exact.x / CELL_SIZE - 0.5),
+      col: Math.round(exact.z / CELL_SIZE - 0.5),
+    };
+    let stood = null;
+    if (walkableCell(exactCell.row, exactCell.col)) {
+      current.motor.spawn(exact.x, exact.y, exact.z);
+      current.spawn = { x: exactCell.row + 0.5, y: current.level.floorY, z: exactCell.col + 0.5 };
+      stood = exactCell;
+    } else {
+      stood = standNear(standRow, standCol);
+    }
+    // A crouched player stayed crouched: the motor is a new one, and the stance is the
+    // player's, not the level's.
+    if (crouchedBefore) current.motor.crouching = true;
+    dbg.wildArrival = {
+      at: { row: standRow, col: standCol }, stood,
+      feet: { x: Math.round(current.motor.pos[0] * 100) / 100, z: Math.round(current.motor.pos[2] * 100) / 100 },
+      exact: { x: Math.round(exact.x * 100) / 100, z: Math.round(exact.z * 100) / 100 },
+      spawn: { row: current.spawn?.x ?? null, col: current.spawn?.z ?? null },
+      origin: [current.wild?.originRow ?? null, current.wild?.originCol ?? null],
+      slid: true,
+    };
+    // **The player keeps their bearing** (`?yaw=`'s lesson): a slide is not a turn.
+    cam.yaw = yaw;
+    cam.pitch = pitch;
+    const inside = (row, col) => row >= 0 && col >= 0
+      && row < (current.level?.depth ?? 0) && col < (current.level?.width ?? 0);
+    const moved = (actor) => {
+      if (!actor?.world || !actor.place) return true;
+      if (dRow) actor.world.x += dRow * CELL_SIZE;
+      if (dCol) actor.world.z += dCol * CELL_SIZE;
+      actor.place = { ...actor.place, row: Math.round(actor.world.x / CELL_SIZE - 0.5), col: Math.round(actor.world.z / CELL_SIZE - 0.5) };
+      if (actor.from) actor.from = { ...actor.from, row: actor.from.row + dRow, col: actor.from.col + dCol };
+      return inside(actor.place.row, actor.place.col);
+    };
+    const lostFaces = held.townsfolk.filter((person) => !moved(person)).length
+      + held.monsters.filter((spawn) => !moved(spawn)).length;
+    monsters = held.monsters.filter((spawn) => inside(spawn.place?.row ?? 0, spawn.place?.col ?? 0));
+    townsfolk = held.townsfolk.filter((person) => inside(person.place?.row ?? 0, person.place?.col ?? 0));
+    // **A window that kept nobody is not an empty country.** The carried figures stand on the
+    // ground the old rectangle held; a slide of 64 cells leaves all of them behind, and the port
+    // then drew a new window with nothing alive on it and nobody in it — the owner's *"enemies
+    // dont get ported and so everything feels not permanent"*, and the empty fields the next
+    // probe found (*"in the wilderness it looks like sprites are invisible"* — four creatures
+    // before the slide, none after). The window's own population is deterministic
+    // (`populate`'s seed and the level's own cells), so the honest answer is to field it again:
+    // the country the player has walked into has its own creatures and its own travellers, and
+    // they are the same ones every time this window is entered.
+    if (!monsters.length && !townsfolk.length) {
+      // **The art is already here** (`keepFigures`): a refill re-reads the window's own
+      // population and reuses every sheet — no texture uploads, no weapon reset, no re-dress of
+      // a crowd that is not standing here. A full `populate` here is what made each slide feel
+      // like a page reload.
+      await populate(current, { keepFigures: true });
+      dbg.windowSlide = { ...(dbg.windowSlide ?? {}), refilled: true };
+    }
+    // **A job's quarry arrives with the window that holds it.** The camp is 130–175 cells out of
+    // its anchor's gate, so the window the player first walks into never holds the target cell:
+    // the slide is the first moment the level can field it. `populate` only runs again above when
+    // the new window kept nobody at all, so a job's own creatures have to be asked for by name
+    // here (`ensureRadiantCamp`).
+    if (wildRequest && radiant?.active && !radiant.active.completed) await ensureRadiantCamp();
+    // **The gate is not re-read in the same breath.** The new window may hold a settlement's
+    // opening under the player's feet, and the crossing rule reads this frame's stride: a slide
+    // is not a step at the door.
+    gatePushLock = 1.0;
+    // The URL says where the player is, so a reload lands here — and `?wild=` is the same
+    // parameter a gate crossing and the save's memory both write.
+    params.set('wild', `${at.row},${at.col}`);
+    const here = youAreHere(world, at.row, at.col);
+    current.wild.here = here;
+    params.set('grid', String(WORLD_GRID_VERSION));
+    if (here.nearest?.name) {
+      params.set('location', here.nearest.name);
+      params.set('province', String(here.nearest.provinceID));
+      params.set('placeId', String(here.nearest.id));
+    }
+    rememberLastLocation();
+    rememberClock();
+    updateObjectiveHud();
+    params.set('yaw', String(Math.round(yaw * 1000) / 1000));
+    try {
+      history.replaceState(history.state ?? null, '', `${location.pathname}?${params.toString()}${location.hash ?? ''}`);
+    } catch { /* a page that cannot rewrite its URL still walks */ }
+    dbg.windowSlide = {
+      ...(dbg.windowSlide ?? {}),
+      doneAt: { row: at.row, col: at.col },
+      delta: [dRow, dCol], lost: lostFaces,
+      origin: [current.wild?.originRow ?? null, current.wild?.originCol ?? null],
+      frames: dbg.frame,
+    };
+    sliding = false;
   }
 
   /** How often the world's own clock is written while a level stands, in seconds — GUESS: often
@@ -9267,8 +15771,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * How often the wild's own save keeps up with the walk, in seconds — GUESS: a tick a
    * player's tab wait will rarely miss. */
   const WILD_SAVE_EVERY = 4;
-  /** Seconds until the wild's own save ticks again. */
-  let wildSaveIn = WILD_SAVE_EVERY;
+  /**
+   * Seconds until the wild's own save ticks again — **zero on the page's first frame**, so the cell
+   * a country page was *booted* on is in the record before the player has taken a step. Every gate
+   * crossing hands over an explicit `?wild=` cell and the page's own record is written straight
+   * away (`loadLevel`, above, before the window is built); the tick then keeps up with the walk.
+   */
+  let wildSaveIn = 0;
 
   /**
    * The wild's own save keeps up with the walk.
@@ -9285,17 +15794,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function maybeSaveWildFoot(dt) {
     if (!wildRequest || !current?.motor?.pos) return;
     wildSaveIn -= Math.max(0, Number(dt) || 0);
-    if (wildSaveIn > 0) return;
-    wildSaveIn = WILD_SAVE_EVERY;
+    if (wildSaveIn > 0) return;      wildSaveIn = WILD_SAVE_EVERY;
     const feet = current.motor.pos;
     const cell = {
       row: Math.round(feet[0] / CELL_SIZE - 0.5) + (current.wild?.originRow ?? 0),
       col: Math.round(feet[2] / CELL_SIZE - 0.5) + (current.wild?.originCol ?? 0),
     };
-    try {
-      const saved = JSON.parse(localStorage.getItem(LAST_LOCATION_KEY) ?? '{}');
-      localStorage.setItem(LAST_LOCATION_KEY, JSON.stringify({ ...saved, wild: cell }));
-    } catch { /* storage refused; the world map's fallback applies */ }
+    current.wild.here = youAreHere(world, cell.row, cell.col);
+    rememberLastLocation();
+    updateObjectiveHud();
   }
 
   /**
@@ -9415,23 +15922,47 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * what gets corrected, and the person is never moved.
    */
   function pushPlayerFromPeople() {
-    if (!townsfolk.length || !current?.motor) return;
+    if (!current?.motor) return;
+    if (!townsfolk.length && !monsters.length) return;
     const pos = current.motor.pos;
     // A body only pushes the player **out**, never along: the overlap this repairs is the one the
     // player's own step made (D-47), and a walker cannot drag anybody because `personInWay` stops it
     // short of the player in the first place.
-    const min = PERSON_RADIUS + PLAYER_RADIUS;
+    //
+    // **A living enemy is a body too** (`game/bodyBlock.js`). The owner, 2026-10-21: *"enemies
+    // have no collision with the player and so you can pass trough them and they never block your
+    // way making it basically optional to fight"*. The rule is the people's rule, one list wider:
+    // a creature with health left owns the metre it stands in, and the player's step is put back
+    // on the rim of it. A corpse does not — stepping over what you have already killed is not a
+    // fight — and neither does a creature the player cannot see (an indoors person), which is why
+    // the people's own skip list is kept whole.
+    const bodies = [];
     for (const person of townsfolk) {
-      // A person indoors is not a body the player can walk into: they are behind a door the
-      // port has no interior for, and an invisible wall on the pavement is worse than nothing.
       if (person.shop || person.down || person.atHome) continue;
-      const dx = pos[0] - person.world.x;
-      const dz = pos[2] - person.world.z;
-      const d = Math.hypot(dx, dz);
-      if (d >= min || d === 0) continue;
-      const nx = person.world.x + (dx / d) * min;
-      const nz = person.world.z + (dz / d) * min;
-      if (walkableWorld(nx, nz)) { pos[0] = nx; pos[2] = nz; }
+      bodies.push({ x: person.world.x, z: person.world.z, r: PERSON_RADIUS });
+    }
+    for (const spawn of monsters) {
+      if (!spawn?.world || spawn.monster?.health <= 0) continue;
+      bodies.push({ x: spawn.world.x, z: spawn.world.z, r: MONSTER_BODY_RADIUS });
+    }
+    let at = { x: pos[0], z: pos[2] };
+    let moved = false;
+    for (const body of bodies) {
+      const next = pushOutOfBodies(at, [body], body.r + PLAYER_RADIUS, walkableWorld);
+      if (next.pushed) { at = { x: next.x, z: next.z }; moved = true; }
+    }
+    if (moved) { pos[0] = at.x; pos[2] = at.z; }
+    // **A body with nowhere to be pushed to still blocks the step.** When every rim of a living
+    // body is masonry — the one-cell corridor, the doorway — `pushOutOfBodies` refuses the
+    // correction and the player is left inside it. The step is then *undone*: the player stays
+    // where they stood, the creature keeps its metre, and a fight is not optional. Only the
+    // living block; a corpse and an unseen indoor person are skipped above, exactly as before.
+    for (const body of bodies) {
+      if (Math.hypot(pos[0] - body.x, pos[2] - body.z) >= body.r + PLAYER_RADIUS - 0.02) continue;
+      pos[0] = feetBeforeStep.x;
+      pos[2] = feetBeforeStep.z;
+      dbg.bodyBlocked = { x: body.x, z: body.z, r: body.r };
+      break;
     }
   }
 
@@ -9605,14 +16136,33 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         // town was in bed and every one of it was still drawn. Measured with `.scratch/nightprobe.mjs`
         // at 23:00 — "indoors 0" with "drawn 48". A flag that describes where somebody is for
         // the next six hours has to be written where the six hours are decided.
-        const atHome = Boolean(goal) && /^home/.test(goal.reason ?? '')
-          && goal.row === here.row && goal.col === here.col;
+        const arrived = Boolean(goal) && goal.row === here.row && goal.col === here.col;
+        const atHome = arrived && /^home/.test(goal.reason ?? '');
+        // ── …and a person whose block **serves from a place** holds its post (D-44) ──
+        //
+        // The owner's own report: *"you should add the npcs that dont move from the original arena
+        // the one in taverns the priest the ones you can ask rumors … they are probably object and
+        // not entities in the original arena"*. Only the *home* branch did this before, so every
+        // posted trade walked the town: measured 2026-10-17 (`.scratch/stationary.mjs`, one city
+        // page, sixty seconds), a **priest stood on 22 different cells in twenty-one minutes** and
+        // never stood still longer than eight seconds, and the trades that in Arena *are* fixtures —
+        // the priest, the vendor, the wizard, the beggar — were the ones that moved most. Which
+        // blocks count as a post is `livingWorld.js`'s `POST_ACTIVITIES`, applied to the goal the
+        // day just handed back; a block that is not one (a wanderer's beat, a patron's drink) keeps
+        // the walk it always had.
+        //
+        // Unlike `atHome`, a posted person is **outside and drawn** — their post is on the street,
+        // which is the whole point — so only the hold is shared with the branch below.
+        const onPost = arrived && goal.post === true;
         person.atHome = atHome;
-        if (atHome) {
+        person.atPost = onPost;
+        if (atHome || onPost) {
           const activity = currentActivity(person, clock);
           const left = Math.max(0, Number(activity?.until ?? clock.minutes) - Number(clock.minutes ?? 0));
           person.wait = Math.max(TOWN_WAIT_MIN, secondsForMinutes(left));
           person.walking = false;
+          // A posted person is not at home: the street has to draw them.
+          if (onPost) continue;
           // **And they are indoors, which the street has to show.** The port has no home
           // interiors to put them in (the install's own data records no doors for houses), so a
           // person at home is *not drawn* rather than drawn asleep on the pavement: the crowd
@@ -9699,21 +16249,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // png that maybe pictures them turned back or to the side".
     const eye = feetOf();
     for (const person of townsfolk) {
-      // **A person the player is speaking to answers in their own art.** The archive ships a
-      // talk sheet for the town's generic men and women (`MLGEN0#T.CFA`, `FMGEN0#.CFA`) —
-      // loaded with the rest of their family (`loadPeopleActions`) — and while the panel is
-      // open the figure stands in it and its frames run on their own clock below. A family
-      // whose talk sheet this install lacks keeps the standing frame it always had.
+      // **A person is the same person while they speak.** The archive ships a talk sheet for
+      // the town's generic men and women (`MLGEN0#T.CFA`, `FMGEN0#.CFA`), and this port used
+      // to draw it the moment a conversation opened — which the owner saw as *"a man and a
+      // woman of the town npcs change their clothes when i speak to them"*. Measured off the
+      // install's own bytes, the talk sheet is a **different figure**: `MLGEN01W.CFA` is
+      // 52×99 with its cloth on palette indices 148/32/151/130, and `MLGEN01T.CFA` is 43×99
+      // with 162/161/164/165 — a different tunic, not the same man mid-sentence. So the
+      // standing sheet is kept for the whole conversation and only the walk stops; `talk` is
+      // still a direction table in `peopleKinds.js` (the archive's own data), and
+      // `loadPeopleActions` no longer pays to upload the sheet it should not draw.
       // **Which direction the archive draws this one from** — 1 faces the eye, 5 shows the back
       // — and every sheet below is asked for that direction, so a figure turns as the player
       // walks round it (the owner's "going around them 360 animation"; D-47).
       const view = viewFacing(person.facing, person.world.x, person.world.z, eye[0], eye[2]);
-      const talkFile = person.actions ? actionFile(person, 'talk', view) : null;
-      const talk = talking?.person === person && talkFile && spriteSets.has(talkFile) ? talkFile : null;
-      person.talkingArt = talk;
-      const file = talk ?? (person.attack
-        ? viewFileFor(person.outfit, 1).replace('WLK.CFA', 'ATT.CFA')
-        : viewFileFor(person.outfit, view));
+      // **Every sheet this one can draw is asked for under their own race** (`raceSheetKey`), so a
+      // Morrowind street's figures and a Skyrim street's are different textures off one install.
+      const sheet = (name) => raceSheetKey(person.skin, name);
+      person.talkingArt = null;
+      const file = person.attack
+        ? sheet(viewFileFor(person.outfit, 1).replace('WLK.CFA', 'ATT.CFA'))
+        : sheet(viewFileFor(person.outfit, view));
       if (spriteSets.has(file)) person.file = file;
     }
     // Resolve each actor's frame first, then batch only identical file/frame/facing draws.
@@ -9735,12 +16291,33 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // family's `die` file when this install ships one (`peopleKinds.js`).
       if (actor.down) {
         // The death is a direction too (`peopleKinds.js`), so a body falls the way the eye saw it.
-        const dieFile = actor.actions ? actionFile(actor, 'die', viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2])) : null;
+        const dieFile = actor.actions
+          ? raceSheetKey(actor.race, actionFile(actor, 'die', viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2])))
+          : null;
         if (dieFile && spriteSets.has(dieFile)) file = dieFile;
       }
-      if (actor.monster?.sprite) {
+      // **A bowman draws his bow.** The armoured roster ships a three-frame shot per family
+      // (`game/humans.js`'s `humanSheets`: `01CHNBOW.CFA` …), and while the foe is in its attack
+      // the fight draws *that* sheet instead of the body's swing — the actual archer art the
+      // owner asked for, not a swordsman with a number.
+      let bowFrame = null;
+      if (actor.attack && actor.bowFile) {
+        const bowSet = raceSheetKey(actor.skin, actor.bowFile);
+        if (spriteSets.has(bowSet)) {
+          file = bowSet;
+          const profile = actor.attack.profile;
+          const t = actor.attack.elapsed;
+          const share = t < profile.windup
+            ? t / Math.max(0.001, profile.windup)
+            : Math.min(1, (t - profile.windup) / Math.max(0.001, profile.windup + profile.active * 2));
+          bowFrame = Math.min(2, Math.floor(share * 3));
+        }
+      }
+      if (actor.monster?.sprite && bowFrame == null) {
         const action = actor.death ? 6 : actor.attack ? 1 : viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2]);
-        const candidate = `${actor.monster.sprite}${action}.CFA`;
+        // A human foe's sheet is the same file under **their own race's palette** (`actor.skin`),
+        // so the watch is a Dunmer in Morrowind and a Nord in Skyrim without a second sprite.
+        const candidate = raceSheetKey(actor.skin, `${actor.sprite ?? actor.monster.sprite}${action}.CFA`);
         if (spriteSets.has(candidate)) file = candidate;
       }
       const set = spriteSets.get(file);
@@ -9749,8 +16326,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // stride, so it must not be driven by metres walked (`actorFrame`'s own law) — and a
       // fallen one runs its death sheet once, then holds the last pose until it is cleared.
       const frames = Math.max(1, set.cfa.frames.length);
-      const frame = actor.down
+      const frame = bowFrame != null
+        ? Math.min(frames - 1, bowFrame)
+        : actor.down
         ? Math.min(frames - 1, Math.floor(((dbg.seconds - (actor.downAt ?? dbg.seconds)) / FOLK_DIE_SECONDS) * frames))
+        // **A fallen creature plays its own die sheet once**, then holds the last pose. The
+        // sheet was selected above (`action = 6`), but its *frame* used to come from the walk
+        // cycle, so an Argonian or a Khajiit fell in a walking pose — the reported "no proper
+        // die animation".
+        : actor.death
+          ? Math.min(frames - 1, Math.floor((actor.death.elapsed / FOLK_DIE_SECONDS) * frames))
         : actor.talkingArt
           ? Math.floor(dbg.seconds * TALK_FRAMES_PER_SECOND) % frames
           // **A sheet with Arena's layout strides on its first six frames** (walk 0–5, look
@@ -9811,6 +16396,50 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       out.push(batch);
       figures += actors.length;
     }
+    // ── the install's own sparks and blood ────────────────────────────────
+    //
+    // **`SPPARTS.RCI` and `BLOODEXP.CFA`, drawn as Arena draws them.** The effects pool keeps
+    // the records (position, age, the spray's clock); these two batches are the pictures. A
+    // spark is the 9×9 field the install ships; a wound is the five-frame explosion, its frame
+    // read off the spray's own age. Both are ordinary billboards, so they depth-test against
+    // the world exactly like a figure does.
+    if (sparkBatch) {
+      const sparks = combatFx.particles.filter((p) => p.art === 'spark');
+      if (sparks.length) {
+        renderer.moveBillboardBatch(sparkBatch, sparks.map((p) => [p.x, p.y, p.z]));
+        sparkBatch.indexCount = sparks.length * 6;
+        sparkBatch.record = 'SPPARTS.RCI';
+        out.push(sparkBatch);
+        dbg.sparkSprites = sparks.length;
+      } else dbg.sparkSprites = 0;
+    }
+    if (bloodSet?.cfa?.frames?.length) {
+      const frames = bloodSet.cfa.frames.length;
+      const byFrame = new Map();
+      for (const spray of combatFx.sprays) {
+        const frame = Math.max(0, Math.min(frames - 1, Math.floor((spray.age / spray.life) * frames)));
+        let group = byFrame.get(frame);
+        if (!group) byFrame.set(frame, group = []);
+        group.push(spray);
+      }
+      const cache = bloodSet.frameBatches ??= new Map();
+      for (const [frame, sprays] of byFrame) {
+        const key = `${bloodSet.file}#${frame}`;
+        let batch = cache.get(key);
+        if (!batch || batch._quads < sprays.length) {
+          if (batch) renderer.destroyBillboardBatch(batch);
+          batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, key,
+            { w: bloodSet.size.w * 0.6, h: bloodSet.size.h * 0.6 },
+            sprays.map((s) => [s.x, s.y, s.z]), { dynamic: true });
+          cache.set(key, batch);
+        }
+        renderer.moveBillboardBatch(batch, sprays.map((s) => [s.x, s.y, s.z]));
+        batch.indexCount = sprays.length * 6;
+        batch.record = key;
+        out.push(batch);
+      }
+      dbg.bloodSprites = combatFx.sprays.length;
+    }
     dbg.drawnFrames = drawnFrames;
     dbg.figures = figures;
     // The player's own two sets are drawn by name below, so they are not "live" yet.
@@ -9822,33 +16451,63 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // step smaller than a couple of millimetres is the motor settling, not a stride.
       const walked = lastFeet ? Math.hypot(feet[0] - lastFeet[0], feet[2] - lastFeet[2]) : 0;
       const walking = walked > 0.004;
+      // **The player has a heading, not just a camera.** It is the direction of the last real
+      // stride, which is what tells the chosen five-view body which of its angles the eye is
+      // on. Standing still keeps the last heading, so turning the camera walks round the body
+      // and shows the other four shipped sides (and their three mirrors).
+      if (walking && lastFeet) playerFacing = Math.atan2(feet[0] - lastFeet[0], feet[2] - lastFeet[2]);
       lastFeet = feet;
+      // The camera stands behind the player, so the eye to ask about is the camera's own
+      // position, not the player's feet. A body with five angles turns as the view turns; a
+      // single-sheet body (an older save's class armour) simply keeps its one back view.
+      const cameraX = dbg.thirdCamera?.eye?.[0] ?? feet[0] - Math.sin(cam.yaw) * 2.5;
+      const cameraZ = dbg.thirdCamera?.eye?.[2] ?? feet[2] - Math.cos(cam.yaw) * 2.5;
+      const facingView = playerSets.size
+        ? viewFacing(playerFacing, feet[0], feet[2], cameraX, cameraZ)
+        : BACK_VIEW;
+      const facingMirror = playerSets.size
+        ? Math.sin(Math.atan2(cameraX - feet[0], cameraZ - feet[2]) - playerFacing) < 0
+        : false;
       // **A blow has a picture here too.** The third person used to keep the standing frame
       // through the whole swing, so pressing `F` while watching yourself did nothing on
-      // screen: "attacking animation is bugged in third person". The archive ships the
-      // attack action as its own sheet — `01…ATT.CFA`, three frames, facing the viewer,
-      // because Arena only ever drew a blow from the player's own eyes — so the swing swaps
-      // the billboard to that sheet for its `SWING_ANIM_SECONDS`, then back to the walk.
-      // The walk cycle holds during it, so the blow reads as a blow and not as walking
-      // through one.
+      // screen: "attacking animation is bugged in third person". A strike sheet is the blow
+      // (and the watch/BABE sheets carry their own attack frames 8–11 in place), while the
+      // walk sheet holds the stride.
       const swinging = swingAnim > 0;
-      const set = swinging && attackSet ? attackSet : playerSet;
-      renderer.moveBillboardBatch(set.batch, [[feet[0], feet[1], feet[2]]]);
-      set.batch.indexCount = 6;
+      const set = swinging && attackSet ? attackSet : (playerSets.get(facingView) ?? playerSet);
+      const mirrored = !swinging && facingMirror;
+      let batch = set.batch;
+      if (mirrored) {
+        batch = set.mirrorBatch ??= renderer.createBillboardBatch(CREATURE_ARCHIVE, `${set.file}#0`,
+          { w: -set.size.w, h: set.size.h }, [[0, -1000, 0]], { dynamic: true });
+      }
+      renderer.moveBillboardBatch(batch, [[feet[0], feet[1], feet[2]]]);
+      batch.indexCount = 6;
       const frames = set.cfa.frames.length;
       const progress = swinging && attackSet ? (SWING_ANIM_SECONDS - swingAnim) / SWING_ANIM_SECONDS : 0;
       // The player's own walk is stride-driven too, for the same reason the town's is: the
       // figure's feet and the ground under them have to agree, and a clock cannot know that.
+      // Any of the chosen body's five angles may be the one on screen — not only the back
+      // sheet `playerSet` names. A twelve-frame view sheet's stride is its first six frames;
+      // playing all twelve walked the body through its head-turn and its sword-swing, which is
+      // exactly the defect `peopleKinds.js` records for the town's guard (D-42).
+      const walkFrames = set?.layout === 'view' ? LAYOUT_WALK_FRAMES : frames;
       set.phase = walking
         ? ((set.phase ?? 0) + walked * frames / WALK_CYCLE_METRES) % frames
         : 0;
-      const step = swinging && attackSet
-        ? Math.min(frames - 1, Math.max(0, Math.floor(progress * frames)))
-        : (walking ? Math.floor(set.phase) % frames : 0);
-      set.batch.record = `${set.file}#${step}`;
+      let step;
+      if (swinging && attackSet) {
+        step = attackFrames
+          ? attackFrames[Math.min(attackFrames.length - 1, Math.floor(progress * attackFrames.length))]
+          : Math.min(frames - 1, Math.max(0, Math.floor(progress * frames)));
+      } else {
+        step = walking ? Math.floor(set.phase) % Math.max(1, walkFrames) : 0;
+      }
+      batch.record = `${set.file}#${step}`;
       set.live = 1;
       dbg.playerFrame = `${set.file}#${step}`;
-      out.push(set.batch);
+      dbg.playerView = { view: facingView, mirrored, file: set.file };
+      out.push(batch);
     }
     return out;
   }
@@ -9870,7 +16529,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function drawWeather(proj, view, eye) {
     if (!precip) {
       try {
-        precip = new PrecipitationRenderer(renderer.gl, {});
+        // **The port draws its weather on the ENHANCED lane** (`opts.enhanced`, WX1's own
+        // volume): DFU's classic profile is 800 flakes in a camera-local box, so a fall is a
+        // thin scatter that slides with the eye, and the twin's own note says its rain
+        // "sticks to the screen". The lab's volume is 26,000 streaks and 20,000 flakes wrapped
+        // around the *world*, which is what makes a fall read as weather — and it is the lane
+        // the deck was built for. Measured on the port's own snow check (Winterhold, looking
+        // up): the classic profile changed 93 pixels of the upper frame in 1.5 s against the
+        // suite's floor of 100, and the enhanced one changes it by a whole sky.
+        precip = new PrecipitationRenderer(renderer.gl, { enhanced: true });
       } catch (err) {
         // A driver that cannot compile the pass must not take the level down with it: the
         // sky says it is raining and no rain falls, which is a missing effect, not a crash.
@@ -9893,7 +16560,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const motor = current.motor;
     const feet = Array.from(motor.pos);
     const fov = fieldOfView();
-    const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+    // **The 320×200 tick is a lens as well as an image.** `renderer.setRetroSource` gives the
+    // world a 320×200 frame; the projection has to be that frame's own aspect or the picture is
+    // the window's shape stretched into 1994's, which is the one thing the setting is for.
+    const aspect = retro320Enabled() ? 320 / 200 : canvas.clientWidth / Math.max(1, canvas.clientHeight);
     const proj = mirrorProjectionX(perspective(fov, aspect, 0.05, 800));
     // A shake is a perturbation of the *view*, never of the aim: the input's own yaw and
     // pitch are untouched, so the wound reads on screen without the mouse fighting it.
@@ -9904,11 +16574,46 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const viewYaw = cam.yaw + shakeYaw;
     const viewPitch = cam.pitch + shakePitch;
     const fwd = [Math.sin(viewYaw) * Math.cos(viewPitch), Math.sin(viewPitch), Math.cos(viewYaw) * Math.cos(viewPitch)];
-    // Third person: the eye steps back along the *level* view direction (yaw only, so the
-    // camera does not slide under the floor when the player looks up), and up a little.
-    const eye = view === 'third'
-      ? [feet[0] - Math.sin(viewYaw) * 3.6, feet[1] + 1.55, feet[2] - Math.cos(viewYaw) * 3.6]
-      : motor.eyeAt();
+    // ── the third-person camera: an orbit that knows about walls ────────────────
+    //
+    // The old camera stood a fixed 3.6 m behind the player and ignored the level, so in a
+    // corridor it sat inside masonry and the view was the back of a wall. It is now a proper
+    // orbit around a point at the player's shoulders: it follows the pitch (looking down lifts
+    // the eye, looking up lowers it), and the boom is **raycast from the player's head to the
+    // wanted eye** and shortened to the first wall, with a hand's breadth of clearance. The
+    // ray is the level's own collider (`sightClear`'s), so doors, walls and the gate vault are
+    // all the same obstacle the player is.
+    let thirdCamera = null;
+    let eye;
+    if (view === 'third') {
+      const pivot = [feet[0], feet[1] + 1.42, feet[2]];
+      const wanted = [pivot[0] - fwd[0] * 4.2, pivot[1] - fwd[1] * 4.2 + 0.36, pivot[2] - fwd[2] * 4.2];
+      let dx = wanted[0] - pivot[0], dy = wanted[1] - pivot[1], dz = wanted[2] - pivot[2];
+      const wantedLength = Math.hypot(dx, dy, dz) || 1;
+      dx /= wantedLength; dy /= wantedLength; dz /= wantedLength;
+      let clear = wantedLength;
+      let blocked = false;
+      const raycast = current.collider?.raycast;
+      if (typeof raycast === 'function') {
+        const hit = raycast.call(current.collider, pivot, [dx, dy, dz], wantedLength);
+        if (Number.isFinite(hit)) {
+          blocked = true;
+          clear = Math.max(0.55, hit - 0.28);
+        }
+      }
+      // Never let the eye drop through the floor the player is standing on. A camera pinned
+      // inside the ground is worse than one pressed to the player's shoulder.
+      const y = Math.max(feet[1] + 0.32, pivot[1] + dy * clear);
+      eye = [pivot[0] + dx * clear, y, pivot[2] + dz * clear];
+      thirdCamera = {
+        pivot, eye: [...eye], distance: Math.round(clear * 100) / 100,
+        wanted: Math.round(wantedLength * 100) / 100, blocked,
+      };
+      dbg.thirdCamera = thirdCamera;
+    } else {
+      eye = motor.eyeAt();
+      dbg.thirdCamera = null;
+    }
     const view16 = lookAt(eye, [eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2]], UP_Y);
 
     // The sun first: the frame's light and the sun's own direction, before anything is drawn
@@ -9916,8 +16621,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // direction then stays what it always was — straight up, which is what a torchlit room
     // with no sky should light by.
     const light = applyDaylight();
+    applyPlayerLight();
+    const spellLight = Number(player.light?.radius) > 0
+      ? { range: Math.min(13, 5 + Number(player.light.radius) * 0.8), colour: [1.0, 0.84, 0.56] }
+      : null;
     const localLights = nearestSceneLights(current.lightSources ?? [], feet,
-      { night: isNight(clockNow().minutes), seconds: dbg.seconds, carried: !current.outdoor });
+      { night: isNight(clockNow().minutes), seconds: dbg.seconds, carried: !current.outdoor, spellLight });
     renderer.setPointLights(sceneLightsEnabled ? localLights.positions : new Float32Array(), null, localLights.colours);
     dbg.pointLights = sceneLightsEnabled ? localLights.count : 0;
     renderer.beginFrame(proj, view16, light ? light.sunDir : [0, 1, 0], WORLD_FRAME);
@@ -9939,7 +16648,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // move (`current.sceneryBatches`, built once at load), the figures follow what
     // moved this frame (`liveBatches`).
     const batches = liveBatches();
-    const flats = (current.sceneryBatches ?? []).map((s) => {
+    // **`dbg.flatsHidden` is a probe's switch, not a player's** (D-62): hiding the level's own
+    // pictures is how "is this pixel the table, or the room behind it?" is asked of the page
+    // itself instead of guessed from a screenshot — the diff of the two frames *is* the flat.
+    const flats = dbg.flatsHidden ? [] : (current.sceneryBatches ?? []).map((s) => {
       if (s.frames > 1) s.batch.record = `${s.name}#${Math.floor(dbg.seconds * 12) % s.frames}`;
       return s.batch;
     });
@@ -9972,7 +16684,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       combatFxPass.draw(air, proj, view16);
       renderer.markForeignPass();
     }
-    combatFx.setBolts(bolts);
+    // **A bowman's shot is a shaft, not a spark** (`combatFx`'s own arrow pass): the arrow
+    // flies in the same simulation a bolt does, so it is handed to the arrow renderer and kept
+    // out of the bolt one.
+    combatFx.setBolts(bolts.filter((bolt) => !bolt.arrow));
+    combatFx.setArrows([...arrows, ...bolts.filter((bolt) => bolt.arrow)]);
     const effects = combatFx.geometry([...monsters, ...townsfolk], right);
     if (effects.length) {
       combatFxPass ??= new CombatFxPass(renderer.gl);
@@ -9989,7 +16705,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * The art is Arena's own: one frame of the weapon's `.CIF`, at the pixel the frame's header
    * names, on a screen that was 320×200, fitted inside the window at ONE uniform scale and
-   * pinned to its bottom. Index 0 is the cutout (the layer is transparent where the sheet is),
+   * standing on the window's bottom edge with the art's own measured gap above it
+   * (`placeWeapon`'s default baseline; the port has no 53-row status bar to stand on).
+   * Index 0 is the cutout (the layer is transparent where the sheet is),
    * and nothing is drawn at all when the weapon is sheathed, when this install has no sheet for
    * it, or in the third person.
    *
@@ -10011,20 +16729,40 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const index = view === 'first' ? weaponRig.frame : null;
     const art = index === null ? null : weaponArt.get(index);
     if (!art) { weaponOnScreen = null; dbg.weaponDrawn = null; return null; }
-    // The weapon stands on the status line, in its own right-hand margin — `placeWeapon` is
-    // the law, measured off the install's six sheets (every frame's `yOffset + height` is
-    // 147, the top of the original's status area), and the port's status line is the top
-    // edge of its own HUD panel. Until this rule the art was pinned to a 320×200 box at the
-    // *bottom of the window*, so on a tall or short window it hung in the middle of the
-    // frame with its blade running behind the HUD text ("sword is floating midscreen with
-    // no handle"); its grip is drawn off the art's own right edge in Arena, so the thing a
-    // player reads as "the handle" is only ever as visible as the art's nearness to the
-    // right of the *screen*, which is what the rule restores.
-    const place = placeWeapon(art, { width: w, height: h, baseline: statusLine() });
+    // **The art stands on the window's own bottom edge, and the HUD panel is drawn over it.**
+    //
+    // `placeWeapon` is the measured law (every frame of all six sheets puts `yOffset + height`
+    // on line 147 of the original's 320×200 screen) and it takes the line to stand on as its
+    // `baseline`. The original's answer to "what is below that line" was its **status bar**: a
+    // solid 53-row panel that the weapon art runs behind. This port has no such bar — its HUD
+    // is a small DOM box in the corner — so passing the original's 147-line here left the art
+    // standing on an invisible edge a quarter of the way up the window: the owner, 2026-10-17,
+    // *"move the first person attack animation sprites down so that … if you have the fists up
+    // they come from down the screen and they are not floating midscreen"*.
+    //
+    // So the baseline is the window's own bottom (`placeWeapon`'s default), which is the same
+    // law with the panel that used to follow the line taken away: a fist's knuckles sit on the
+    // bottom edge and the arms come up out of it, and every frame keeps its own measured gap
+    // above that edge (`147 − yOffset` art rows, from the frame's own header). Nothing can be
+    // cut off by this — no frame of any sheet reaches below the line — and the HUD is drawn
+    // over the art (z-index 5 against the weapon layer's 3), which is exactly the original's
+    // own layering of art under status bar. The `interior` check that used to place the line at
+    // 147 of the window (D-66's *"159 px too low"*) was the stale half: it predates this
+    // request and asked for the art on an invisible edge, and it now measures the law below.
+    let baseline = h;
+    const hudBounds = document.getElementById('hud')?.getBoundingClientRect();
+    const defaultPlace = placeWeapon(art, { width: w, height: h });
+    // The original bow is centered, unlike the right-hand melee sheets. Keep it
+    // above an overlapping DOM HUD instead of hiding its two frames behind text.
+    if (weaponRig.family === 'bow' && hudBounds?.height > 0
+      && defaultPlace.x < hudBounds.right && defaultPlace.right > hudBounds.left) {
+      baseline = Math.min(h, hudBounds.top);
+    }
+    const place = placeWeapon(art, { width: w, height: h, baseline });
     // Pixel art: a scaled frame is the original's own pixels, not a smoothed guess.
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(art.canvas, place.x, place.y, place.w, place.h);
-    weaponOnScreen = { frame: index, x: place.x, y: place.y, w: place.w, h: place.h, right: place.right, bottom: place.bottom, scale: place.scale, baseline: statusLine() };
+    weaponOnScreen = { frame: index, x: place.x, y: place.y, w: place.w, h: place.h, right: place.right, bottom: place.bottom, scale: place.scale, baseline };
     dbg.weaponDrawn = weaponOnScreen;
     return weaponOnScreen;
   }
@@ -10086,13 +16824,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // A replaced scene stops at its own loop: `dispose()` (a travel to another map, or a
     // shop door's page) sets this and the old game is gone for good.
     if (!life.alive) return;
-    const dt = Math.min(0.1, (now - last) / 1000);
+    const dt = last === null ? 0 : Math.max(0, Math.min(0.1, (now - last) / 1000));
     last = now;
     // `__debug.pause` stops the *simulation* and keeps painting. It exists so a test can
     // drive a timed animation frame by frame: the weapon rig's swing is 5/16 of a second,
     // and between two CDP round trips the real clock can run a whole one out, which made
     // the weapon checks pass or fail on how busy the machine was.
-    if (!life.paused) step(dt);
+    if (!life.paused && !sliding && !life.mapOpen) step(dt);
+    // The compass follows the camera (`game/compass.js`): one reading, one DOM write, only when
+    // the bearing has moved to a new degree — and it is written even while paused, so a page
+    // that is only being looked at still says which way it faces.
+    updateCompass();
+    // The quest marker follows the walk, not the events (`updateQuestMarker`).
+    updateQuestMarker();
+    // …and the place's music is re-read a few times a second (a fight, the water, the hour).
+    if ((dbg.frame & 15) === 0) updateMusic();
     // The view band first: `paint` reads the canvas's own client size for its aspect, and
     // the renderer resizes its backing store from it, so the band has to be right before
     // the world is drawn into it.

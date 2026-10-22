@@ -144,6 +144,76 @@ export const STEP_OFFSET = 0.5;
  *  r - sqrt((r + skin)^2 - r^2), about 0.067. */
 export const CLIMB_SIDE_REACH = CAPSULE_RADIUS + 0.1;
 export const CLIMB_CAP_LOW = CAPSULE_RADIUS - Math.sqrt(CLIMB_SIDE_REACH ** 2 - CAPSULE_RADIUS ** 2);
+
+/**
+ * THE LEDGE CLIMB - the port's general "haul yourself up" capability.
+ *
+ * The owner, 2026-10-17: *"in dungeons there should be shallow pits you can climb instead of
+ * just holes … the water should be deep and you should climb out of it … generally the ability
+ * to climb is needed"*. The engine already carries DFU's **skilled** climb (`climbing.js` +
+ * `_climbStep` below) — the Climbing skill's machine, which climbs any wall face for as long
+ * as a forward press holds — but it is born only when a host passes it deps, and its job is
+ * the skill, not a pond. This is the other half: **one ledge, up to the body's own reach**, out
+ * of a pit or a pool, with no skill check, no wall-crawling and no way past a face taller than
+ * the body's arms.
+ *
+ * The rules are geometry, not a roll:
+ *
+ *   * A face whose top is **above `CLIMB_LEDGE_MAX`** over the feet (1.6 m — chest high on a
+ *     1.8 m capsule) is a **wall**: the ledge climb refuses it, and only the skilled machine
+ *     ever climbs those.
+ *   * A face that stops at **`STEP_OFFSET` or below** is not a ledge either: the collider's
+ *     own step ladder takes those, and a climb that duplicated it would fight the ladder.
+ *   * There must be **somewhere to stand** past the lip, within a step of it, with the body's
+ *     own height of headroom. A cliff edge with a drop behind it is not a ledge.
+ *   * **In water the reach is measured from the water line**, not from the bed: a swimmer's
+ *     hands are at the surface, so a bank up to `CLIMB_LEDGE_MAX_WATER` above that surface is
+ *     in reach however deep the water is. That is how a player climbs out of deep water —
+ *     including the 1.55 m bed `mifMesh.js` now gives a wet chasm, which is above the dry
+ *     land reach on purpose.
+ */
+export const CLIMB_LEDGE_MAX = 1.6;
+/** How far above the **water line** a swimmer's hands reach (see `_ledgeMaxReach`). */
+export const CLIMB_LEDGE_MAX_WATER = 0.9;
+/** The slowest the body hauls itself up, in metres a second (`climbingSpeed` is the faster arm). */
+export const CLIMB_LEDGE_RATE = 1.1;
+/** How finely the lip is hunted for, in metres of face height. */
+export const CLIMB_LEDGE_SAMPLE = 0.05;
+/**
+ * How far above the lip the "somewhere to stand" ray starts, in metres.
+ *
+ * **Measured, not a margin for comfort (D-65).** The bank of a chasm's top is a surface the
+ * probe is trying to find with a ray cast *down at it*, and the lip it found is quantised to
+ * `CLIMB_LEDGE_SAMPLE`, so the ray's origin is `pos[1] + lip + SAMPLE` — which, for a bank at
+ * a round height over the bed (Arena's floor planes are), is **exactly on the bank's own
+ * surface**. A ray that starts on a triangle does not hit it (the collider's own `t` is strictly
+ * positive), so the drop came back `null` and every wet chasm in the game answered "no ledge":
+ * the player stood on the bed with a bank 1.55 m up, inside the reach, and could never climb out.
+ * This skin lifts the origin clear of the surface it is looking for; the height it finds is
+ * subtracted back out, so `topY` is the surface to within a millimetre.
+ */
+export const CLIMB_LEDGE_SKIN = 0.01;
+/** How far past the capsule's own skin the face is probed. */
+export const CLIMB_LEDGE_GAP = 0.15;
+/** The lowest face worth hunting for: below this the collider's step ladder owns it. */
+export const CLIMB_LEDGE_MIN = STEP_OFFSET * 0.5;
+/** A haul that has not topped out in this long is abandoned (a face that moved, a stuck capsule). */
+export const CLIMB_LEDGE_LIMIT_S = 3;
+/** How far under the water line the feet have to be for the water reach to apply. */
+export const CLIMB_ENTER_WATER_MARGIN = 0.1;
+/**
+ * **How much clear air a climber's own head needs** — the tube law.
+ *
+ * The owner, 2026-10-19: *"when youre in the tubes that you just created there needs to be a law
+ * that doesnt make you climb if you have a wall above your head because at the moment if youre in
+ * the middle of a tube you can climb out of the dungeon map"*. A chasm underpass is a tunnel with a
+ * roof over it: the body fits, but there is no room to stand up past the lip, and the haul was
+ * rising through the roof and out of the level. A body with stone within this distance of the top
+ * of its capsule is **under a ceiling**, and neither climb starts: the ledge haul nor the skilled
+ * wall climb. Threshold: a little over the body's own step (`STEP_OFFSET` = 0.25), which is the
+ * least a crouched haul needs to rise through.
+ */
+export const CLIMB_HEADROOM = 0.3;
 /** MAC1: the render eye pays a grounded step out over this many seconds
  *  (see PlayerMotor._noteVerticalStep). */
 export const STEP_SMOOTH_TAU = 0.06;
@@ -372,6 +442,11 @@ export class PlayerMotor {
       waterForgiven: () => this.waterSurfaceY != null && this.pos[1] - 0.25 < this.waterSurfaceY,
     }) : null;
     this._climbWallDir = null;   // myLedgeDirection (latched while a wall is in reach)
+    // THE LEDGE CLIMB (see CLIMB_LEDGE_MAX): a plain capability FLAG, like waterWalking -
+    // OFF unless a host turns it on, so a scene that turns nothing on steps and falls exactly
+    // as it did before this existed. `_ledge` is the live haul (null when none is running).
+    this.ledgeClimbing = false;
+    this._ledge = null;
     // A6: the step/head probes (PlayerMoveScanner). Always mounted, as
     // the component always is; it backs off on a collider with no
     // sweep API rather than crashing the step.
@@ -420,6 +495,12 @@ export class PlayerMotor {
     this._levitating = false;
     this.waterWalking = false;
     this.waterSurfaceY = null;   // the current block's water surface (world y), null when dry
+    // **A body in deep water is a low body** (the host's flag, written by `updateWater`). The
+    // basin's bed is 1.2–1.55 m under the floor plane and a wall standing in it begins at that
+    // plane, so the passage under it clears a crouched capsule and nothing taller. DFU swims a
+    // 0.30 m capsule for exactly this reason; this build walks the bed, so it ducks instead.
+    this.lowBody = false;
+    this.lowEye = false;
     this.swimSpeedScale = 1;     // DW-D: Iliac Puddle No More's swim speed multiplier (a walk speed modifier while swimming - swimSpeedNow)
     this.jumped = false;         // set for the frame a jump actually starts (fatigue/tally consumer)
     this.crouching = false;      // P12: toggled via input.crouch (edge); standing needs headroom
@@ -702,6 +783,11 @@ export class PlayerMotor {
     if (this.heightAction === 'crouch') return EYE_HEIGHT + (CROUCH_EYE_HEIGHT - EYE_HEIGHT) * t;
     if (this.heightAction === 'stand' && !this.crouching) return CROUCH_EYE_HEIGHT + (EYE_HEIGHT - CROUCH_EYE_HEIGHT) * t;
     if (this.crouching) return CROUCH_EYE_HEIGHT;
+    // **Ducking under a wall standing in water.** The scene raises `lowEye` while the body is
+    // inside such a cell (a solid voxel whose floor is a chasm — the arch the mesher now leaves
+    // open below the water line): the eye drops to the crouched height for that cell, so the
+    // camera travels through the passage instead of through the wall's own box above it.
+    if (this.lowEye) return CROUCH_EYE_HEIGHT;
     // A6 - the head dip's half of the eye. ChangeStandingHeightAdjustment
     // (:235-244) spends the adjustment through ControllerHeightChange,
     // which shrinks the capsule AND drops the controller transform by
@@ -721,6 +807,12 @@ export class PlayerMotor {
     // controllerRideHeight (:56) - a rider's capsule is a horse tall,
     // so what he clears and bumps is the horse's, not his own.
     if (this.riding) return RIDE_HEIGHT;
+    // **A wader's shoulders are under the water line.** The scene sets `lowBody` from the
+    // cell under the feet (`updateWater`): in a chasm the body is the crouched capsule, so the
+    // 1.2–1.55 m band under a wall's floor plane is a passage rather than a wall. Without it the
+    // standing 1.8 m capsule made every flooded "tube" the minimap draws a dead end — the
+    // owner's *"those tubes exist … but are sealed off"*.
+    if (this.lowBody) return CROUCH_HEIGHT;
     // CurrentControllerStandingHeight (:87-90) = controllerStandingHeight
     // + StandingHeightAdjustment; the crouch height takes no adjustment
     // (HeadDipHandling returns while crouched, DoCrouch zeroes it).
@@ -757,6 +849,7 @@ export class PlayerMotor {
     this._airVelX = 0;
     this._airVelZ = 0;
     this._acc = 0;   // the fixed-step accumulator restarts clean
+    this._ledge = null;   // a pending haul does not ride a teleport/load
     this.arena = null;   // DUEL1: a placement is never a walk out of the ring - the host's duel law decides what it meant
     this._heightReset();   // a pending height action does not ride a teleport/load
     this.holdFrame();   // DISC8-G: a landing reported before the warp is not the arrival's
@@ -1262,6 +1355,10 @@ export class PlayerMotor {
   _climbStep(dt, input, yaw) {
     const climb = this.climb;
     if (!climb) return false;   // no deps, no ClimbingMotor component
+    // THE TUBE LAW (`CLIMB_HEADROOM`): no wall-crawl under a roof — and no crawl at all from
+    // a crouched body (the scene's forced crouch in a pit is not a way out either).
+    if (!climb.isClimbing && this._ceilingOverhead()) return false;
+    if (!climb.isClimbing && this.crouching) return false;
     const forward = input.forward > 0;
     // the probe only runs when the machine could care (the abort
     // ladder short-circuits it away otherwise)
@@ -1341,6 +1438,181 @@ export class PlayerMotor {
     this.movingLessThanHalfSpeed = this.grounded
       ? true
       : this._halfSpeedBase() / 2 >= this.speed;   // :168-181 over the STALE UpdateSpeed field, the same quirk the hug rides
+    return true;
+  }
+
+  /**
+   * Is the body **in water** - the feet below the surface the host named?
+   *
+   * The one reader is the ledge climb's own reach (`_ledgeMaxReach`), and the answer is the
+   * scene's rule read back rather than a second one: the host writes `waterSurfaceY` for the
+   * block the player is in (`scenes/interior.js`'s `updateWater`), and a body whose feet are
+   * under that line is in the water whatever mode it is being moved in.
+   *
+   * @returns {boolean}
+   */
+  _inWater() {
+    return this.waterSurfaceY != null && this.pos[1] < this.waterSurfaceY - CLIMB_ENTER_WATER_MARGIN;
+  }
+
+  /**
+   * Is there a ceiling within `CLIMB_HEADROOM` of the **standing** top of this body?
+   *
+   * One ray straight up from the standing capsule's head, against the live collider. A roof
+   * over a tube, a low cellar, a corridor's barrel ceiling: all answer yes, and the climb law
+   * above refuses to haul a body through any of them.
+   *
+   * **Standing height, not the live crouched height** (owner, 2026-10-19: *"i can still climb
+   * out of tuber aka water pits and pits even when im crouched into them"*). The first version
+   * measured from `this.height`, so a crouched body in a 1.2 m tube put its "head" at 0.9 m and
+   * the roof above was out of the 0.3 m probe: the crouched haul rose through the tunnel and out
+   * of the level. A climb is a **standing** action whatever the body is doing, so the headroom
+   * is asked of the height it would stand up to — which also refuses a haul anywhere the body
+   * cannot stand, tubes included.
+   *
+   * @returns {boolean}
+   */
+  _ceilingOverhead() {
+    if (!this.collider?.raycast) return false;
+    const head = this.pos[1] + Math.max(this.height, CAPSULE_HEIGHT) + CLIMB_LEDGE_SAMPLE;
+    // `raycast` answers a **distance** (or Infinity); only `raycastHit` answers `{dist}`.
+    return Number.isFinite(this.collider.raycast(
+      [this.pos[0], head, this.pos[2]], [0, 1, 0], CLIMB_HEADROOM));
+  }
+
+  /** How far above the feet this body can reach a lip, in world units - the water term of `CLIMB_LEDGE_MAX`. */
+  _ledgeMaxReach() {
+    if (!this._inWater()) return CLIMB_LEDGE_MAX;
+    return Math.max(CLIMB_LEDGE_MAX, (this.waterSurfaceY - this.pos[1]) + CLIMB_LEDGE_MAX_WATER);
+  }
+
+  /**
+   * The ledge in front of the body, if there is one.
+   *
+   * A **ledge** is a face the body can haul itself over: its top stands above the collider's
+   * own step (`STEP_OFFSET`) and within the body's reach, it does not carry on above that
+   * reach (which would make it a wall), and past it there is ground within a step of the lip
+   * with the body's own height of headroom over it. Every one of those four is a ray against
+   * the live collider, so the ledge is the geometry the player can actually see and touch,
+   * not a table of heights.
+   *
+   * @param {number} yaw camera yaw (forward = (sin, 0, cos), the motor's own handedness)
+   * @returns {{dir: number[], lipY: number, topY: number, lip: number}|null}
+   */
+  _ledgeProbe(yaw) {
+    if (!this.collider?.raycastHit || !this.collider?.raycast) return null;
+    const dir = [Math.sin(yaw), 0, Math.cos(yaw)];
+    const reach = CLIMB_SIDE_REACH + CLIMB_LEDGE_GAP;
+    const faceAt = (h) => Number.isFinite(
+      this.collider.raycastHit([this.pos[0], this.pos[1] + h, this.pos[2]], dir, reach).dist);
+    const max = this._ledgeMaxReach();
+    // A face that carries on above the reach is a wall, and a wall is the skilled climb's job.
+    if (faceAt(max + CLIMB_LEDGE_SAMPLE)) return null;
+    let lip = null;
+    for (let h = max; h >= CLIMB_LEDGE_MIN; h -= CLIMB_LEDGE_SAMPLE) {
+      if (faceAt(h)) { lip = h; break; }
+    }
+    // Nothing in reach, or nothing but the collider's own step: either way, not a ledge.
+    if (lip == null || lip <= STEP_OFFSET) return null;
+    // Past the lip: the ground has to be within a step of it (a cliff edge is not a ledge)…
+    // The ray starts `CLIMB_LEDGE_SKIN` clear of the plane it is hunting (see that constant):
+    // without the skin the origin sits exactly on the bank of a pool whose top is a round
+    // height over the bed, and a surface does not hit the ray that starts on it.
+    const aheadX = this.pos[0] + dir[0] * (reach + CAPSULE_RADIUS);
+    const aheadZ = this.pos[2] + dir[2] * (reach + CAPSULE_RADIUS);
+    // **The level's own edge is not a ledge.** A chasm beside the dungeon's outer wall has a
+    // lip in reach and open air past it, so the haul carried the player over the boundary and
+    // out of the map (the owner, 2026-10-19: *"you can still climb out of ... whatever and
+    // outside the dungeon boundaries"*). The host names the ground it will stand a body on;
+    // no answer means the old geometry-only law.
+    if (this.canStandAt && !this.canStandAt(aheadX, aheadZ)) return null;
+    const startY = this.pos[1] + lip + CLIMB_LEDGE_SAMPLE + CLIMB_LEDGE_SKIN;
+    const maxDrop = CLIMB_LEDGE_SAMPLE + STEP_OFFSET + CLIMB_LEDGE_SKIN;
+    const drop = this.collider.raycast([aheadX, startY, aheadZ], [0, -1, 0], maxDrop);
+    if (!Number.isFinite(drop) || drop > maxDrop) return null;
+    const topY = startY - drop;
+    // …and there has to be room for the body to stand there.
+    if (Number.isFinite(this.collider.raycast([aheadX, topY + CLIMB_LEDGE_SAMPLE, aheadZ], [0, 1, 0], CAPSULE_HEIGHT))) return null;
+    return { dir, lip, lipY: Math.max(this.pos[1] + lip, topY), topY };
+  }
+
+  /**
+   * THE LEDGE CLIMB, per fixed step: the haul itself.
+   *
+   * Runs only while the host has set `ledgeClimbing`; it starts from the ground (or from
+   * water), on a held **forward or jump** press (the two keys a host's own climb idiom uses —
+   * forward is the skilled machine's, jump is the scene-side haul's, and both are accepted so
+   * the capability works whichever a host wired), when `_ledgeProbe` finds a lip. The body then rises to
+   * the lip and moves **over** it, at the climbing speed the skilled climb uses
+   * (`climbingSpeed`), holding the feet at the lip's own height while it crosses so the body
+   * does not drop back into the pit; the haul ends when the feet are grounded on the top.
+   *
+   * Three things it deliberately does NOT do: it never touches a face taller than the reach
+   * (so no wall-crawling and no leaving a level over its own wall), it never runs while the
+   * skilled machine is climbing (`_climbStep` is called first and wins the step), and it
+   * never starts from mid-air (a fall is a fall; you land first, then climb).
+   *
+   * @param {number} dt
+   * @param {{forward: number, jump?: boolean}} input
+   * @param {number} yaw
+   * @returns {boolean} whether the ledge owned this step's movement
+   */
+  _ledgeStep(dt, input, yaw) {
+    if (!this.ledgeClimbing || this.riding || this.levitating) { this._ledge = null; return false; }
+    // THE TUBE LAW (`CLIMB_HEADROOM`): a body in an underpass has a roof over it, so a
+    // forward press must not haul it through the level's ceiling. The haul is cancelled, not
+    // merely refused, so a body that entered the tube mid-haul settles back down. The test is
+    // the **standing** headroom, so crouching into the tube cannot duck the law.
+    if (this._ceilingOverhead()) { this._ledge = null; return false; }
+    // …and a crouched body does not haul itself up at all. **Water included**: a pool the
+    // scene force-crouches the body in (a chasm's pit) gave the crouched swimmer a haul out
+    // through the very exception this line used to carry, so the tubes were escapable exactly
+    // as the owner reported. The stance is the law; if the scene wants a haul out of water it
+    // must stand the body first.
+    if (this.crouching) { this._ledge = null; return false; }
+    const inWater = this._inWater();
+    const hauling = Boolean(this._ledge);
+    if (!this.grounded && !inWater && !hauling) { this._ledge = null; return false; }
+    const pushing = input.forward > 0 || Boolean(input.jump);
+    if (!hauling) {
+      if (!pushing || this.jumping || this.climb?.isClimbing) return false;
+      const found = this._ledgeProbe(yaw);
+      if (!found) return false;
+      this._ledge = { ...found, t: 0 };
+      this._climbWallDir = null;   // the haul is along the LOOK, which is how it was found
+    }
+    const ledge = this._ledge;
+    if (!pushing) { this._ledge = null; return false; }   // let go and the haul ends
+    ledge.t += dt;
+    if (ledge.t > CLIMB_LEDGE_LIMIT_S) { this._ledge = null; return false; }
+    const rate = Math.max(CLIMB_LEDGE_RATE, climbingSpeed(this.speed)) * dt;
+    let dx = 0, dz = 0;
+    let dy;
+    if (this.pos[1] + 1e-3 < ledge.lipY) {
+      dy = Math.min(rate, ledge.lipY - this.pos[1]);   // rise to the lip
+    } else {
+      dx = ledge.dir[0] * rate;                        // over it, feet held at the top
+      dz = ledge.dir[2] * rate;
+      dy = Math.max(-rate, Math.min(rate, ledge.topY - this.pos[1]));
+    }
+    // A haul is not a fall and not a jump: the drop into the pit was already billed on the way
+    // in, and carrying the fall anchor here would bill it again on the way out.
+    this.jumping = false;
+    this.falling = false;
+    this.fallStart = this.pos[1];
+    this.velY = 0;
+    this._airVelX = 0;
+    this._airVelZ = 0;
+    const r = this.collider.move(this.pos, dx, dy, dz, this.height, false);
+    this.groundKey = r.grounded ? (r.groundKey ?? null) : null;
+    this.grounded = r.grounded;
+    // AUDIT 65 XL-5's mirror, for the same reason `_climbStep` writes it: the haul is a return
+    // above the two writers that would otherwise refresh these two.
+    this.standing = this.grounded;
+    this.movingLessThanHalfSpeed = this.grounded;
+    if ((dx !== 0 || dz !== 0) && this.grounded && this.pos[1] >= ledge.topY - STEP_OFFSET) {
+      this._ledge = null;   // standing on top: the walk has it from here
+    }
     return true;
   }
 
@@ -1441,6 +1713,14 @@ export class PlayerMotor {
     // the swim/levitate branch, exactly DFU's order (:319-326; the
     // climb wins the step when active).
     if (this._climbStep(dt, input, yaw)) return;
+    // THE LEDGE CLIMB (CLIMB_LEDGE_MAX): the unskilled half of the same
+    // step, and above the swim/levitate branch for the same reason - the
+    // haul out of a pit or a pool is a movement the swim path cannot make
+    // (it has no vertical input and no gravity, which is exactly why a
+    // deep chasm used to be a trap). Off unless the host sets
+    // `ledgeClimbing`, so nothing changes for a scene that asks for
+    // nothing.
+    if (this._ledgeStep(dt, input, yaw)) return;
     // (P12 crouch is decided and applied by _heightAction on the
     // RENDER frame, exactly as PlayerHeightChanger is.)
     const sin = Math.sin(yaw);

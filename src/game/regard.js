@@ -296,6 +296,31 @@ export function deserializeRegard(saved) {
 }
 
 /**
+ * **The friends a player has in one place** — the count a king's house-deed asks for.
+ *
+ * A regard id is `Place#row,col` (`personId`), so the place is the part before the `#`:
+ * the city a door belongs to, the street a person stands on, the shop they keep. The tally
+ * above is the whole world's; this one is the city's, which is what "a friend of the town"
+ * means and what the king checks before he sells a house.
+ *
+ * @param {object} record
+ * @param {string|null} place
+ * @param {number} day
+ * @returns {number}
+ */
+export function friendsInPlace(record, place, day) {
+  const wanted = String(place ?? '').trim().toLowerCase();
+  if (!wanted) return 0;
+  let friends = 0;
+  for (const id of Object.keys(record?.people ?? {})) {
+    const at = String(id).split('#')[0].trim().toLowerCase();
+    if (at !== wanted) continue;
+    if (standingOf(record, id, day) === 'friend') friends++;
+  }
+  return friends;
+}
+
+/**
  * How many of the world's people the player has a *standing* with — a one-line count for
  * the HUD and the journal's header.
  * @param {object} record @param {number} day

@@ -17,11 +17,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ArenaData } from '../../src/arena/arenaData.js';
 import { decodeLevel } from '../../src/game/mifLevel.js';
+import { triggerRiddle, triggerTable } from '../../src/game/levelTriggers.js';
 import { ARENA_TEXTURE_ARCHIVE, buildLevelMesh } from '../../src/game/mifMesh.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import {
   FORCE_FAILED, HAND_FORCE_MAX, KEYWORTHY_LOCK, NEEDS_KEY, SWING_DEGREES, doorLeaf, doorLine,
   forceChance, keyOpens, leafIntoSolid, lockAt, lockTable, openReason, placeKeys,
+  riddleAnswerMatches, riddleDoors,
 } from '../../src/game/doors.js';
 
 const ARENA_PATH = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
@@ -82,8 +84,27 @@ test('every lock worth a key has one, on the player\'s side and deep in the leve
 
   // Two locks of different levels: a key each, on different cells.
   const pair = placeKeys({ level, doors: [{ row: 4, col: 4, lockLevel: 8 }, { row: 16, col: 16, lockLevel: 70 }], spawn });
-  assert.equal(pair.length, 2, 'one key per lock level');
+  assert.equal(pair.length, 2, 'one key per sealed door');
   assert.notDeepEqual([pair[0].row, pair[0].col], [pair[1].row, pair[1].col], 'two keys, two cells');
+});
+
+test('two sealed doors of the same level get a key each — a key per door, not per number', async () => {
+  // The law used to answer one key for each distinct lock *level*. `DAGOTH3` seals four doors
+  // at 254 and was given **one** key; `BGATE2` seals four at 57/58/59 and got three. A sealed
+  // lock cannot be forced, so the door without a key was a door the main quest could never
+  // open — the owner's *"the keys still not work as intended"*. Measured over every shipped
+  // dungeon before the change: `DAGOTH3` 4 sealed / 1 key, `BGATE2` 4 / 3.
+  const level = room(20);
+  const spawn = { x: 1.5, z: 1.5 };
+  const twins = placeKeys({
+    level, spawn,
+    doors: [{ row: 4, col: 4, lockLevel: 254 }, { row: 16, col: 16, lockLevel: 254 }],
+  });
+  assert.equal(twins.length, 2, 'one key for each 254 door');
+  assert.deepEqual(twins.map((key) => key.lock), [254, 254]);
+  assert.notDeepEqual(twins[0].door, twins[1].door, 'each key names the door it is for');
+  assert.notDeepEqual([twins[0].row, twins[0].col], [twins[1].row, twins[1].col], 'on two different cells');
+  assert.deepEqual(keyOpens(twins, 254), twins[0], 'either key opens a 254 lock');
 });
 
 test('a key is on the near side of the door it opens, read from an x=row, z=column spawn', async () => {
@@ -202,4 +223,76 @@ test('a key opens the lock it was cut for, and a heavier lock only for a heavier
   assert.equal(keyOpens([light], 12), null, 'a light key does not open a heavier lock');
   assert.equal(keyOpens([], 10), null, 'no key in hand opens nothing');
   assert.equal(keyOpens([heavy], 0), null, 'and an unlocked door wants no key at all');
+});
+
+test('a riddle door is the door beside its sign, and the install’s own answer opens it', async () => {
+  // The owner, 2026-10-21: *"the main quest dungeons should have working keys and puzzles that
+  // are not working"*. Every Staff-piece dungeon ships riddles in its `.INF` (`*TEXT` with `^`
+  // answers) and a `TRIG` cell in front of the door each one seals, at a lock level no hand can
+  // force — `HAND_FORCE_MAX` is 10 and the doors are 255, 90, 125, 56, 29. The port showed the
+  // riddle as prose and then let the door be forced or opened with any key, which is no puzzle.
+  const data = new ArenaData(nodeSource(ARENA_PATH), { onWarn: () => {} });
+
+  // ── the law, on the install's own riddle doors ──────────────────────────────────────────
+  const seen = [];
+  for (const name of ['39300577.MIF', '39950681.MIF', '40516921.MIF', '40852494.MIF', '41418704.MIF',
+    '41649375.MIF', '42026882.MIF', '42068779.MIF', '42488253.MIF']) {
+    const mif = await data.mif(name);
+    for (const raw of mif.levels) {
+      if (!raw.info) continue;
+      const inf = await data.inf(raw.info.toUpperCase());
+      if (!inf.riddles?.size) continue;
+      const level = decodeLevel(raw, inf, { width: mif.width, depth: mif.height, mapType: 'interior' });
+      const locks = lockTable(raw);
+      for (const [key, trigger] of triggerTable(raw)) {
+        const riddle = triggerRiddle(inf, trigger);
+        if (!riddle) continue;
+        const doors = riddleDoors({ level, trigger, locks });
+        assert.ok(doors.length > 0,
+          `${name} ${raw.name}: the sign at ${key} speaks for no door`);
+        assert.ok(doors.every((door) => level.cells[door.row * level.width + door.col].kind === 'door'),
+          `${name} ${raw.name}: a riddle target at ${key} is not a door`);
+        // **Beside its sign, or the four-exit room.** Adjacent doors win whole; only a sign that
+        // stands beside none may speak for the sealed doors within `RIDDLE_REACH`.
+        const distance = Math.max(...doors.map((door) => Math.max(Math.abs(door.row - trigger.row), Math.abs(door.col - trigger.col))));
+        assert.ok(distance === 1 || doors.length > 1,
+          `${name} ${raw.name}: the sign at ${key} reaches ${distance} cells for one door`);
+        if (distance > 1) {
+          const levels = [...new Set(doors.map((door) => door.lock))];
+          assert.equal(levels.length, 1,
+            `${name} ${raw.name}: a room-wide sign speaks for doors of one lock, saw ${levels.join(', ')}`);
+          if (levels[0] === 254) {
+            assert.deepEqual(doors.map((door) => door.lock).sort(), doors.map(() => 254),
+              `${name} ${raw.name}: a room-wide riddle opens the sealed exits only`);
+          } else {
+            // A pressure plate (`crystal3`): the level's own run of cell doors, by its commonest lock.
+            assert.ok(levels[0] <= HAND_FORCE_MAX && doors.length > 1,
+              `${name} ${raw.name}: a pressure plate speaks for the cells (${doors.length} of lock ${levels[0]})`);
+          }
+        }
+        // And **the answer is the file's**, read in a player's spelling.
+        assert.ok(riddle.answers.length > 0, `${name}: riddle ${trigger.textIndex} has no answer`);
+        assert.ok(riddleAnswerMatches(riddle, `  ${riddle.answers[0].toUpperCase()}! `),
+          `${name}: "${riddle.answers[0]}" does not satisfy its own riddle`);
+        assert.equal(riddleAnswerMatches(riddle, 'a wrong answer'), false, `${name}: a wrong answer opened a door`);
+        seen.push(`${name}:${raw.name}:${key}→${doors.map((door) => `${door.row},${door.col}@${door.lock}`).join('+')}`);
+      }
+    }
+  }
+  assert.ok(seen.length >= 12, `the install's own riddle doors should be found (${seen.length})`);
+  assert.ok(seen.some((row) => row.includes('@254')), 'Dagoth-Ur’s four-exit escape room is among them');
+
+  // ── no generic key is minted for a riddle door or the palace seal ──────────────────────
+  const level = room(8, (row, col) => row === 7 || col === 7);
+  const doors = [
+    { row: 6, col: 3, lockLevel: 255, riddle: { answers: ['x'] } },
+    { row: 6, col: 5, lockLevel: 25, questSeal: true },
+    { row: 6, col: 1, lockLevel: 8 },
+  ];
+  const keys = placeKeys({ level, doors, spawn: { x: 1.5, z: 1.5 } });
+  assert.deepEqual(keys.map((key) => key.lock), [8],
+    `only the ordinary lock gets a key: ${JSON.stringify(keys)}`);
+  // …and a key of the riddle door's own number opens nothing: the scene refuses a riddle door
+  // before `keyOpens` is ever asked (`useLeaf`), which this pins as the law's shape.
+  assert.equal(keyOpens([{ lock: 255 }], 8)?.lock, 255, 'an over-level key still opens an ordinary lock');
 });

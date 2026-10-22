@@ -13,7 +13,12 @@
 // again — and the state is on `window.__debug.cutscene()` so a scripted run can watch the
 // frames go by instead of guessing.
 
-import { loadCutscene, frameBytes } from '../game/cutscene.js';
+import { loadCutscene, frameBytes, captionStarts } from '../game/cutscene.js';
+import { cutsceneSong } from '../game/arenaMusic.js';
+import { playMusic, stopMusic } from '../game/musicPlayer.js';
+import { ArenaData } from '../arena/arenaData.js';
+import { toRgba } from '../arena/palette.js';
+import { playVocList, stopVocPlayback } from '../game/trigSound.js';
 
 /**
  * Play one movie, over whatever is on screen, and answer when it ends.
@@ -25,7 +30,9 @@ import { loadCutscene, frameBytes } from '../game/cutscene.js';
  *
  * @param {string} name a `.FLC` name, or a bare word `cutsceneByName` resolves
  * @param {{source?: object|null, arenaPath?: string, status?: (m: string) => void,
- *   onState?: (state: object) => void}} [opts]
+ *   onState?: (state: object) => void, captions?: string[], narrationMs?: number,
+ *   speech?: string[]}} [opts] `speech` is the install's own voice clips (`SPEECH/…`), played
+ *   in order under the picture; `narrationMs` is their measured length, which the movie loops for
  * @returns {Promise<{played: boolean, skipped: boolean, frames: number, file: string|null,
  *   reason: string|null, state: object}>}
  */
@@ -37,6 +44,18 @@ export async function showMovie(name, opts = {}) {
   const host = document.getElementById('cutscene') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'cutscene' }));
   host.innerHTML = '';
   host.classList.add('on');
+  // **The movie's own cue**, from the same music law the places use: the opening is
+  // `EVLINTRO`, a vision is `VISION`, Tharn's scenes are `EVIL`, the endings `WINGAME`.
+  // Every caller gets it — the game's beats, the new-game intro and the `?cutscene` door —
+  // because the audio belongs to the movie rather than to one caller. The ambience is
+  // stopped by `finish` and the story's host asks for its place's song again afterwards.
+  const cue = cutsceneSong(name);
+  if (cue) {
+    // The transition is a clean one: an arrival jingle or the place's song is stopped, then
+    // the movie's cue starts. Two streams at once is exactly what the owner heard.
+    stopMusic();
+    void playMusic(cue, { arenaPath });
+  }
 
   const sheet = document.createElement('canvas');
   sheet.id = 'cutscene-sheet';
@@ -89,14 +108,39 @@ export async function showMovie(name, opts = {}) {
     for (const off of teardown) off();
     host.classList.remove('on');
     host.innerHTML = '';
+    // **The voice goes with the picture**: a skipped scene stops speaking at once, and the
+    // next beat never starts over the last one's last words.
+    stopVocPlayback();
+    if (cue) stopMusic();
     status(skipped ? `cutscene ${state.file ?? name} skipped` : `cutscene ${state.file ?? name} finished`);
     resolveExit({
       played: Boolean(state.ok) && !skipped, skipped, frames: state.framesDrawn,
       file: state.file, reason: state.reason, state: { ...state },
     });
   };
-  const onKey = () => finish(true);
-  const onPointer = () => finish(true);
+  // **A held key is not a skip** (the owner, 2026-10-18: *"cutscenes at the moment cut short"*).
+  // The skip listener is a bare `keydown`, and a player who was walking when the movie started —
+  // or who took the quest thing with `E` and kept the key down — delivers **auto-repeat**
+  // `keydown`s every few milliseconds. The movie was then skipped before its second frame by a
+  // key nobody pressed for it. An auto-repeat is exactly what `repeat` says it is, so only a
+  // *fresh* press skips — and a press made while the file is still arriving still counts, which
+  // is the ordering the suite pins (`cutscene`'s "same tick" case). A time grace was tried first
+  // and was wrong: it swallowed the deliberate key too.
+  const onKey = (event) => {
+    if (event?.repeat) return;
+    // **The skip is the whole meaning of this press.** The movie's listener can be registered
+    // *before* the scene's (the palace's arrival movie starts during `loadLevel`, and the
+    // scene's key handler is added later), so without this the same `Escape` also reached the
+    // game and opened the pause menu — measured as `paused: true` after skipping `KING.FLC`,
+    // with `]` unable to descend. Stopping the event here keeps the press for the movie.
+    event?.preventDefault?.();
+    event?.stopImmediatePropagation?.();
+    finish(true);
+  };
+  const onPointer = (event) => {
+    event?.stopImmediatePropagation?.();
+    finish(true);
+  };
   window.addEventListener('keydown', onKey);
   window.addEventListener('pointerdown', onPointer);
   teardown.push(() => {
@@ -134,7 +178,34 @@ export async function showMovie(name, opts = {}) {
   scratch.width = movie.width;
   scratch.height = movie.height;
   const scratchCtx = scratch.getContext('2d');
-  caption.textContent = `${movie.name} · ${movie.frameCount} frames · ${Math.round(movie.delayMs)} ms each`;
+  // Captions, when the scene has narration to show: one at a time, paced over the narration's
+  // length. Without them the caption carries the movie's own facts, as it always did.
+  const captions = Array.isArray(opts.captions) && opts.captions.length > 0 ? opts.captions : null;
+  // The narration's own length, when the scene has one (the dream's speech runs well past its
+  // 3-second movie). Without it the captions pace over the movie, as before.
+  const narrationMs = Number.isFinite(opts.narrationMs) && opts.narrationMs > 0 ? opts.narrationMs : null;
+  const captionAt = captions ? captionStarts(captions, narrationMs ?? movie.totalMs) : null;
+  caption.textContent = captions ? '' : `${movie.name} · ${movie.frameCount} frames · ${Math.round(movie.delayMs)} ms each`;
+  let shownCaption = -1;
+  const showCaptionAt = (ms) => {
+    if (!captions) return;
+    let index = 0;
+    while (index + 1 < captionAt.length && captionAt[index + 1] <= ms) index++;
+    if (index !== shownCaption) {
+      shownCaption = index;
+      caption.textContent = captions[index];
+    }
+  };
+  // **The install's own voice**, when the caller has it: the clips play back to back under the
+  // picture, at the lengths `STORY_SPEECH` measured. `finish` stops them with the scene.
+  const speech = Array.isArray(opts.speech) && opts.speech.length > 0 ? opts.speech : null;
+  if (speech) void playVocList(speech, { arenaPath, source: opts.source });
+  // A scene with narration runs for the narration's whole length, and the movie **loops** for it.
+  // That is the original's law for a speech scene (OpenTESArena's `TextCinematicUiState::update`
+  // wraps the animation back to its first image while the voice clips play, and the scene ends
+  // with the last clip). Without narration the movie plays once, as `CinematicUiState` does.
+  const loopMovie = narrationMs !== null;
+  const holdUntil = loopMovie ? narrationMs : movie.totalMs;
 
   const resize = () => {
     const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / movie.width, (window.innerHeight * 0.82) / movie.height)));
@@ -166,14 +237,26 @@ export async function showMovie(name, opts = {}) {
   // The loop: frame `n` is due at `n * delayMs`. The decoder is *sequential* (FLIC frames are
   // deltas), so the movie is simply played forward — the only order the format allows.
   let due = 0;
+  let framesDone = false;
   const tick = () => {
     const now = performance.now() - started;
     state.elapsedMs = now;
-    while (due <= now) {
+    showCaptionAt(now);
+    while (!framesDone && due <= now) {
       const frame = movie.next();
-      if (!frame || !draw(frame)) { finish(false); return; }
-      due += movie.delayMs;
+      if (frame && draw(frame)) { due += movie.delayMs; continue; }
+      // The movie has run out of frames. A narrated scene starts it again from its first frame,
+      // unless the narration is over; a pass that draws nothing is not looped, so an empty movie
+      // cannot spin the loop.
+      if (loopMovie && now < holdUntil && state.framesDrawn > 0 && movie.rewind) {
+        movie.rewind();
+        state.loops = (state.loops ?? 0) + 1;
+        const first = movie.next();
+        if (first && draw(first)) { due += movie.delayMs; continue; }
+      }
+      framesDone = true;
     }
+    if (framesDone && now >= holdUntil) { finish(false); return; }
     state.playing = true;
     observer();
     raf = requestAnimationFrame(tick);
@@ -182,6 +265,116 @@ export async function showMovie(name, opts = {}) {
   raf = requestAnimationFrame(tick);
 
   return await exit;
+}
+
+/**
+ * Hold one still picture of the install on the screen for `seconds`, then answer.
+ *
+ * Arena's opening shows its title and quote cards, and the story's scroll pictures, as still
+ * images rather than movies. The picture is an `.IMG` from the install (loose, or in
+ * `GLOBAL.BSA`), shown in `paletteFile`'s palette when its own file carries none. A key or a
+ * click skips it, as it skips a movie, and a picture the install does not have answers `played:
+ * false` rather than stopping the opening.
+ *
+ * @param {string} file        e.g. `TITLE.IMG`
+ * @param {{seconds?: number, paletteFile?: string, source?: object|null,
+ *   arenaPath?: string, status?: (m: string) => void}} [opts]
+ * @returns {Promise<{played: boolean, skipped: boolean, frames: number, file: string, reason: string|null}>}
+ */
+export async function showStill(file, opts = {}) {
+  const status = opts.status ?? (() => {});
+  const arenaPath = opts.arenaPath || 'C:/arenaproject/arena/ARENA';
+  const seconds = opts.seconds ?? 5;
+  status(`still ${file}`);
+
+  const host = document.getElementById('cutscene') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'cutscene' }));
+  host.innerHTML = '';
+  host.classList.add('on');
+  const sheet = document.createElement('canvas');
+  sheet.id = 'cutscene-sheet';
+  host.appendChild(sheet);
+
+  let done = false;
+  let timer = 0;
+  let resolveExit = () => {};
+  const exit = new Promise((resolve) => { resolveExit = resolve; });
+  const resize = () => {
+    const width = Number(sheet.width) || 320;
+    const height = Number(sheet.height) || 200;
+    const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / width, (window.innerHeight * 0.82) / height)));
+    sheet.style.width = `${width * scale}px`;
+    sheet.style.height = `${height * scale}px`;
+  };
+  const finish = (skipped, shown) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    window.removeEventListener('keydown', onKey);
+    window.removeEventListener('pointerdown', onPointer);
+    window.removeEventListener('resize', resize);
+    host.classList.remove('on');
+    host.innerHTML = '';
+    status(skipped ? `still ${file} skipped` : `still ${file} finished`);
+    resolveExit({ played: shown && !skipped, skipped, frames: shown ? 1 : 0, file, reason: null });
+  };
+  // The same skip law as the movie player: a fresh press or a click ends the picture, an
+  // auto-repeat does not, and the listeners are up before the file arrives.
+  const onKey = (event) => {
+    if (event?.repeat) return;
+    event?.preventDefault?.();
+    event?.stopImmediatePropagation?.();
+    finish(true, false);
+  };
+  const onPointer = (event) => {
+    event?.stopImmediatePropagation?.();
+    finish(true, false);
+  };
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('pointerdown', onPointer);
+  window.addEventListener('resize', resize);
+
+  const source = opts.source ?? installSource(arenaPath);
+  const data = new ArenaData(source, { onWarn: (m) => console.warn(`[arena] ${m}`) });
+  let image = null;
+  let palette = null;
+  try {
+    image = await data.img(file);
+    const paletteFile = opts.paletteFile ?? file;
+    palette = image.palette ?? (await data.img(paletteFile)).palette;
+    if (!palette) throw new Error(`${file} has no palette, and ${paletteFile} gave none either`);
+  } catch (err) {
+    console.warn(`[still] ${file}: ${String(err?.message ?? err)}`);
+    finish(false, false);
+    return { played: false, skipped: false, frames: 0, file, reason: String(err?.message ?? err) };
+  }
+  // A skip that landed while the picture was still arriving is honoured: it never shows.
+  if (done) return await exit;
+
+  sheet.width = image.width;
+  sheet.height = image.height;
+  const ctx = sheet.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const rgba = toRgba(image.indices, palette, { width: image.width, height: image.height });
+  ctx.putImageData(new ImageData(rgba, image.width, image.height), 0, 0);
+  resize();
+  timer = setTimeout(() => finish(false, true), seconds * 1000);
+  return await exit;
+}
+
+/**
+ * The install's files through the dev door, for a picture shown without a picked folder.
+ *
+ * @param {string} arenaPath
+ */
+function installSource(arenaPath) {
+  return {
+    label: arenaPath,
+    list: () => [],
+    getBytes: async (name) => {
+      const res = await fetch(`/arena-local/${encodeURIComponent(String(name).toUpperCase())}?arena=${encodeURIComponent(arenaPath)}`);
+      return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+    },
+  };
 }
 
 /**

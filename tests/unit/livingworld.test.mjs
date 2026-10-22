@@ -18,7 +18,8 @@ import {
   ACTIVITIES, CRIME_RESPONSE, DAY_OPENS_HOUR, GAME_MINUTES_PER_REAL_MINUTE, HOURS_PER_DAY,
   MINUTES_PER_DAY, PHASES, ROLE_PLANS, SECONDS_PER_DAY, SECONDS_PER_GAME_MINUTE, SHOP_HOURS,
   WANDER_BEATS, WANDER_STEPS, WATCH_MAX, WATCH_ROTATION, activityWord, currentActivity, dayPlanFor, isOpen, offDay, phaseFor,
-  roleOf, scheduleMoves, secondsForMinutes, streetGoal, timeOfDay, watchDecision, watchShift,
+  POST_ACTIVITIES, roleOf, scheduleMoves, secondsForMinutes, streetGoal, timeOfDay, watchDecision,
+  watchShift,
   watchSpawn,
 } from '../../src/game/livingWorld.js';
 import { DAWN_HOUR, DUSK_HOUR, isNight } from '../../src/game/daylight.js';
@@ -92,12 +93,12 @@ test('every trade keeps hours, and the one that runs past midnight really does',
   assert.equal(isOpen('equipment', clockAt(17 * 60 + 59)), true);
   assert.equal(isOpen('equipment', clockAt(18 * 60)), false, 'the shutters come down at six');
   assert.equal(isOpen('equipment', clockAt(3 * 60)), false);
-  // The tavern: 10:00–02:00, written past midnight.
-  assert.equal(isOpen('tavern', clockAt(600)), true);
-  assert.equal(isOpen('tavern', clockAt(23 * 60)), true, 'a tavern pours late');
-  assert.equal(isOpen('tavern', clockAt(1 * 60)), true, 'and past midnight');
-  assert.equal(isOpen('tavern', clockAt(2 * 60)), false, 'and shuts at two');
-  assert.equal(isOpen('tavern', clockAt(9 * 60)), false);
+  // **The tavern never shuts** — the owner's own law (2026-10-17: *"taverns shoud be always
+  // open"*). Every hour of the day, checked hour by hour, because the law is exactly that.
+  for (let hour = 0; hour < 24; hour++) {
+    assert.equal(isOpen('tavern', clockAt(hour * 60)), true, `a tavern is open at ${hour}:00`);
+  }
+  assert.equal(isOpen('tavern', clockAt(23 * 60 + 59)), true, 'and at the last minute of the day');
   // The guild keeps an office day, the temple is open from before dawn.
   assert.equal(isOpen('mages', clockAt(9 * 60)), true);
   assert.equal(isOpen('mages', clockAt(17 * 60)), false);
@@ -193,6 +194,45 @@ test('a person walks toward their own trade, and comes home at night', async () 
   // is reserved for a town with neither doors nor a home cell.
   assert.equal(streetGoal({ role: 'smith' }, clockAt(11 * 60), { doors })?.reason, 'to open the shop');
   assert.equal(streetGoal({ role: 'smith' }, clockAt(11 * 60), {}), null, 'nowhere to go at all');
+});
+
+// ── D-44: the people who never move ──────────────────────────────────────────────────────────
+//
+// The owner: *"you should add the npcs that dont move from the original arena the one in taverns
+// the priest the ones you can ask rumors … they are probably object and not entities in the
+// original arena"*. The trades that serve from a spot are fixtures on Arena's street, and this
+// port walked them round the town — measured 2026-10-17, a priest stood on 22 cells in twenty-one
+// minutes. The law is one flag on the goal, and the flag is *data*: `POST_ACTIVITIES`.
+test('a block that serves from a place is a post, and no other block is (D-44)', async () => {
+  const doors = [
+    { row: 3, col: 4, kind: 'equipment', name: 'the smithy' },
+    { row: 30, col: 30, kind: 'tavern', name: 'the tavern' },
+    { row: 12, col: 40, kind: 'temple', name: 'the temple' },
+    { row: 20, col: 20, kind: 'mages', name: 'the Mages Guild' },
+  ];
+  // **The law over a whole day of every trade the town keeps**: a goal is a post exactly when the
+  // block it came from is one. Neither side is guessed — both are read from the module, which is
+  // what stops a reworded reason from quietly ending the law.
+  for (const role of ['smith', 'bartender', 'priest', 'wizard', 'vendor', 'beggar', 'townsperson', 'harlot']) {
+    for (let hour = 0; hour < 24; hour++) {
+      const who = person({ role });
+      const activity = currentActivity(who, clockAt(hour * 60)).activity;
+      const goal = streetGoal(who, clockAt(hour * 60), { doors });
+      assert.equal(Boolean(goal?.post), POST_ACTIVITIES.includes(activity),
+        `${role} at ${hour}:00 — block ${activity}, post ${goal?.post}`);
+    }
+  }
+  const smith = person({ role: 'smith' });
+  assert.equal(streetGoal(smith, clockAt(11 * 60), { doors })?.post, true, 'a smith opening the shop stands at it');
+  assert.equal(Boolean(streetGoal(smith, clockAt(2 * 60), { doors })?.post), false, 'and at home is not posted');
+  // **A wanderer's beat is not a post** — wandering *is* the block — and neither is a patron's
+  // drink: a customer comes and goes. Those are the two blocks a player would notice held still.
+  const wanderer = person({ role: 'townsperson' });
+  const beat = streetGoal(wanderer, clockAt(10 * 60), { doors });
+  assert.equal(beat?.reason, 'to wander');
+  assert.equal(Boolean(beat?.post), false);
+  // The three serving blocks, named once, so a reader can see the whole law at a glance.
+  assert.deepEqual([...POST_ACTIVITIES], ['openShop', 'work', 'worship']);
 });
 
 test('a wanderer\'s beat is a door of their own quarter, and never the paving they stand on', async () => {

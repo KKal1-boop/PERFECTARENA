@@ -7,6 +7,10 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     await page.goto(url);
     await page.waitFor('window.__debug?.combat && window.__debug.state().painted > 3', { timeoutMs: 90000, label: 'action combat dungeon' });
     const census = await page.evalJs('window.__debug.combat().monsters.map((m) => ({id:m.id,cell:m.cell}))');
+    // **Where the player arrived**, which is what the encounter placement is measured from
+    // (`encounters.js`'s reachable region). A re-entry resumes the player at their own saved
+    // feet, so the cells are expected to move with them; the population is not.
+    const censusFeet = await page.evalJs('window.__debug.state().feet.map((n) => Math.round(n * 10) / 10)');
     await page.evalJs(`(() => {
       window.__debug.pause(true);
       for (let r = 2; r < 45; r++) for (let c = 2; c < 45; c++) {
@@ -77,22 +81,26 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     check('A+Q commits to a sideways swept dodge with active i-frames',
       dodged.combat.defence.direction[0] < -0.9 && dodged.feet[0] < posBefore[0] - 0.1
         && dodged.combat.lastDefence === 'dodged', JSON.stringify(dodged.combat.defence));
-    // ── the held heavy ───────────────────────────────────────────────────────
-    // The release-with-a-hold model, proven where the timers live: stand before the rat
-    // again, release the strike with the hold full, and *the same bar* shows it — the
-    // heavy (24 of 30) costs well more than the riposte light `F` found, and a hold below
-    // the arm pays the light price.
+    // ── there is no held heavy any more ─────────────────────────────────────
+    // The owner, 2026-10-19: *"remove the possibility to do heavy blows in combat just normal
+    // blows for the player"*. The old seam's `held` argument is still accepted so an old script
+    // does not throw, but it buys **nothing**: a full hold is the same ordinary strike, with the
+    // ordinary stamina cost and no heavier damage. This is a behaviour pin, not a removed check.
     const rat = (await page.evalJs(`(() => { const s = window.__debug.combat().monsters.find((m) => m.serial === ${RAT}); return { x: s.world.x, z: s.world.z }; })()`));
     await page.evalJs(`window.__debug.teleport(${rat.x}, window.__debug.state().feet[1], ${rat.z + 2.2})`);
     await page.evalJs('window.__debug.look(Math.PI, 0)');
     await page.evalJs('window.__debug.restoreStamina()');
     await page.evalJs('window.__debug.advance(0.6)');
     await page.evalJs('window.__debug.look(Math.PI, 0)');
-    const beforeHeavy = (await page.evalJs('window.__debug.combat()')).defence.stamina;
-    const heavyBlow = await page.evalJs('window.__debug.strike({ held: 1.2 })');
-    const heavy = await page.evalJs('window.__debug.combat()');
-    check('a full-held release is a heavy: the bar pays for it',
-      beforeHeavy - heavy.defence.stamina >= 20, `${beforeHeavy} → ${heavy.defence.stamina} ${JSON.stringify(heavyBlow)}`);
+    const beforeHold = (await page.evalJs('window.__debug.combat()')).defence.stamina;
+    const heldBlow = await page.evalJs('window.__debug.strike({ held: 1.2 })');
+    const afterHold = await page.evalJs('window.__debug.combat()');
+    check('a held release buys only the ordinary blow — no heavy, no heavy price',
+      beforeHold - afterHold.defence.stamina < 12
+        && afterHold.defence.stamina > 0
+        && afterHold.defence.charge.armed === false
+        && afterHold.defence.charge.progress === 0,
+      `${beforeHold} → ${afterHold.defence.stamina} ${JSON.stringify(heldBlow)} ${JSON.stringify(afterHold.defence.charge)}`);
     await page.evalJs('window.__debug.advance(0.9)');
     const rat3 = (await page.evalJs(`(() => { const s = window.__debug.combat().monsters.find((m) => m.serial === ${RAT}); return { x: s.world.x, z: s.world.z }; })()`));
     await page.evalJs(`window.__debug.teleport(${rat3.x}, window.__debug.state().feet[1], ${rat3.z + 2.2})`);
@@ -100,7 +108,7 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     const tapBefore = (await page.evalJs('window.__debug.combat()')).defence.stamina;
     await page.evalJs('window.__debug.strike({ held: 0.05 })');
     const tap = await page.evalJs('window.__debug.combat()');
-    check('a tap release is still the light blow',
+    check('the same strike is what a tap and a hold both do',
       tapBefore - tap.defence.stamina < 12, `stamina ${tapBefore} → ${tap.defence.stamina}`);
     // ── poise: a break cancels the committed attack ─────────────────────────────
     // The meter's arithmetic is a unit test; this is the *consequence* on a real page: a
@@ -156,7 +164,9 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
         feet: [Math.round(feet[0] * 10) / 10, Math.round(feet[2] * 10) / 10],
         dist: rat ? Math.round(Math.hypot(rat.world.x - feet[0], rat.world.z - feet[2]) * 10) / 10 : null };
     })()`);
-    const poiseBlow = await page.evalJs('window.__debug.strike({ held: 1.2 })');
+    // `guaranteed` is the fixture's own door (see `strike`), so this holds the *break* rather than
+    // the player's to-hit dice — the dice are still a chance, which is the owner's other half.
+    const poiseBlow = await page.evalJs('window.__debug.strike({ held: 1.2, guaranteed: true })');
     const burned = await page.evalJs('window.__debug.combat()');
     const sight = await page.evalJs(`(() => {
       const c = window.__debug.combat().monsters.find((m) => m.serial === ${RAT});
@@ -278,6 +288,37 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     check('a charge commits to a direction and a longer lane before it moves', charge.charge && charge.reach >= 5.5, JSON.stringify(charge));
     await page.screenshot(path.join(shots, 'action-charge-lane.png'));
 
+    // ── inside the circle the blow lands (owner, 2026-10-19) ──────────────────
+    //
+    // *"enemies need to ignore the main game dodge chance and always hit you if youre not outside
+    // their circle or if you didnt manually dodge"*. The scene already decides the three ways a
+    // blow misses — out of the footprint (`insideAttack`), out of sight, or a live roll — so what is
+    // left to prove on a page is that the *passive* roll is gone: a player standing still inside the
+    // ring is wounded by every committed blow, and the blow's own record says `guaranteed`.
+    const guaranteed = await page.evalJs(`(() => {
+      const d = window.__debug;
+      const index = d.combat().monsters.findIndex((m) => m.health > 0 && m.id === 'rat');
+      if (index < 0) return null;
+      d.prepareCombat(index, { charge: false, begin: false, nextAttack: 0.05 });
+      const rat = d.combat().monsters[index];
+      d.teleport(rat.world.x, d.state().feet[1], rat.world.z - 2.0);
+      d.look(0, 0);
+      d.restoreStamina();
+      const before = d.player().health;
+      const blows = [];
+      for (let i = 0; i < 60; i++) {
+        d.advance(0.05);
+        const s = d.combat().monsters[index];
+        const b = s?.lastBlow;
+        if (b && !b.whiff && !b.dodged && !b.parried) blows.push(b);
+      }
+      return { before, after: d.player().health, blows };
+    })()`);
+    check('inside the circle the blow lands, whether or not Agility liked the odds',
+      guaranteed?.blows?.length >= 1
+      && guaranteed.blows.every((blow) => blow.guaranteed === true && blow.hit === true && blow.damage > 0),
+      JSON.stringify({ ...guaranteed, blows: guaranteed?.blows?.slice(0, 3) }));
+
     await page.evalJs(`window.__debug.damageEnemy(${await ratIndex()}, 10000)`);
     await settle();
     const death0 = mine(await page.evalJs('window.__debug.combat()'));
@@ -300,18 +341,32 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
     await page.waitFor('window.__debug?.combat && window.__debug.state().painted > 3', { timeoutMs: 90000, label: 'replayed dungeon' });
     const replay = await page.evalJs('window.__debug.combat()');
     const savedAfter = await page.evalJs('({q:localStorage.getItem("perfectarena.quest"),c:localStorage.getItem("perfectarena.character")})');
-    // **Which half of the claim failed, in the message** — the check is a conjunction of four, and
+    // **Which half of the claim failed, in the message** — the check is a conjunction, and
     // "6 → 6 living enemies" names only the first: a replay whose roster came back whole but in a
     // different order (or on different cells) read exactly like a replay that lost its creatures.
+    //
+    // The **population** is compared as a multiset of ids, which is the claim: the same creatures
+    // come back, the killed one included. The **cells** are only comparable when the player
+    // arrived the same way — a re-entry resumes the player's own saved feet (`worldState.js`),
+    // and `spawnEncounter` places the roster in the region reachable *from that arrival*, so a
+    // player who left deep in the dungeon rightly finds the respawn around that spot. Comparing
+    // cells across two different arrivals was the earlier shape of this check, and it read a
+    // working population as a broken one.
+    const ids = (list) => list.map((m) => m.id).sort().join(',');
+    const replayFeet = await page.evalJs('window.__debug.state().feet.map((n) => Math.round(n * 10) / 10)');
+    const sameArrival = JSON.stringify(censusFeet) === JSON.stringify(replayFeet);
     const why = replay.monsters.length !== census.length ? 'the count'
       : replay.monsters.some((m) => !(m.health > 0)) ? 'a corpse'
-        : replay.monsters[0].id !== census[0].id ? 'the first creature’s identity'
-          : JSON.stringify(replay.monsters[0].cell) !== JSON.stringify(census[0].cell) ? 'the first creature’s cell'
+        : ids(replay.monsters) !== ids(census) ? 'the roster'
+          : sameArrival && JSON.stringify(replay.monsters[0].cell) !== JSON.stringify(census[0].cell) ? 'the first creature’s cell'
             : 'none';
     check('re-entering a dungeon restores its enemy population, including a previously killed enemy',
       why === 'none',
       `${census.length} → ${replay.monsters.length} living enemies; the mismatch is ${why} — `
-      + `first ${census[0]?.id} @ ${JSON.stringify(census[0]?.cell)} → ${replay.monsters[0]?.id} @ ${JSON.stringify(replay.monsters[0]?.cell)}, healths ${replay.monsters.map((m) => m.health).join(',')}`);
+      + `first ${census[0]?.id} @ ${JSON.stringify(census[0]?.cell)} → ${replay.monsters[0]?.id} @ ${JSON.stringify(replay.monsters[0]?.cell)}, healths ${replay.monsters.map((m) => m.health).join(',')}`
+      + `; arrival ${sameArrival ? 'the same feet' : `${JSON.stringify(censusFeet)} → ${JSON.stringify(replayFeet)}`}`
+      + `; census ${census.map((m) => `${m.id}@${m.cell.row},${m.cell.col}`).join(' ')}`
+      + `; replay ${replay.monsters.map((m) => `${m.id}@${m.cell.row},${m.cell.col}`).join(' ')}`);
     const restoredDoor = (await page.evalJs('window.__debug.state().leaves')).find((leaf) => leaf.row === door.row && leaf.col === door.col);
     const historyAfter = await page.evalJs('window.__debug.worldMemory()');
     check('an opened dungeon door stays open after reload while enemies still respawn',

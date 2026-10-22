@@ -23,17 +23,24 @@ export function makeGuildsSuite({ check, realErrors, shots, getPort }) {
     // A real completed job through the game's own accept/finish seam (the bounties suite
     // proves the same flow through real kills; the ledger needs the *credit*, which the
     // payment event itself performs).
-    await page.evalJs('window.__debug.teleportToPerson("nearest")'); await settle();
-    // Take the nearest person's first workable offer non-bounty offer (a bounty is
-    // the bounties suite's own business), finish it through the game's own seam, and
-    // hand it back through the real talk button — so the standing is earned by the
-    // game's own payment event, the same one a player's click drives.
+    // Take **a person whose own work is not a bounty** (both brawling kinds are the bounties
+    // suite's business), finish it through the game's own seam, and hand it back through the
+    // real talk button — so the standing is earned by the game's own payment event.
+    //
+    // **Walk the street, not one door.** The nearest person's offer is deterministic, so a
+    // nearest person whose draw is a bounty used to be asked six times and give the same
+    // bounty six times; each neighbour is a different draw (`personOffer`'s round and cell).
+    const people = await page.evalJs('window.__debug.townsfolk().length');
     let finishedJob = null;
-    for (let attempt = 0; attempt < 6 && !finishedJob; attempt++) {
-      await page.evalJs('window.__debug.teleportToPerson("nearest")'); await settle();
-      await page.evalJs('JSON.stringify(window.__debug.takeJobFromPerson("nearest")) ?? null');
+    for (let i = 0; i < people && !finishedJob; i++) {
+      await page.evalJs(`window.__debug.teleportToPerson(${i})`); await settle(80);
+      const taken = JSON.parse(await page.evalJs(`JSON.stringify(window.__debug.takeJobFromPerson(${i}))`) ?? 'null');
+      if (!taken?.ok) continue;
       const kind = (await page.evalJs('window.__debug.jobs().active'))?.kind ?? null;
-      if (!kind || kind === 'slay') { try { await page.evalJs('window.__debug.abandonJob()'); } catch { /* retry */ } continue; }
+      if (!kind || kind === 'slay' || kind === 'hunt') {
+        await page.evalJs('window.__debug.abandonJob()');
+        continue;
+      }
       const finished = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.finishJob())') ?? 'null');
       check(`a job of kind ${kind} finishes at its target through the game's own seam`,
         finished?.completed === true, finished?.objective ?? 'not finished');
@@ -63,7 +70,9 @@ export function makeGuildsSuite({ check, realErrors, shots, getPort }) {
     const magesDoor = await page.evalJs('window.__debug.state().doorList.find((d) => d.kind === "mages")');
     check('a city has a Mages Guild door standing among its shops', Boolean(magesDoor?.row >= 0), JSON.stringify(magesDoor ?? null));
     if (magesDoor) {
-      await page.evalJs(`window.__debug.teleportCell(${magesDoor.row}, ${magesDoor.col})`);
+      // A door is painted on the wall; the cell a player stands on is the paving in front of it.
+      const at = magesDoor.stand ?? magesDoor;
+      await page.evalJs(`window.__debug.teleportCell(${at.row}, ${at.col})`);
       await page.pressKey('KeyE'); await page.pressKey('KeyE', false); await settle(420);
       await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().inside !== null',
         { label: 'inside the guild', timeoutMs: 90000 });

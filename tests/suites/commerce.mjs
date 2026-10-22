@@ -27,9 +27,14 @@ export function makeCommerceSuite({ check, realErrors, shots, getPort }) {
     const cityReady = () => page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 2',
       { label: 'city ready', timeoutMs: 90000 });
 
-    /** Enter a shop's door the way a player does: stand on it, press E, wait out the level. */
+    /**
+     * Enter a shop's door the way a player does: stand on the paving in front of it, press E,
+     * wait out the level. A door is a **wall** cell now (`game/shops.js`), so the cell to stand
+     * on is its `stand` — the player can no more stand in a door than in the bricks beside it.
+     */
     async function enterShop(door) {
-      await page.evalJs(`window.__debug.teleportCell(${door.row}, ${door.col})`);
+      const at = door.stand ?? door;
+      await page.evalJs(`window.__debug.teleportCell(${at.row}, ${at.col})`);
       await settle();
       await page.pressKey('KeyE'); await page.pressKey('KeyE', false);
       await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().inside !== null',

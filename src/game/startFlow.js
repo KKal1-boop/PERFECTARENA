@@ -25,9 +25,13 @@
 //   * `destinationParams(params, {fresh})` — where creation hands the player on. A character
 //     made *just now* wakes in the Imperial Dungeons; a character who already existed is
 //     carried to the world map, because a reload is not a new game.
-//   * `openingGate({fresh, seen})` — the opening is owed **once per new game**, not once per
-//     tab. The session flag alone was the reported missing cutscene: a player who reloaded
-//     the page while creating a character had the movie suppressed for the rest of the tab.
+//   * `resumeParams(params, location)` — where **Continue** on the start menu lands: the save's
+//     own last place (a named city, a dungeon with its seed, or a named interior such as
+//     `START.MIF`), or the world map for a character who has stood nowhere yet.
+//
+// The opening is no longer gated: a new game always plays `INTRO.FLC` (the king's murder) and
+// the cell always owes Ria's explanation (`game/storyScript.js`'s `dueCellDream`), so a reload
+// or a skipped title card cannot swallow either.
 
 /** The opening dungeon's `.MIF`: the cell the Emperor's prisoner wakes in. */
 export const START_INTERIOR = 'START.MIF';
@@ -90,19 +94,38 @@ export function destinationParams(params, { fresh = false } = {}) {
 }
 
 /**
- * Is the opening movie owed on this boot?
+ * Where **Continue** resumes: the last place the character stood.
  *
- * The original greets **every new game** with it. This port's first law was once per *tab*
- * (`sessionStorage`), and the owner's report is what that costs: a page reload between
- * creation and the dungeon suppressed the movie for the rest of the session, which reads as
- * a missing cutscene. So the flag is a fallback, not the rule — a character created by this
- * boot is greeted whether or not the tab has seen the movie before.
+ * The save keeps a name, whether it was a dungeon, and its seed (`loadLastLocation`); a
+ * character who has never stood anywhere falls back to the world map, which is this port's
+ * home scene. Every scene key from the menu's own URL is dropped first, so a `map` or a stale
+ * `interior` cannot override the destination the save names.
  *
- * @param {{fresh?: boolean, seen?: boolean}} state
- * @returns {{show: boolean, why: string}}
+ * @param {URLSearchParams} params
+ * @param {{name?: string, dungeon?: boolean, seed?: number|null}|null} location
+ * @returns {URLSearchParams}
  */
-export function openingGate({ fresh = false, seen = false } = {}) {
-  if (fresh) return { show: true, why: 'a new character is starting the game' };
-  if (seen) return { show: false, why: 'this session has already seen the opening' };
-  return { show: true, why: 'a game is starting' };
+export function resumeParams(params, location = null) {
+  const out = new URLSearchParams(params);
+  for (const key of ['chargen', 'nomake', 'seed', 'class', 'back', 'menu', 'map', 'worldmap',
+    'location', 'dungeon', 'dungeonSeed', 'interior', 'city', 'wild', 'at', 'level', 'enter']) {
+    out.delete(key);
+  }
+  if (location?.name) {
+    if (/\.mif$/i.test(location.name)) {
+      // A named interior (the Imperial Dungeons' `START.MIF`, the palace) is not a world-map
+      // location and not a dungeon record: it is the file itself.
+      out.set('interior', location.name);
+    } else if (location.dungeon) {
+      out.set('dungeon', location.name);
+      if (Number.isFinite(Number(location.seed))) out.set('dungeonSeed', String(location.seed));
+    } else {
+      out.set('location', location.name);
+    }
+  } else {
+    out.set('map', '');
+  }
+  return out;
 }
+
+

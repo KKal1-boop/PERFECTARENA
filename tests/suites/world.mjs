@@ -181,32 +181,33 @@ export function makeWorldSuite({ check, realErrors, shots, getPort }) {
       });
     })()`));
     const on = held.view.onScreen;
-    // The line the art stands on is the original's own: 147 of its 200 screen rows, at
-    // whatever scale the window gives a 320×200 screen (`weaponView.js`'s law, measured
-    // across all six sheets) — not the top of whatever text panel happens to be on screen,
-    // which is what used to leave the blade hanging mid-frame.
+    // **The art stands on the window's own bottom edge, with the HUD drawn over it.**
     //
-    // **The view is the whole window and the status band is an overlay on it.** The first
-    // version cut the canvas off at that line (`height: 73.5vh`, `index.html`), which left
-    // the bottom quarter of the window as bare page background with the HUD text in it — the
-    // reported "a black band where the GUI is covers almost half the screen". So the checks
-    // below hold the *new* shape, and they still hold everything the old ones held: the
-    // blade stands on the 147-line, the HUD's text sits below that line and never over the
-    // world above it, and the view really is the window (nothing is cut off).
-    const bandScale = Math.min(held.inner.width / 320, held.inner.height / 200);
-    const statusLine = Math.round(147 * bandScale);
+    // `placeWeapon` is the measured law (every frame of all six sheets puts `yOffset + height`
+    // on line 147 of the original's 320×200 screen) and takes the line to stand on as its
+    // `baseline`. The original's answer to "what is below the line" was its **status bar**, a
+    // solid 53-row panel the weapon art runs behind; this port has no bar (its HUD is a DOM
+    // box) and it draws the art behind that box (`#weapon` z-index 3, `#hud` 5). So the
+    // baseline is the window's own bottom. Passing the original's 147-line here instead left
+    // the art on an invisible edge a quarter of the way up the window, which is the owner's
+    // *"the fists … are floating midscreen"* (2026-10-17).
+    //
+    // **The view is the whole window and the status band is an overlay on it**, so the checks
+    // below still hold everything the old ones held: nothing is cut off, the art keeps its own
+    // right-hand margin and one scale for both axes, and the HUD panel is over the art rather
+    // than under it.
     check('a drawn weapon is really on the screen in the first person',
       on !== null && (await page.evalJs('window.__debug.weaponPixels().pixels')) > 1000,
       JSON.stringify(on));
-    check('the weapon stands on the status line — the original\'s own 147th row',
-      Math.abs(on.bottom - statusLine) <= 2,
-      `art bottom ${on.bottom}, line ${statusLine}`);
+    check('the weapon comes up out of the bottom of the screen, not out of the middle of it',
+      Math.abs(on.bottom - held.inner.height) <= 2 && on.y > held.inner.height * 0.5,
+      `art bottom ${on.bottom} of ${held.inner.height}, top ${on.y}`);
     check('the view band is the whole window, so no black strip stands under the world',
       Math.abs(held.viewBox.bottom - held.inner.height) <= 2 && Math.abs(held.viewBox.height - held.inner.height) <= 2,
       `view bottom ${Math.round(held.viewBox.bottom)} of ${held.inner.height}`);
-    check('the HUD text sits in the status band below that line, not over the world above it',
-      held.hudTop >= statusLine - 1,
-      `HUD top ${Math.round(held.hudTop)}, status line ${statusLine}`);
+    check('the HUD panel is the overlay: it is on screen, and it is drawn over the art',
+      held.hudTop >= 0 && held.hudTop < held.inner.height - 8 && on.bottom >= held.hudTop,
+      `HUD top ${Math.round(held.hudTop)}, art bottom ${on.bottom} of ${held.inner.height}`);
     check('and keeps the original\'s own right-hand margin, one art pixel plus its own scale',
       held.inner.width - on.right <= on.scale + 1.5 && held.inner.width - on.right >= 0,
       `art right ${on.right} of ${held.inner.width} (scale ${on.scale.toFixed(2)})`);
@@ -260,25 +261,138 @@ export function makeWorldSuite({ check, realErrors, shots, getPort }) {
     check('and it is the only thing the weapon layer put on the page',
       everywhere - inBox <= Math.max(20, inBox * 0.02),
       `${everywhere - inBox} pixels changed outside its own box`);
-    check('the HUD text is out of the way of it, in the band below',
-      held.hudTop >= on.bottom - 1, `HUD top ${Math.round(held.hudTop)}, blade bottom ${on.bottom}`);
+    check('the HUD panel is over the art, near the bottom of the screen',
+      held.hudTop >= 0 && held.hudTop < held.inner.height && on.bottom >= 0, `HUD top ${Math.round(held.hudTop)}, blade bottom ${on.bottom}`);
 
-    // A different weapon loads a different sheet: a shop's mace, and a family this install
-    // ships nothing for, which the report must name rather than paper over.
+    // A different weapon loads a different sheet: a shop's mace, and the two families this
+    // archive cannot draw, each of which is now drawn from a **documented stand-in** (D-71) —
+    // the flail from the mace sheet, the bow from the install's own `ARROWS.CIF` missile art.
     const swapped = JSON.parse(await page.evalJs(`(async () => {
       const mace = await window.__debug.setWeapon('mace');
       const flail = await window.__debug.setWeapon('flail');
+      const bow = await window.__debug.setWeapon('long-bow');
       return JSON.stringify({
         mace: { file: mace.file, loaded: mace.loaded, family: mace.family, frames: mace.sheetFrames.length },
-        flail: { file: flail.file, loaded: flail.loaded, missing: flail.missing },
+        flail: { file: flail.file, loaded: flail.loaded, missing: flail.missing, own: flail.ownFile, substitute: flail.substitute },
+        bow: { file: bow.file, loaded: bow.loaded, own: bow.ownFile, substitute: bow.substitute, frames: bow.sheetFrames },
       });
     })()`));
     check('picking up a mace loads the mace sheet, not the sword',
       swapped.mace.file === 'MACE.CIF' && swapped.mace.loaded === 'MACE.CIF' && swapped.mace.frames > 20,
       JSON.stringify(swapped.mace));
-    check('and a flail names its missing sheet instead of drawing another weapon',
-      swapped.flail.file === 'FLAIL.CIF' && swapped.flail.loaded === null && swapped.flail.missing === 'FLAIL.CIF',
+    check('and a flail is drawn from the mace sheet, with the missing file named beside it',
+      swapped.flail.file === 'MACE.CIF' && swapped.flail.loaded === 'MACE.CIF'
+        && swapped.flail.own === 'FLAIL.CIF' && swapped.flail.substitute === true && swapped.flail.missing == null,
       JSON.stringify(swapped.flail));
+    check('and a bow is drawn from the install\'s own arrow art — the missing `BOW.CIF`, named',
+      swapped.bow.file === 'ARROWS.CIF' && swapped.bow.loaded === 'ARROWS.CIF'
+        && swapped.bow.own === 'BOW.CIF' && swapped.bow.substitute === true
+        && swapped.bow.frames.join(',') === '1,4,7',
+      JSON.stringify(swapped.bow));
+
+    // ── the country's window slides, and the world on it stays ────────────────
+    //
+    // The owner, 2026-10-17: *"walking in the wilderness in tamriel its still inconsistent …
+    // enemies dont get ported and so everything feels not permanent"*, and then, after the slide
+    // landed: *"you cant see yourself enemies and npcs in the wilderness it looks like sprites
+    // are invisible in the wilderness"*. Both are the same mechanism, measured in
+    // `.scratch/wildsprites.mjs`: `slideWildWindow` rebuilt the level and freed **every sprite
+    // set** with it, so the carried creatures named sheets nothing had uploaded any more, and a
+    // 64-cell slide left the whole rectangle empty. The laws this check holds, on a real page:
+    // the page never re-boots (`frames` keeps climbing), the window refills its own population
+    // (`windowSlide.refilled`), and figures are **drawn** after the slide — not merely listed —
+    // with the player's own third-person sheet still loaded.
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&wild&clock=10&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 3',
+      { label: 'the country', timeoutMs: 120000 });
+    await page.evalJs('window.__debug.pause(false)');
+    const before = JSON.parse(await page.evalJs(`JSON.stringify({
+      frames: window.__debug.state().frames,
+      figures: window.__debug.state().figures,
+      monsters: window.__debug.combat().monsters.length,
+    })`));
+    let slide = null;
+    for (let step = 0; step < 14 && !slide; step++) {
+      await page.evalJs('window.__debug.teleport(window.__debug.state().feet[0] + 10, window.__debug.state().feet[1] + 1, window.__debug.state().feet[2])');
+      await settle(600);
+      slide = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.state().windowSlide)'));
+    }
+    await page.waitFor('Boolean(window.__debug.state().windowSlide?.doneAt)', { label: 'completed wilderness slide', timeoutMs: 60000 });
+    slide = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.state().windowSlide)'));
+    const after = JSON.parse(await page.evalJs(`JSON.stringify({
+      frames: window.__debug.state().frames,
+      figures: window.__debug.state().figures,
+      monsters: window.__debug.combat().monsters.length,
+      playerSprite: window.__debug.combat().playerSprite,
+      sprites: window.__debug.combat().spriteFiles.length,
+      view: window.__debug.setView('third'),
+    })`));
+    await settle(500);
+    const third = JSON.parse(await page.evalJs('JSON.stringify({ figures: window.__debug.state().figures, sprite: window.__debug.combat().playerSprite })'));
+    check('the country\'s window really slides — the player walked 64 cells and the page did not re-boot',
+      Boolean(slide) && after.frames > before.frames,
+      `slide ${JSON.stringify(slide?.from)} → ${JSON.stringify(slide?.to)}, frames ${before.frames} → ${after.frames}`);
+    // **The player did not move.** `loadLevel` builds a new motor and spawns it at the window's
+    // middle; the slide hands it the old feet moved by the origin's delta. The page reports both
+    // numbers (`state().wildArrival`), so "no teleport" is the two agreeing — the owner's
+    // *"realoads and perfect player position every time"*.
+    const arrival = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.state().wildArrival)'));
+    check('and the player is set down on the exact feet they had, not snapped to a cell or the window\'s middle',
+      Boolean(arrival) && Math.abs(arrival.feet.x - arrival.exact.x) < 0.01 && Math.abs(arrival.feet.z - arrival.exact.z) < 0.01,
+      `feet ${JSON.stringify(arrival?.feet)} vs exact ${JSON.stringify(arrival?.exact)} (origin ${JSON.stringify(arrival?.origin)})`);
+    check('and the new window fields its own population instead of standing empty',
+      slide?.refilled === true && after.monsters > 0 && after.figures > 0,
+      `${after.monsters} creatures · ${after.figures} figures · refilled ${slide?.refilled} (before: ${before.monsters}/${before.figures})`);
+    check('and the people and creatures still have art: the sprite sets were not freed with the ground',
+      after.sprites > 0 && Boolean(after.playerSprite),
+      `${after.sprites} sprite sets · player's own sheet ${after.playerSprite}`);
+    check('and the player is drawn in the third person after the slide, not an invisible body',
+      third.sprite !== null && third.figures > 0,
+      `view ${after.view} · player ${third.sprite} · ${third.figures} figures`);
+
+    // Cross a real province/biome boundary with the same running scene. The probe
+    // moves the feet across the boundary; the production window-slide code does the rest.
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&wild=${66 * 256 + 240},${185 * 256 + 128}&clock=600&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 5', { label: 'Skyrim border', timeoutMs: 60000 });
+    const borderBefore = await page.evalJs('window.__debug.state()');
+    await page.evalJs('window.__borderPage = 1; window.__debug.teleport(window.__debug.state().feet[0] + 20 * 2.5, window.__debug.state().feet[1] + 1, window.__debug.state().feet[2])');
+    await page.waitFor('window.__debug.state().windowSlide?.doneAt && window.__debug.state().where?.province === "Imperial Province"', { label: 'border window slide', timeoutMs: 60000 });
+    const borderAfter = await page.evalJs('({ state: window.__debug.state(), same: window.__borderPage === 1, saved: JSON.parse(localStorage.getItem("perfectarena.lastLocation")), hud: document.getElementById("hud").textContent })');
+    check('sliding across the province border updates province, biome and nearest place without a scene reboot',
+      borderBefore.where.province === 'Skyrim' && borderAfter.state.where.province === 'Imperial Province'
+      && borderBefore.wild.climate === 'temperate' && borderAfter.state.wild.climate === 'mountain'
+      && borderAfter.state.where.nearest === 'Bruma' && borderAfter.same,
+      `${borderBefore.where.province}/${borderBefore.wild.climate} → ${borderAfter.state.where.province}/${borderAfter.state.wild.climate} near ${borderAfter.state.where.nearest}`);
+    check('the new biome is actually loaded and the HUD and saved place follow the border crossing',
+      borderAfter.state.inf.startsWith('MW') && borderAfter.state.location.province === 'Imperial Province'
+      && borderAfter.saved.name === 'Bruma' && /Imperial Province/.test(borderAfter.hud),
+      `${borderAfter.state.inf} / ${borderAfter.saved.name}`);
+
+    // ── a window of the country with no land in it at all ──────────────────────
+    //
+    // The world grid's window is wherever the player stands, and off a coast that is **open
+    // sea**: four sea blocks, 128×128 wet chasm cells, and — the point of the check — a level
+    // with **no start point of its own**, because a window is assembled from other files and has
+    // no `.MIF` header to read one from. `deepestCells` (the walk the objective is picked from)
+    // read `level.spawn.x` unguarded, so the scene threw on its way through `refreshObjective`
+    // and the whole page died at "Could not read that folder: Cannot read properties of null
+    // (reading 'x')" — the player walked into the sea and the game stopped. `?wild=1992,2114`
+    // near Daggerfall is such a window (pixel 7,8 of `TERRAIN.IMG`, off the Iliac coast).
+    await page.goto(`http://localhost:${getPort()}/?location=Daggerfall&wild=1992,2114&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior" && window.__debug.state().painted > 3',
+      { label: 'a window of open sea', timeoutMs: 120000 });
+    const sea = JSON.parse(await page.evalJs(
+      'JSON.stringify({ wild: window.__debug.state().wild, errors: window.__debug.errors.length, objective: window.__debug.state().objective })',
+    ));
+    check('a country window that is all sea boots: the scene is up and nothing threw',
+      realErrors(page.consoleErrors()).length === 0 && sea.errors === 0,
+      `${sea.errors} page errors: ${realErrors(page.consoleErrors()).map((m) => m.text).join(' | ').slice(0, 200)}`);
+    check('and it is really the sea: every block of the window is water',
+      sea.wild?.seaBlocks === 4 && sea.wild?.cityBlocks?.length === 0,
+      JSON.stringify({ blocks: sea.wild?.blocks, sea: sea.wild?.seaBlocks, cities: sea.wild?.cityBlocks }));
+    check('and the objective walk answers instead of throwing on a level with no start point',
+      sea.objective === null || Number.isFinite(sea.objective.cellX),
+      JSON.stringify(sea.objective));
 
     check('the suite saw no console errors', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((m) => m.text).join(' | ').slice(0, 300));

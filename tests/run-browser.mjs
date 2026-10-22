@@ -19,6 +19,7 @@ import { makeSceneVisualsSuite } from './suites/scenevisuals.mjs';
 import { makeDungeonPlaySuite } from './suites/dungeonplay.mjs';
 import { makeExeSuite } from './suites/exe.mjs';
 import { makeMovementSuite } from './suites/movement.mjs';
+import { makeAutomapSuite } from './suites/automap.mjs';
 import { makeBountiesSuite } from './suites/bounties.mjs';
 import { makeMainQuestSuite } from './suites/mainquest.mjs';
 import { makeTownsfolkSuite } from './suites/townsfolk.mjs';
@@ -27,7 +28,9 @@ import { makeWorldSuite } from './suites/world.mjs';
 import { makeWorldmapSuite } from './suites/worldmap.mjs';
 import { makeRegardSuite } from './suites/regard.mjs';
 import { makeMenuSuite } from './suites/menu.mjs';
+import { makeStartSuite } from './suites/start.mjs';
 import { makeGearSuite } from './suites/gear.mjs';
+import { makeBestiarySuite } from './suites/bestiary.mjs';
 import { makeGuildsSuite } from './suites/guilds.mjs';
 import { makeCommerceSuite } from './suites/commerce.mjs';
 import { makeLivingSuite } from './suites/living.mjs';
@@ -35,6 +38,8 @@ import { makePersistSuite } from './suites/persist.mjs';
 import { makeGeneratedSuite } from './suites/generated.mjs';
 import { makeProgressionSuite } from './suites/progression.mjs';
 import { makeCutsceneSuite } from './suites/cutscene.mjs';
+import { makeQuestMarksSuite } from './suites/questmarks.mjs';
+import { makeMusicSuite } from './suites/music.mjs';
 import { makeAuditSuite } from './suites/audit.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -482,8 +487,12 @@ async function suiteArenaInterior(page) {
     `feet ${wading.feetY?.toFixed?.(2)} of surface ${wading.surface}`);
   check('wading is slower than walking',
     Number(wading?.speedScale) > 0 && Number(wading.speedScale) < 1, String(wading?.speedScale));
+  // **The one panel, not `#combat`.** The owner's own 2026-10-17 ask ("use only the gui on the
+  // left ad not two guis") left the game with a single HUD box (`index.html`'s `#hud`, carrying
+  // the place, the fight and what is in reach as three bands), and this read still asked for the
+  // bottom-right box that was removed — a null read, so the check failed on a game that works.
   check('the HUD says the water is slow to cross',
-    /wading/.test(await page.evalJs('document.getElementById("combat").textContent')), '');
+    /wading/.test(await page.evalJs('document.getElementById("hud").textContent')), '');
   // …and it is not a trap: the player walks out over the bank and the mode ends.
   //
   // **Facing the bank first.** This block used to hold `W` in whatever direction the camera
@@ -577,15 +586,20 @@ async function suiteArenaInterior(page) {
   // install's sheets (`game/weaponView.js` `placeWeapon`): Arena's display was 320×200, the
   // resting blade's own box is (284, 68, 35×79), and the *margin* the art leaves is what
   // carries over — its right edge one art pixel off the right of the screen, its bottom on
-  // the line where the original's status area began (147), which in the port is the bottom
-  // edge of the view band. Both axes take ONE scale. (This check used to expect each axis
-  // stretched to the window and the art pinned to the window's bottom edge — the stretching
-  // and the mid-screen float the player reported, and the rule they replaced.)
+  // the line where the original's status area began (147), and its **top 147−68 art rows
+  // above that line**, from the header itself. Both axes take ONE scale.
+  //
+  // **Where the line falls is the port's decision, and the owner made it.** Arena's status
+  // bar is absent here, and standing the art on line 147 of the *window* left the blade — and
+  // the fists especially — floating a quarter of the way up it: the owner, 2026-10-17,
+  // *"the fists … are floating midscreen"*. The scene therefore passes the window's own
+  // bottom as the line (`world`'s *the weapon comes up out of the bottom of the screen* holds
+  // that half), and this check holds the other half: the frame is placed by **its own header's
+  // margin above the line**, not pinned to the bottom of the picture. D-66 was this check
+  // still asking for the old, pre-request line — the scene was right and the check was stale.
   const vp = await page.evalJs('JSON.stringify({ w: window.innerWidth, h: window.innerHeight })').then(JSON.parse);
   const scale = Math.min(vp.w / 320, vp.h / 200);
-  // The status line as the scene computes it — the view band's bottom edge — because the
-  // art's own row is measured *from that line*.
-  const statusLine = Math.round(147 * scale);
+  const statusLine = vp.h;   // the line the scene stands the art on (`placeWeapon`'s default)
   const want = {
     x: Math.round(vp.w - (320 - 284) * scale),
     y: Math.round(statusLine - (147 - 68) * scale),
@@ -697,7 +711,7 @@ async function suiteArenaInterior(page) {
   await page.pressKey('KeyF', false);
   await page.evalJs('window.__debug.stepWeapon(0.4)');
   const flailPixels = await page.evalJs('window.__debug.weaponPixels()');
-  const flailHud = await page.evalJs('document.getElementById("combat").textContent');
+  const flailHud = await page.evalJs('document.getElementById("hud").textContent');
   check('so swinging it draws nothing at all', flailPixels.pixels === 0, `${flailPixels.pixels} pixels`);
   check('and the HUD says the install has no such sheet',
     /no FLAIL\.CIF/.test(flailHud) && /first-person art/.test(flailHud), '');
@@ -726,8 +740,13 @@ async function suiteArenaInterior(page) {
   check('standing in lava is standing in it', lavaIn?.chasm === 'lava' && lavaIn.submerged === true, JSON.stringify(lavaIn));
   check('and lava burns: the health goes down while the player stands there',
     healthAfter < healthBefore, `${healthBefore} → ${healthAfter} in 2.6 s`);
+  // The line the hazard writes, in the panel it now writes it in: the old read wanted the removed
+  // `#combat` box **and** a sentence (`lava is burning you`) the HUD has not carried since the one
+  // panel consolidated the three bands — the lava flag reads "burning — 6 health a second · W gets
+  // you out". Both halves are the check, so both are stated: the hazard, and its rate.
+  const lavaHud = await page.evalJs('document.getElementById("hud").textContent');
   check('the HUD names the hazard and its rate',
-    /lava is burning you/.test(await page.evalJs('document.getElementById("combat").textContent')), '');
+    /burning/.test(lavaHud) && /health a second/.test(lavaHud), lavaHud.split('\n').find((l) => /burning/.test(l)) ?? lavaHud.slice(0, 120));
 
   const glWarnings = page.consoleMessages().filter((m) => /INVALID_OPERATION|INVALID_VALUE|GL_INVALID|GL_OUT_OF_MEMORY/.test(m.text));
   check('no WebGL misuse warnings', glWarnings.length === 0, glWarnings.length ? `${glWarnings.length}× ${glWarnings[0].text}` : '');
@@ -996,14 +1015,29 @@ async function suiteRadiant(page) {
     `enterable=${board?.enterableDungeons} of ${board?.dungeonRecords} dungeon records, pieces=${board?.dungeonPieces}`);
   const offers = await page.evalJs('window.__debug.radiantRefresh()');
   check('the board posts work', offers?.length >= 2, `${offers?.length} offers: ${offers?.map((o) => o.kind).join(', ')}`);
-  check('every posting aims at a place the game can open', offers?.every((o) => /^\d{8}\.MIF$/.test(o.targetMif ?? '') || o.kind === 'deliver'),
-    offers?.map((o) => `${o.kind}→${o.target}${o.targetMif ? `(${o.targetMif})` : ''}`).join(', '));
-  check('at least one posting carries Arena\'s own text', offers?.some((o) => o.dataText) === true,
-    offers?.map((o) => `${o.kind}:${o.dataText ? 'data' : 'authored'}`).join(', '));
+  // **Three doors now** (`radiantQuests.js`): a dungeon `.MIF`, a settlement Arena names,
+  // or a world cell in the open country with the landmark it sits near.
+  check('every posting aims at a place the game can open', offers?.every((o) =>
+    o.targetKind === 'wild'
+      ? Boolean(o.targetCell?.row) && Boolean(o.targetCell?.col) && Boolean(o.targetNear)
+      : /^\d{8}\.MIF$/.test(o.targetMif ?? '') || Boolean(o.target)),
+    offers?.map((o) => `${o.kind}→${o.target}${o.targetMif ? `(${o.targetMif})` : o.targetKind === 'wild' ? ' (wild)' : ''}`).join(', '));
   const deterministic = await page.evalJs('JSON.stringify(window.__debug.radiantRefresh())');
   await page.evalJs('window.__debug.radiantRefresh()');
   check('the same town on the same day posts the same board', JSON.stringify(offers) === deterministic,
     deterministic.slice(0, 120));
+  // **Arena's own recruiting speeches are the artifact banks**, and a board draws three of
+  // eight kinds — so one day's board can honestly be all authored prose. Over a week the
+  // board has to show that Arena's text reaches the page at all, which is what this checks.
+  let sawData = offers?.some((o) => o.dataText) === true;
+  let dataDays = offers?.map((o) => `${o.kind}:${o.dataText ? 'data' : 'authored'}`).join(', ');
+  for (let d = 0; d < 10 && !sawData; d++) {
+    await page.evalJs('window.__debug.radiantDays(1)');
+    const dayOffers = await page.evalJs('window.__debug.radiantRefresh()');
+    dataDays += ` | ${dayOffers?.map((o) => `${o.kind}:${o.dataText ? 'data' : 'authored'}`).join(', ')}`;
+    sawData = dayOffers?.some((o) => o.dataText) === true;
+  }
+  check('over a week at least one posting carries Arena\'s own text', sawData, dataDays.slice(-260));
 
   // ── accepting, by clicking the panel like a player ───────────────────────
   await page.evalJs('window.__debug.openBoard(true)');
@@ -1019,19 +1053,23 @@ async function suiteRadiant(page) {
 
   // ── doing the work, in order, at the right places ────────────────────────
   const active = afterClick.active;
-  const finish = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind];
+  const finish = {
+    artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver',
+  }[active.kind];
   const wrongPlace = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: 'Somewhere Else' }))`);
   check('the work cannot be done from somewhere else', JSON.parse(wrongPlace).ok === false, JSON.parse(wrongPlace).reason);
-  const arriving = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('arrive', { where: ${JSON.stringify(active.target)} }))`);
+  const arriving = await page.evalJs(`JSON.stringify(window.__debug.radiantEvent('arrive', { where: ${JSON.stringify(active.target)}, cell: ${JSON.stringify(active.targetCell ?? null)} }))`);
   check('reaching the target is recorded', JSON.parse(arriving).ok === true, active.target);
   const done = await page.evalJs(`JSON.stringify((() => {
     let result;
     const active = window.__debug.radiant().active;
-    if (active.kind === 'slay') {
+    if (active.kind === 'slay' || active.kind === 'hunt') {
       for (const encounterId of active.combat.ids) result = window.__debug.radiantEvent('killed', {
-        where: active.target, questId: active.id, monster: active.combat.monster, encounterId,
+        where: active.target, cell: active.targetCell, questId: active.id,
+        monster: active.combat.monster, encounterId,
       });
-    } else result = window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: active.target });
+    } else result = window.__debug.radiantEvent(${JSON.stringify(finish)}, { where: active.target, cell: active.targetCell });
     return result;
   })())`);
   check('the job is finished at its own target', JSON.parse(done).ok === true, `${finish} at ${active.target}`);
@@ -1060,6 +1098,55 @@ async function suiteRadiant(page) {
   const after = await page.evalJs('window.__debug.radiant()');
   check('the side work survived a reload', after?.taken === before?.taken && after?.gold === before?.gold && after?.day === before?.day,
     `taken ${after?.taken}/${before?.taken}, gold ${after?.gold}/${before?.gold}, day ${after?.day}/${before?.day}`);
+
+  // ── a country job: a mark on the map, and no teleport onto it ─────────────
+  //
+  // The owner, 2026-10-19: *"you still need to be able to see the quest marker on the map …
+  // the gui should point to it … you should not be able to teleport to the sidequest
+  // questmarkers in the wild because it crashes the game and instead the questmarker should
+  // be closer to a dungeon village or town so you can teleport there instead and then reach
+  // the location walking in the wilderness"*.
+  let wildOffer = null;
+  for (let d = 0; d < 12 && !wildOffer; d++) {
+    const dayOffers = await page.evalJs('window.__debug.radiantRefresh()');
+    wildOffer = dayOffers?.find((o) => o.targetKind === 'wild') ?? null;
+    if (!wildOffer) await page.evalJs('window.__debug.radiantDays(1)');
+  }
+  check('the board offers work out in the country', Boolean(wildOffer),
+    wildOffer ? `${wildOffer.kind} → ${wildOffer.target}` : 'none in twelve days');
+  if (wildOffer) {
+    await page.evalJs(`window.__debug.acceptOffer(${JSON.stringify(wildOffer.id)})`);
+    await new Promise((r) => setTimeout(r, 500));
+    const mark = await page.evalJs('window.__debug.wildJob()');
+    check('the country job is marked on the map, with the last leg named',
+      Boolean(mark) && Number(mark.walk) > 0 && Boolean(mark.cell?.row) && Boolean(mark.cell?.col),
+      JSON.stringify(mark));
+    check('clicking that mark travels to its anchor, never to the wild cell',
+      /location=/.test(mark?.url ?? '') && !/wild=/.test(mark?.url ?? ''), String(mark?.url));
+    const countryErrors = await page.evalJs('window.__debug.pageErrors || []');
+    check('the map draws with a country job in hand without throwing', countryErrors.length === 0,
+      countryErrors.join(' | ').slice(0, 400));
+    // **The reported crash is the map opened from the street**, not the map's own page:
+    // `M` in a city builds the overlay with the same marker code. Open it for real, with the
+    // country job saved, and read what the page says afterwards.
+    await page.goto(`http://localhost:${PORT}/?location=${encodeURIComponent(mark.name)}&${q}`);
+    await page.waitFor('window.__debug?.scene === "interior"', { label: 'the anchor town', timeoutMs: 120000 });
+    await page.pressKey('KeyM'); await page.pressKey('KeyM', false);
+    await new Promise((r) => setTimeout(r, 3500));
+    // The overlay keeps the street's own debug and hands the map a seam of its own
+    // (`window.__debug.worldMap`), so `scene` is still `interior` — the layer is what went up.
+    const overlayState = await page.evalJs(`({
+      scene: window.__debug?.scene ?? null,
+      layer: window.__debug?.worldMap?.layerUp?.() ?? false,
+      boot: window.__bootError ?? null,
+      errors: (window.__debug?.pageErrors ?? []).slice(0, 3),
+      mark: window.__debug?.worldMap?.wildJob?.() ?? null,
+    })`);
+    check('opening the map from the street with a country job in hand draws its mark and throws nothing',
+      overlayState?.layer === true && (overlayState?.errors ?? []).length === 0
+        && (!overlayState?.mark || /location=/.test(overlayState.mark.url ?? '')),
+      JSON.stringify(overlayState));
+  }
 
   await page.screenshot(path.join(SHOTS, 'm5-board.png'));
   check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
@@ -1173,6 +1260,10 @@ const SUITES = {
   // and every suite stayed green. This one holds each key the loop can hear, and then measures
   // the walk, the sprint and the sprint with the blade out (`docs/PORT_BLOCKS.md` B06).
   movement: makeMovementSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // **Arena's automap** (`game/automap.js`, ported from OpenTESArena's `AutomapUiMVC`): `M`
+  // inside a dungeon or a building is the level the player is lost in, drawn in the game's own
+  // automap colours with its 3×3 arrow; a city and the country keep the world map.
+  automap: makeAutomapSuite({ check, realErrors, getPort: () => PORT }),
   bounties: makeBountiesSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // And the whole main quest is its own flow: eighteen page loads, one `E` key per beat,
   // and the ending. It is the suite that proves the game can be finished.
@@ -1197,9 +1288,18 @@ const SUITES = {
   // (New Game, which has to go back through creation **in this page** — the player's folder
   // cannot survive a navigation).
   menu: makeMenuSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // The **start menu**, and the story's own beginning: the title screen, New Game's creation →
+  // the king's betrayal → the cell, Ria's explanation owed by the save, and Continue resuming
+  // without replaying her. It is a suite and not a hand probe because this is the flow every
+  // new player's first ten minutes go through.
+  start: makeStartSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // The pack, the spellbook and casting: the third of the game a player touches every minute,
   // and the one a player reported missing ("there is no magic or inventory").
   gear: makeGearSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // What each creature is besides its hit points: the immunity ladder, silver at a vampire,
+  // a ward's points, a resistance's element, invisibility and a troll's regeneration — the
+  // bestiary's own abilities (`game/bestiary.js`) on a real page.
+  bestiary: makeBestiarySuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // The guilds: membership through a real keeper conversation, standing earned by real
   // completed work, the saved ledger, and a hostile town refusing the stranger. The rank
   // LAW behind it is the twin's own (`tests/unit/guild.test.mjs`); this is where it is
@@ -1233,6 +1333,15 @@ const SUITES = {
   // a page — Arena's art, the file's own pacing, a key to skip, and an honest refusal for a
   // name the install does not ship. `src/scenes/cutscenePlayer.js` is the caller.
   cutscene: makeCutsceneSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT, decodePng }),
+  // **A quest's own marks on a real page**: the install's riddle doors (E at the sealed door asks
+  // the sign's own question; the file's answer opens it) and a country job's quarry, which only
+  // exists once the moving window reaches the job's cell (`ensureRadiantCamp`).
+  questmarks: makeQuestMarksSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // **The soundtrack**: which song a place hears (the reference's `MusicDefinitions.txt`), the
+  // jingle-then-ambience order, the night clock at 17:45, and the settings slider that turns
+  // it off for good. The law is unit-tested (`tests/unit/arenamusic.test.mjs`); this holds the
+  // page to it.
+  music: makeMusicSuite({ check, realErrors, getPort: () => PORT }),
   // The AUDIT: the five symptoms the owner reported, measured. It is **red on purpose** where
   // the game falls short — every failure is a `D-` row in `docs/DEFECTS.md` and a number in
   // `docs/AUDIT-*.md`. Do not "fix" a red here by relaxing it; fix the game, or re-state the

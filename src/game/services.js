@@ -27,7 +27,7 @@
 //     it is the same sentence a shelf is stamped with.
 
 import {
-  ITEMS, addToBag, countInBag, itemById, itemsOfKind, priceOf, removeFromBag,
+  ITEMS, addToBag, carryStatus, countInBag, itemById, itemsOfKind, priceOf, removeFromBag, unequipItem,
 } from './items.js';
 import { learnSpell, restore, spellsForSale } from './spells.js';
 import { ArenaRandom } from './arenaRandom.js';
@@ -76,7 +76,11 @@ export function stockFor(kind, opts = {}) {
   const level = Math.max(1, Number(opts?.level) || 1);
   const budget = shelfBudget({ level });
   const pool = {
-    equipment: [...itemsOfKind('weapon'), ...itemsOfKind('armour'), ...itemsOfKind('shield')],
+    // **A smith who sells bows sells arrows** (the owner, 2026-10-18): ammunition rides the
+    // equipment pool, and the row below makes sure it is on the shelf rather than left to the
+    // seed — a shop with a longbow and no arrows is a shop whose bow does nothing.
+    equipment: [...itemsOfKind('weapon'), ...itemsOfKind('armour'), ...itemsOfKind('shield'),
+      ...itemsOfKind('misc').filter((item) => item.ammo)],
     mages: [...itemsOfKind('potion'), ...itemsOfKind('scroll')],
     temple: itemsOfKind('potion').filter((item) => /cure|heal/i.test(item.id)),
     tavern: itemsOfKind('potion').filter((item) => !/cure|resist/i.test(item.id)),
@@ -98,6 +102,15 @@ export function stockFor(kind, opts = {}) {
     if (taken.has(item.id)) continue;
     taken.add(item.id);
     items.push({ item, price: priceOf(item), qty: 1 + random.nextBelow(STOCK_QTY_MAX) });
+  }
+  // **Arrows are a staple, not a draw.** Every equipment shelf carries a bundle whatever the seed
+  // said, because a bow is only a weapon while there is something to loose from it.
+  if (kind === 'equipment' && !items.some((entry) => entry.item.ammo)) {
+    const arrows = itemById('arrow');
+    if (arrows) {
+      if (items.length >= STOCK_ROWS_MAX) items.pop();
+      items.unshift({ item: arrows, price: priceOf(arrows), qty: STOCK_QTY_MAX });
+    }
   }
   // The Great Find: the cheapest thing the level's budget keeps off every shelf yet, here
   // on the seeded roll's chance — a thing you saw rich travellers carrying.
@@ -198,7 +211,8 @@ export function shelfFor(kind, opts = {}) {
   if (!SERVICE_KINDS[kind] || SERVICE_KINDS[kind].sells === 'nothing') return empty;
 
   if (kind === 'equipment') {
-    const goods = [...itemsOfKind('weapon'), ...itemsOfKind('armour'), ...itemsOfKind('shield')];
+    const goods = [...itemsOfKind('weapon'), ...itemsOfKind('armour'), ...itemsOfKind('shield'),
+      ...itemsOfKind('misc').filter((item) => item.ammo)];
     return { ...empty, items: shelfRows(goods, budget, character) };
   }
   if (kind === 'mages') {
@@ -319,11 +333,19 @@ export function buyItem(character, bag, id, opts = {}) {
   if (gold < cost) {
     return { ok: false, reason: `${item.name} costs ${cost} gold and you have ${gold}`, character, bag: stock, note: '', cost, sold: null };
   }
+  // **A back has a limit** (`items.js`'s `carryStatus`): the purchase is refused before the
+  // purse is touched, and the refusal names the weight rather than quietly dropping the goods.
+  const room = carryStatus(character, stock, item, Math.max(1, Math.trunc(Number(item.bundle) || 1)));
+  if (!room.ok) {
+    return { ok: false, reason: room.reason, character, bag: stock, note: '', cost, sold: null };
+  }
   return {
     ok: true,
     character: { ...character, gold: gold - cost },
-    bag: addToBag(stock, item.id, 1),
-    note: `${item.name} bought for ${cost} gold.`,
+    bag: addToBag(stock, item.id, Math.max(1, Math.trunc(Number(item.bundle) || 1))),
+    note: item.bundle > 1
+      ? `${item.name} ×${item.bundle} bought for ${cost} gold.`
+      : `${item.name} bought for ${cost} gold.`,
     cost,
     sold: item,
   };
@@ -348,23 +370,37 @@ export function sellItem(character, bag, id, opts = {}) {
   const stock = Array.isArray(bag) ? bag : [];
   if (!item) return { ok: false, reason: `there is no ${id} to sell`, character, bag: stock, note: '', gold: 0, sold: null };
   if (!countInBag(stock, item.id)) return { ok: false, reason: `you are not carrying a ${item.name.toLowerCase()}`, character, bag: stock, note: '', gold: 0, sold: null };
-  if (!buys(opts.kind, item.kind)) {
+  if (item.artifact) return { ok:false, reason:'Artifacts cannot be sold.', character, bag:stock, note:'', gold:0, sold:null };
+  if (!buys(opts.kind, item.kind, item)) {
     return { ok: false, reason: `${SERVICE_KINDS[opts.kind]?.name ?? 'this shop'} does not deal in ${item.kind === 'misc' ? 'raw metal' : `${item.kind}s`}`, character, bag: stock, note: '', gold: 0, sold: null };
   }
   const gold = priceOf(item, { selling: true, regard: Number.isFinite(opts.regard) ? opts.regard : regardFor(character) });
+  const left = removeFromBag(stock, item.id, 1);
+  // **A sold thing comes off the body.** Equipment lives in the bag and on the character at
+  // once (`items.js`'s `equipFromBag`), so the last copy leaving the pack must also leave the
+  // hand, the arm, the body or the finger it was worn on — otherwise the sale pays the player
+  // and leaves them swinging something they no longer own.
+  const last = countInBag(left, item.id) === 0;
+  const taken = last ? unequipItem({ ...character, gold: (Number(character?.gold) || 0) + gold }, item.id) : null;
   return {
     ok: true,
-    character: { ...character, gold: (Number(character?.gold) || 0) + gold },
-    bag: removeFromBag(stock, item.id, 1),
-    note: `${item.name} sold for ${gold} gold.`,
+    character: taken?.character ?? { ...character, gold: (Number(character?.gold) || 0) + gold },
+    bag: left,
+    note: `${item.name} sold for ${gold} gold.${taken?.note ? ` ${taken.note}` : ''}`,
     gold,
     sold: item,
+    unequipped: taken?.unequipped ?? [],
   };
 }
 
 /** Does a trade deal in a kind of goods? */
-export function buys(kind, itemKind) {
-  if (kind === 'equipment') return ['weapon', 'armour', 'shield'].includes(itemKind);
+export function buys(kind, itemKind, item = null) {
+  if (kind === 'equipment') {
+    // Ammunition is `misc` in the catalogue but a smith's good: arrows are sold and bought back
+    // beside the bows they feed, while a bar of metal stays a smith's material rather than stock.
+    if (itemKind === 'misc') return Boolean(item?.ammo);
+    return ['weapon', 'armour', 'shield'].includes(itemKind);
+  }
   if (kind === 'mages') return ['potion', 'scroll', 'misc'].includes(itemKind);
   if (kind === 'temple') return ['potion'].includes(itemKind);
   if (kind === 'tavern') return ['potion'].includes(itemKind);

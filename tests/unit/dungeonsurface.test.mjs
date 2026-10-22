@@ -211,3 +211,53 @@ test('the whole answer: country, ruin block and the wilderness cell of the door'
   assert.ok(surface.cell.row >= 0 && surface.cell.col >= 0
     && surface.cell.row < WILD_GRID_WIDTH * WILD_CHUNK && surface.cell.col < WILD_GRID_WIDTH * WILD_CHUNK);
 });
+
+// ── the door is where the MAP says the dungeon is ─────────────────────────────────────────────
+//
+// The owner, 2026-10-17: *"DUNGEONS ARE NOT WHERE THEY ARE SUPPOSED TO BE ON THE MAP WHEN YOU
+// EXIT A DUNGEON YOURE FAR FROM WHERE YOU SHOULD BE"*. The map marks a dungeon at its
+// `CITYDATA` pixel and draws the player's own dot at their world cell's pixel; the door used to
+// be `ruinBlockNear` — up to eight blocks (1.28 km) of country away. `dungeonDoorBlock` is the
+// law that closed it: the door block is inside the dungeon's **own pixel**, and the slot inside
+// that pixel is the dungeon's own seed, so two dungeons on one pixel stay two doors.
+
+test('a dungeon\'s door is inside its own map pixel, not a walk away from it', async () => {
+  const { dungeonDoorBlock } = await import('../../src/game/dungeonSurface.js');
+  const { BLOCKS_PER_PIXEL } = await import('../../src/game/tamrielGrid.js');
+  const place = { kind: 'dungeon', name: 'Stonekeep', global: { x: 58, y: 65 }, dungeonSeed: 3969902143 };
+  const block = dungeonDoorBlock({ place });
+  assert.ok(block, 'a land pixel answers a block');
+  const pixelOf = (r, c) => ({
+    x: Math.floor(block.blockCol / BLOCKS_PER_PIXEL),
+    y: Math.floor(block.blockRow / BLOCKS_PER_PIXEL),
+  });
+  assert.deepEqual(pixelOf(block.blockRow, block.blockCol), { x: 58, y: 65 },
+    'the block the door stands in is the block of the dungeon\'s own pixel');
+  // …and the cell it answers is that block's own centre.
+  assert.equal(block.row, block.blockRow * 64 + 32);
+  assert.equal(block.col, block.blockCol * 64 + 32);
+  // The cell's own pixel is the dungeon's pixel too, which is the whole claim: the dot a player
+  // sees after climbing out sits on the icon they walked to.
+  assert.deepEqual({ x: Math.floor(block.col / 256), y: Math.floor(block.row / 256) }, { x: 58, y: 65 });
+  // Deterministic: the same dungeon, the same door.
+  assert.deepEqual(dungeonDoorBlock({ place }), block);
+});
+
+test('two dungeons on one pixel are two doors, and a sea pixel is skipped', async () => {
+  const { dungeonDoorBlock } = await import('../../src/game/dungeonSurface.js');
+  const one = { kind: 'dungeon', name: 'A', global: { x: 90, y: 44 }, dungeonSeed: 111 };
+  const two = { kind: 'dungeon', name: 'B', global: { x: 90, y: 44 }, dungeonSeed: 222222 };
+  const a = dungeonDoorBlock({ place: one });
+  const b = dungeonDoorBlock({ place: two });
+  assert.ok(a && b);
+  assert.notDeepEqual({ r: a.blockRow, c: a.blockCol }, { r: b.blockRow, c: b.blockCol },
+    'two dungeons sharing a pixel do not share one ruin');
+  // A pixel whose ground is sea answers no block at all: a door in the water is no door.
+  assert.equal(dungeonDoorBlock({ place: one, accept: () => false }), null);
+  // The slots tried are the pixel's own sixteen, and the first acceptable one wins.
+  const accepted = [];
+  const block = dungeonDoorBlock({ place: one, accept: (r, c) => { accepted.push([r, c]); return true; } });
+  assert.equal(accepted.length, 1, 'the search stops at the first acceptable slot');
+  assert.deepEqual(accepted[0], [block.blockRow, block.blockCol]);
+  assert.ok(dungeonDoorBlock({ place: null }) === null && dungeonDoorBlock({}) === null);
+});

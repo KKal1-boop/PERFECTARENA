@@ -426,6 +426,39 @@ export function staminaMax({ endurance = 50, level = 1 } = {}) {
 }
 
 /**
+ * **Give a pool the ceiling its owner has earned** — Endurance and level, read from the sheet.
+ *
+ * The pool is declared with defaults and then lives for the whole scene, so a character's
+ * Endurance and level have to be *fed* to it or the bar is a placeholder: a level-12 hero with
+ * marathon Endurance used a 30-point pool, and the third well under the hit points and
+ * magicka never matched the hero it belonged to.
+ *
+ * A change of ceiling keeps the bar's own share, so a level-up mid-fight does not hand the
+ * player a full bar; the very first call has no share to keep and starts the bar full.
+ *
+ * @param {{stamina?: number, max?: number, endurance?: number, level?: number, regenIn?: number}} state  mutated in place
+ * @param {{endurance?: number, level?: number}} [owner]
+ * @returns {object|null} the same pool
+ */
+export function syncStamina(state, owner = {}) {
+  if (!state) return null;
+  const endurance = Number.isFinite(owner.endurance) ? owner.endurance : 50;
+  const level = Math.max(1, Math.round(Number(owner.level) || 1));
+  const max = staminaMax({ endurance, level });
+  if (state.endurance !== endurance || state.level !== level || state.max !== max) {
+    const fresh = !Number.isFinite(state.max) || !Number.isFinite(state.stamina);
+    const share = fresh ? 1 : Math.max(0, Math.min(1, state.stamina / Math.max(1, state.max)));
+    state.endurance = endurance;
+    state.level = level;
+    state.max = max;
+    state.stamina = fresh ? max : share * max;
+  }
+  if (!Number.isFinite(state.stamina)) state.stamina = max;
+  if (!Number.isFinite(state.max)) state.max = max;
+  return state;
+}
+
+/**
  * Pay for a dodge or a parry.
  *
  * Refuses at zero — a roll you cannot afford does not happen — and refuses atomically: a

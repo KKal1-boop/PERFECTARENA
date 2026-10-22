@@ -63,7 +63,7 @@ test('the builder is callable with no rig in scope at all — the defect D-26 wa
 
 test('the motor\'s own contract survives the drawn gate: axes, edges and the guard keys', () => {
   const held = new Set(['KeyS', 'KeyD', 'Space', 'ControlLeft']);
-  const pressed = new Set(['KeyC']);
+  const pressed = new Set(['ControlLeft']);
   const input = inputOf(held, pressed, true);
   assert.deepEqual(input, {
     // `S` arrives as a **negative axis** — the first version passed a boolean and `S` moved
@@ -71,10 +71,12 @@ test('the motor\'s own contract survives the drawn gate: axes, edges and the gua
     forward: -1, back: true, strafe: 1, jump: true,
     run: false, crouch: true, sneak: true, autoRun: false,
   }, 'every other field the motor reads is what it was');
-  // `crouch` is a press **edge**, not a held key: the motor toggles the stance whenever the
-  // flag is truthy, so a held `C` flipped crouch/stand ten times a second.
-  assert.equal(inputOf(new Set(['KeyC']), new Set(), false).crouch, false, 'a held C is not a press');
-  assert.equal(inputOf(new Set(['KeyC']), new Set(), true).crouch, false, 'a held C is not a press (drawn)');
+  // **`Ctrl` crouches and `C` does not** — the owner, 2026-10-19: *"the command for crounching needs
+  // to be CTRL and not C because its overlapping with the cast menu"*. `C` is the spellbook's key.
+  assert.equal(inputOf(new Set(), new Set(['ControlLeft']), false).crouch, true, 'left Ctrl is a crouch');
+  assert.equal(inputOf(new Set(), new Set(['ControlRight']), false).crouch, true, 'right Ctrl too');
+  assert.equal(inputOf(new Set(['ControlLeft']), new Set(), false).crouch, false, 'a held Ctrl is not a press');
+  assert.equal(inputOf(new Set(), new Set(['KeyC']), false).crouch, false, 'C is the spellbook, not a crouch');
 });
 
 test('the drawn gate is per-frame, so sheathing gives the sprint straight back', () => {

@@ -207,13 +207,16 @@ test('a finished job is paid by the one who asked, and by nobody else', () => {
   const offer = personOffer({ world, library, giver, person, day: 2, dungeons });
   assert.ok(offer?.giverId);
   let state = applyRadiantEvent(createRadiantState(), 'accept', { offer }).state;
-  const finish = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[offer.kind];
-  if (offer.kind === 'slay') {
+  const finish = {
+    artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver',
+  }[offer.kind];
+  if (offer.kind === 'slay' || offer.kind === 'hunt') {
     const progress = slayProgress(state.active);
     for (const encounterId of progress.ids) state = applyRadiantEvent(state, 'killed', {
-      where: offer.target, questId: offer.id, monster: progress.monster, encounterId,
+      where: offer.target, cell: offer.targetCell, questId: offer.id, monster: progress.monster, encounterId,
     }).state;
-  } else state = applyRadiantEvent(state, finish, { where: offer.target }).state;
+  } else state = applyRadiantEvent(state, finish, { where: offer.target, cell: offer.targetCell }).state;
   assert.equal(state.active.completed, true);
 
   assert.equal(handInWith(state, offer.giverId)?.id, offer.id, 'this person is the one owed');
@@ -240,13 +243,16 @@ test('a job off the board is the town\'s, and the town pays it', () => {
   const offer = board.find((o) => o.needsDungeon !== false && o.targetMif) ?? board[0];
   assert.equal(offer.giverId, undefined, 'a posted job has nobody behind it');
   let state = applyRadiantEvent(createRadiantState(), 'accept', { offer }).state;
-  const finish = { artifact: 'found', fetch: 'found', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[offer.kind];
-  if (offer.kind === 'slay') {
+  const finish = {
+    artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
+    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver',
+  }[offer.kind];
+  if (offer.kind === 'slay' || offer.kind === 'hunt') {
     const progress = slayProgress(state.active);
     for (const encounterId of progress.ids) state = applyRadiantEvent(state, 'killed', {
-      where: offer.target, questId: offer.id, monster: progress.monster, encounterId,
+      where: offer.target, cell: offer.targetCell, questId: offer.id, monster: progress.monster, encounterId,
     }).state;
-  } else state = applyRadiantEvent(state, finish, { where: offer.target }).state;
+  } else state = applyRadiantEvent(state, finish, { where: offer.target, cell: offer.targetCell }).state;
 
   assert.equal(handInAtPlace(state, giver.name)?.id, offer.id);
   assert.equal(handInAtPlace(state, 'Somewhere Else'), null, 'a different town owes nothing');
@@ -267,4 +273,21 @@ test('doing somebody\'s work is the strongest good turn the game has', () => {
   assert.equal(regardOf(record, id, 7), REGARD_EVENTS.job + REGARD_EVENTS.talk * 6 - 6 * EASE_PER_DAY,
     'the job, six days of words, and the half point a day apart cost');
   assert.equal(standingOf(record, id, 7), 'friend');
+});
+
+test('one errand is a friendship: the job and the help it gave, on the same day', () => {
+  // `scenes/interior.js`'s `handInJob` notes both acts when the work is paid: `job` for the
+  // work itself and `helped` for standing up for the one who asked. Together they pass
+  // `FRIEND_AT` without a single extra word — which is the owner's own ask, that finishing
+  // somebody's quest makes them like the player more.
+  const id = personId('Daggerfall', { row: 9, col: 2 });
+  let record = note(createRegardRecord(), id, 'job', 3);
+  assert.equal(regardOf(record, id, 3), REGARD_EVENTS.job);
+  record = note(record, id, 'helped', 3);
+  assert.equal(regardOf(record, id, 3), REGARD_EVENTS.job + REGARD_EVENTS.helped);
+  assert.ok(REGARD_EVENTS.job + REGARD_EVENTS.helped >= FRIEND_AT, 'one errand is enough');
+  assert.equal(standingOf(record, id, 3), 'friend');
+  // The word exchanged when the job was taken is the third act, and it lands on the same day.
+  record = note(record, id, 'talk', 3);
+  assert.equal(regardOf(record, id, 3), 48);
 });

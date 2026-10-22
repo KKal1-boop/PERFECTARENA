@@ -240,12 +240,19 @@ export const ROLE_PLANS = Object.freeze({
     Object.freeze([20, 'wander', 'the street']),
     Object.freeze([22, 'goHome', 'home']),
   ]),
-  /** A tavern keeper: pours into the small hours, sleeps the morning away. */
+  /**
+   * A tavern keeper: **behind the bar, always.**
+   *
+   * The plan used to be the twin's shape — pour until seven, sleep the morning away, in by two —
+   * with the room shut 02:00–10:00 to match. Once the tavern never shuts (`SHOP_HOURS`) the two
+   * halves have to agree or the town contradicts itself: a player who walks in at eight in the
+   * morning finds the door open, the tables set, and nobody in the room to serve them, which is
+   * the same defect one step further in. So the keeper's day is one anchor: at the bar, all 24
+   * hours, which is also the only reading under which "taverns are always open" is true of the
+   * *tavern* rather than of its door.
+   */
   bartender: Object.freeze([
     Object.freeze([0, 'openShop', 'the tavern']),
-    Object.freeze([7, 'sleep', 'home']),
-    Object.freeze([14, 'work', 'the tavern']),
-    Object.freeze([17, 'openShop', 'the tavern']),
   ]),
   /** A Mages Guild's keeper: the hall open through the working day. */
   wizard: Object.freeze([
@@ -692,7 +699,14 @@ export function isOpen(kind, clock) {
  */
 export const SHOP_HOURS = Object.freeze({
   equipment: Object.freeze([Object.freeze([480, 1080])]),                  // 08:00 – 18:00
-  tavern: Object.freeze([Object.freeze([600, 1560])]),                     // 10:00 – 02:00
+  // **A tavern never shuts.** The owner, 2026-10-17: *"taverns shoud be always open"* — and the
+  // law is his rather than Arena's (the original's own hours are in `A.EXE`, which is not in this
+  // checkout). It used to be 10:00–02:00, which meant a player who walked a town in the small
+  // hours of the morning found every tavern in it barred: the door answered "the tavern is shut,
+  // come back in the morning" on a screen where the tavern is the one building a traveller wants,
+  // and the room behind it — beds, a keeper, the town's talk — was unreachable for a third of the
+  // day. A whole day, written as one range.
+  tavern: Object.freeze([Object.freeze([0, MINUTES_PER_DAY])]),            // all day, and all night
   mages: Object.freeze([Object.freeze([540, 1020])]),                      // 09:00 – 17:00
   temple: Object.freeze([Object.freeze([360, 1200])]),                     // 06:00 – 20:00
 });
@@ -717,6 +731,17 @@ function nearestDoor(doors, kind, home) {
 }
 
 /**
+ * The blocks a person **serves from a place**, and so stands at it while the block lasts (D-44):
+ * the shopkeeper opening their door, the smith at the forge, the priest at the shrine.
+ *
+ * The other blocks are deliberately absent. `eat` and `drink` are a *patron's* blocks — a customer
+ * comes and goes, and a row of drinkers standing outside the tavern all afternoon is not what the
+ * original draws. `wander` is a beat rather than a post. `goHome`/`sleep` are held by the scene's
+ * own `/^home/` branch, which is a different law (a person at home is not drawn at all).
+ */
+export const POST_ACTIVITIES = Object.freeze(['openShop', 'work', 'worship']);
+
+/**
  * The door a person is walking to, and why.
  *
  * **Their own cell is a destination too.** Half of a day is spent at home, and a person's home
@@ -731,8 +756,10 @@ function nearestDoor(doors, kind, home) {
  * @param {object} person
  * @param {{day?: number, minutes: number}} clock
  * @param {{doors?: {row: number, col: number, kind?: string}[]}} [opts]
- * @returns {{row: number, col: number, reason: string}|null} null when the town's own data
- *   gives this person nowhere to go (a level with no doors at all, and no home cell)
+ * @returns {{row: number, col: number, reason: string, post?: boolean}|null} null when the town's
+ *   own data gives this person nowhere to go (a level with no doors at all, and no home cell);
+ *   `post` is true when the goal is a **place of business the block serves from** — the seam
+ *   `scenes/interior.js` holds such a person on (`POST_ACTIVITIES`)
  */
 export function streetGoal(person, clock, opts = {}) {
   const doors = Array.isArray(opts.doors) ? opts.doors.filter((door) => Number.isFinite(Number(door?.row)) && Number.isFinite(Number(door?.col))) : [];
@@ -821,7 +848,24 @@ export function streetGoal(person, clock, opts = {}) {
   const wantKind = working ? (tradeKind ?? placeKind) : (placeKind ?? tradeKind);
   const door = nearestDoor(doors, wantKind, home) ?? nearestDoor(doors, null, home);
   if (!door) return home ? { row: Math.trunc(home.row), col: Math.trunc(home.col), reason: 'their own street' } : null;
-  return { row: Math.trunc(door.row), col: Math.trunc(door.col), reason: reasonFor[here.activity] ?? 'about their business' };
+  // **`post` says whether this block has a *place of business* to stand at** (D-44). The owner's
+  // own words: *"you should add the npcs that dont move from the original arena the one in taverns
+  // the priest the ones you can ask rumors … they are probably object and not entities in the
+  // original arena"*. In Arena the trades that serve from a spot — the priest at the shrine, the
+  // smith at the forge, the shopkeeper at their door — **are** fixtures on the street, and this
+  // port walked them round the town instead: measured 2026-10-17, a priest stood on 22 different
+  // cells in twenty-one minutes of the town's own day and never stood still for eight seconds.
+  //
+  // It is **data rather than a reason a caller matches by name**, so a reason can be reworded
+  // without the law quietly ceasing to hold. `eat` and `drink` are deliberately not posts: a
+  // patron comes and goes, and a row of drinkers standing outside the tavern all afternoon is not
+  // what the original draws. A wanderer's beat is not a post either — wandering *is* the block.
+  return {
+    row: Math.trunc(door.row),
+    col: Math.trunc(door.col),
+    reason: reasonFor[here.activity] ?? 'about their business',
+    post: POST_ACTIVITIES.includes(here.activity),
+  };
 }
 
 // ── the watch ────────────────────────────────────────────────────────────────

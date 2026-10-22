@@ -172,5 +172,6 @@ Re-run both (or `npm run check`) after any change; the numbers above are a recor
 | Why a choice was made (D-numbers) | [DECISIONS.md](DECISIONS.md) |
 | What the bits mean, with evidence | [FORMATS.md](FORMATS.md) |
 | The comparison with Daggerfall Enhanced | [TWINS.md](TWINS.md) |
+| The comparison with Arena and OpenTESArena, feature by feature | [PARITY.md](PARITY.md) |
 | What is next, in checkable phases | [ROADMAP.md](ROADMAP.md) |
 | Spells as decoded | [SPELLS.md](SPELLS.md) |

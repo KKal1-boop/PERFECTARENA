@@ -104,6 +104,27 @@ export function makeCutsceneSuite({ check, realErrors, shots, getPort, decodePng
     check('and the movie it skipped is not left on the screen',
       await page.evalJs(`!document.getElementById('cutscene').classList.contains('on')`));
 
+    // ── a narrated scene loops its movie for the narration's length ────────────
+    //
+    // VISION.FLC is 20 frames at 171 ms (3.4 s). Its dream narration runs 9 s here, so the movie
+    // must come round again (the original wraps its animation while the voice clips play), and the
+    // scene must end with the narration, not with the movie's own last frame.
+    const looped = JSON.parse(await page.evalJs(`(async () => {
+      const { showMovie } = await import('/src/scenes/cutscenePlayer.js');
+      const t0 = performance.now();
+      const result = await showMovie('VISION.FLC', {
+        arenaPath: ${JSON.stringify(arena)}, captions: ['first line', 'second line'], narrationMs: 9000,
+      });
+      return JSON.stringify({
+        ms: performance.now() - t0, played: result.played, skipped: result.skipped,
+        frames: result.frames, loops: result.state?.loops ?? 0, totalMs: result.state?.totalMs ?? null,
+      });
+    })()`));
+    check('a narrated movie loops for the whole narration, then ends with it',
+      looped.played === true && looped.skipped === false && looped.loops >= 2
+        && looped.ms >= 8500 && looped.ms <= 11000,
+      JSON.stringify(looped));
+
     // ── the opening, by its bare word ────────────────────────────────────────
     await page.goto(url('cutscene'));
     await page.waitFor('window.__debug?.scene === "cutscene" && window.__debug.cutscene().file !== null',

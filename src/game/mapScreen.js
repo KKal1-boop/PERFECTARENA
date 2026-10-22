@@ -393,6 +393,11 @@ export function paletteColor(palette, index) {
  * }>}
  */
 export async function loadMapScreen(data) {
+  if (typeof data.cached === 'function') return data.cached(`model:mapScreen:${data.paletteName}`, () => readMapScreen(data));
+  return readMapScreen(data);
+}
+
+async function readMapScreen(data) {
   const warnings = [];
   const screen = await data.img(MAP_SCREEN_RECORD);
   if (screen.width !== SCREEN_SIZE.width || screen.height !== SCREEN_SIZE.height) {

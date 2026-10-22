@@ -446,6 +446,11 @@ export function wrapText(text, width = 56) {
  * @returns {Promise<ArenaLibrary>}
  */
 export async function loadArenaText(data) {
+  if (typeof data.cached === 'function') return data.cached('model:arenaText', () => readArenaText(data));
+  return readArenaText(data);
+}
+
+async function readArenaText(data) {
   /** @type {string[]} */
   const warnings = [];
   /** @type {Record<string, Uint8Array|null>} */

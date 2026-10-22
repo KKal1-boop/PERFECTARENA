@@ -276,3 +276,42 @@ test('a whole city assembles from the real archive and decodes', async () => {
   assert.ok(level.cells.some((c) => !c.ceiling), 'a city has open sky over its streets');
   assert.ok(level.stats.ceilinged > 0, 'and roofs over its buildings');
 });
+
+test('every settlement is built from the skeleton its own kind names', async () => {
+  const { loadWorldMap } = await import('../../src/game/worldMap.js');
+  const { cityRequestOf } = await import('../../src/scenes/interior.js');
+  const { CITY_BLOCKS_PER_SIDE } = await import('../../src/game/tables/cityBlocks.js');
+  const world = await loadWorldMap(data);
+  const places = world.settlements();
+
+  // **The file's own split**, measured from `CITYDATA.64`: eight city-states, eight
+  // towns and sixteen villages in each of the nine provinces. A record's `index` is its
+  // number *among its own kind* (a town's first record is index 0 again), and the kind
+  // is the run of records it was read from — so the kind cannot be re-derived from the
+  // index. It was: `cityTypeOf(place.index)` read every town's 0…7 as city-state ids and
+  // built 216 cities and no village at all.
+  const counts = {};
+  for (const place of places) counts[place.kind] = (counts[place.kind] ?? 0) + 1;
+  assert.deepEqual(counts, { city: 72, town: 72, village: 144 },
+    `${places.length} settlements, ${JSON.stringify(counts)}`);
+
+  const family = { city: /^CITYW?\d\.MIF$/, town: /^TOWNW?\d\.MIF$/, village: /^VILLAG(?:E|W)\d\.MIF$/ };
+  for (const place of places) {
+    const request = cityRequestOf(place);
+    assert.equal(request.kind, place.kind, `${place.name} is a ${place.kind}`);
+    assert.match(request.template, family[place.kind], `${place.name} (${place.kind}) builds ${request.template}`);
+    assert.equal(request.blocksPerSide, CITY_BLOCKS_PER_SIDE[place.kind],
+      `${place.name} is a ${place.kind} grid, not a city grid`);
+  }
+
+  // The two shapes the old reading got wrong, named so a regression is not a count:
+  // the first town of a province (index 0) and a village with an index under 8.
+  const firstTown = places.find((p) => p.provinceID === 0 && p.kind === 'town' && p.index === 0);
+  assert.match(cityRequestOf(firstTown).template, /^TOWNW?\d\.MIF$/, `${firstTown.name} is a town`);
+  const village = places.find((p) => p.kind === 'village' && p.index < 8);
+  assert.equal(cityRequestOf(village).kind, 'village', `${village.name} is a village, not a town`);
+
+  // A record that carries no kind still gets the executable's own reading of its id,
+  // so the fallback is a fallback and not a second law.
+  assert.equal(cityRequestOf({ index: 9, climate: 'temperate', citySeed: 1, coastal: false }).kind, 'town');
+});

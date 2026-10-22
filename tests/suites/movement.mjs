@@ -187,6 +187,24 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
       walkedOut?.wild === true && Math.hypot(walkedOut.feet[0] - stand[0] * 2.5, walkedOut.feet[2] - stand[1] * 2.5) > 0,
       `${walkedOut?.map} → ${walkedOut?.wild ? 'the country' : 'still the city'} at ${JSON.stringify(walkedOut?.feet)}`);
 
+    // ── the compass strip does not grow a point per journey ───────────────────
+    //
+    // The owner, 2026-10-17: *"every time you travel the \"N NE E SE S ect ect\" doubles
+    // untill it covers in a line all the screen leave only the part in yellow that tells you
+    // the actual direction and degrees"*. A travel (`goInPlace`) boots a new scene into the
+    // same page, and the compass builder *appended* its eight spans to the panel the previous
+    // scene had filled. The gate walk above is one in-place boot, so this page has already
+    // had two scenes write the strip; the claim is that it still holds eight points and one
+    // yellow `at`.
+    const compass = await page.evalJs(`(() => {
+      const el = document.getElementById('compass-points');
+      return { spans: el ? el.children.length : null, at: el ? el.querySelectorAll('span.at').length : null,
+        text: el ? el.textContent : null, face: document.getElementById('compass-face')?.textContent ?? null };
+    })()`);
+    check('the compass strip is eight points and one bearing, however many times the scene re-boots',
+      compass.spans === 8 && compass.at === 1 && /^[NSEW]{1,2} \d{1,3}°$/.test(compass.face ?? ''),
+      JSON.stringify(compass));
+
     // The country page stands; the same push aimed *along* the wall must not throw the player
     // out again — the rule reads which way the stride is aimed, not where it is standing.
     const alongYaw = outYaw > 0 ? outYaw - Math.PI / 2 : outYaw + Math.PI / 2;

@@ -32,9 +32,10 @@ import { loadWorldMap } from '../../src/game/worldMap.js';
 import { parseInf, decryptInf, withGroundFloors } from '../../src/arena/infFile.js';
 import { cityInfName, cityInfNames } from '../../src/game/tables/cityBlocks.js';
 import {
-  PEOPLE_ART, PLACE_STYLE, PROVINCE_STYLE, RACE_NAME_BANKS, SKYRIM_SNOW_LINE, nameBanksFor,
-  peopleArtFor, raceOf, styleOf,
+  PEOPLE_ART, PLACE_STYLE, PROVINCE_STYLE, RACE_KEYS, RACE_NAME_BANKS, SKYRIM_SNOW_LINE, nameBanksFor,
+  ownRaceOf, peopleArtFor, raceMixFor, raceOf, styleOf,
 } from '../../src/game/provinceStyle.js';
+import { precipitationMode, skyClimateOf } from '../../src/game/arenaSky.js';
 import { folkFromListing, outfitsFromFolk } from '../../src/game/townsfolk.js';
 import { actionFile, kindViewFile, peopleKindsFromListing, standInKindsFromListing } from '../../src/game/peopleKinds.js';
 
@@ -234,7 +235,7 @@ test('Elsweyr and the Summerset Isles are temperate country with desert building
   }
 });
 
-test('Sentinel is desert and Winterhold never stops snowing', { skip: noInstall }, async () => {
+test('Sentinel is desert and Winterhold and Windhelm never stop snowing', { skip: noInstall }, async () => {
   const world = await installedWorld();
   const sentinel = world.byName('Sentinel');
   assert.equal(sentinel.terrainClimate, 'mountain', 'its pixel');
@@ -244,7 +245,16 @@ test('Sentinel is desert and Winterhold never stops snowing', { skip: noInstall 
   assert.equal(winterhold.climate, 'mountain', 'still a city of the north');
   assert.ok(cityInfName({ climate: winterhold.architecture, location: 'city', weather: winterhold.weather }).endsWith('S.INF'),
     'and its own .INF is the snow one');
-  assert.equal(PLACE_STYLE.length, 2);
+  // *"in winterhold and windhelm never needs to stop snowing"* — the owner's pair, and the only
+  // two places in the released world with a sky of their own.
+  const windhelm = world.byName('Windhelm');
+  assert.equal(windhelm.province, 'Skyrim', 'a city the install really ships');
+  assert.equal(windhelm.weather, 'snow');
+  assert.ok(cityInfName({ climate: windhelm.architecture, location: 'city', weather: windhelm.weather }).endsWith('S.INF'),
+    'and Windhelm\u2019s own .INF is a snow one too');
+  assert.deepEqual([...new Set(PLACE_STYLE.filter((p) => p.weather).map((p) => p.name))],
+    ['Winterhold', 'Windhelm', 'Bruma'], 'and no third place stops having a season');
+  assert.equal(PLACE_STYLE.length, 4, 'three permanently snowy cities and Sentinel');
 });
 
 test('Skyrim itself is the mix the owner asked for', { skip: noInstall }, async () => {
@@ -314,4 +324,109 @@ test('the Lizard Man is read as a stand-in figure, and invented where the art is
   assert.deepEqual([1, 5].map((v) => kindViewFile(partial, v)), ['LIZARD2.CFA', 'LIZARD2.CFA']);
   // No sheets, no stand-in: this module does not invent a figure the install does not have.
   assert.deepEqual(standInKindsFromListing(['SWORD.CIF', 'RAT1.CFA']), []);
+});
+
+// ── the province table as a whole, not only the rows the owner happened to name ─────────────
+//
+// `docs/PORT_BLOCKS.md` §1 rule 5: the law is held by a Node test. These hold it over **every**
+// row, so a province or a named place added later cannot arrive without a ground, a name pool or a
+// race cycle — and the one row that *is* special (Black Marsh's race being unnameable) has to say
+// so rather than look like every other row.
+
+test('all three requested cities never stop snowing, without freezing their entire provinces', () => {
+  // Through the very `styleOf()` a city page calls, with a pixel that would otherwise decide: a
+  // named place's own row is read for the fields it carries, whatever the ground under it says.
+  for (const city of ['Winterhold', 'Windhelm', 'Bruma']) {
+    const style = styleOf({ provinceID: city === 'Bruma' ? 8 : 2, name: city, terrainClimate: 'temperate', global: { x: 150, y: 20 } });
+    assert.equal(style.weather, 'snow', `${city} snows at every hour`);
+    assert.equal(style.named, true, `${city} is a place the table has a row for`);
+  }
+  // Windhelm's row carries a **weather and no ground**, so Skyrim's own hold line still decides its
+  // country: a named row moves only what it names.
+  const windhelm = styleOf({ provinceID: 2, name: 'Windhelm', terrainClimate: 'mountain', global: { x: 150, y: 20 } });
+  assert.equal(windhelm.ground, 'mountain', 'its row does not move its ground');
+  assert.equal(windhelm.architecture, null, 'nor its buildings');
+  // Sentinel is the counter-example, and the proof the two kinds of row are read apart: its row
+  // carries a *ground* and no weather.
+  const sentinel = styleOf({ provinceID: 1, name: 'Sentinel', terrainClimate: 'mountain', global: { x: 40, y: 90 } });
+  assert.equal(sentinel.ground, 'desert');
+  assert.equal(sentinel.weather, null, 'Sentinel has no sky of its own');
+  assert.deepEqual(PLACE_STYLE.filter((p) => p.weather).map((p) => p.name), ['Winterhold', 'Windhelm', 'Bruma']);
+  assert.deepEqual(PLACE_STYLE.filter((p) => p.ground).map((p) => p.name), ['Sentinel', 'Bruma']);
+  // **No province row carries a weather either.** The owner named two cities on one province's
+  // north coast, not the province: the later games keep seasons everywhere a province is not the
+  // far north, and Skyrim itself is the mix the hold line below draws (see the module's header).
+  for (const id of Object.keys(PROVINCE_STYLE)) {
+    assert.equal(PROVINCE_STYLE[id].weather ?? null, null, `${PROVINCE_STYLE[id].name} has no weather of its own`);
+  }
+});
+
+test('every province has a race cycle, and its own race is the one that outnumbers the rest', () => {
+  // The race keys are the corpus's eight banks **plus the Argonian the corpus cannot name** — the
+  // one addition is the owner's own request, and it is why a race pool cannot just be the name pool.
+  assert.deepEqual([...RACE_KEYS].sort(), [...RACE_NAME_BANKS, 'argonian'].sort());
+  for (const id of Object.keys(PROVINCE_STYLE)) {
+    const row = PROVINCE_STYLE[id];
+    assert.ok(Array.isArray(row.raceMix) && row.raceMix.length >= 5,
+      `${row.name} has a street's worth of races (${row.raceMix?.length})`);
+    for (const key of row.raceMix) {
+      assert.ok(RACE_KEYS.includes(key), `${row.name}: "${key}" is a race this project knows`);
+    }
+    // *"all provinces should have a mix of people but mostly their race of people"*: the province's
+    // own race is the most common entry in its own cycle, and never the only one.
+    const own = row.raceMix[0];
+    const mine = row.raceMix.filter((k) => k === own).length;
+    const most = Math.max(...RACE_KEYS.map((k) => row.raceMix.filter((x) => x === k).length));
+    assert.equal(mine, most, `${row.name}: nothing outnumbers its own ${own}`);
+    assert.ok(mine >= 3, `${row.name}: mostly its own people (${mine} of ${row.raceMix.length})`);
+    assert.ok(new Set(row.raceMix).size >= 4, `${row.name}: and the street is not one race`);
+  }
+  // The two the owner named by race, and the one whose race its names cannot say.
+  assert.equal(ownRaceOf(3), 'darkElf', 'Morrowind is the Dunmer');
+  assert.equal(ownRaceOf(2), 'nord', 'Skyrim is the Nords');
+  assert.equal(ownRaceOf(7), 'argonian', 'and the marsh is the Argonians');
+  assert.equal(raceOf(7), 'imperial', 'while the bank its folk are *named* from is the corpus\u2019s closest');
+  assert.equal(ownRaceOf(99), null, 'a province with no row has no race of its own');
+  assert.equal(raceMixFor(99), null);
+  assert.deepEqual([...raceMixFor(0)], PROVINCE_STYLE[0].raceMix, 'the reader answers the row itself');
+  // The name pools keep their own law (one of the corpus's banks only), and the marsh's first entry
+  // now repeats as a majority would: an Argonian-majority province *is* named from the Imperial
+  // bank, and the row says so rather than leaving it with a two-in-eight plurality.
+  for (const id of Object.keys(PROVINCE_STYLE)) {
+    const row = PROVINCE_STYLE[id];
+    const own = row.people[0];
+    assert.ok(row.people.filter((k) => k === own).length >= 3,
+      `${row.name}: its own bank is a majority of the name pool (${row.people.filter((k) => k === own).length})`);
+  }
+});
+
+test('every settlement of the world resolves a ground, buildings and a sky without an accident', { skip: noInstall }, async () => {
+  const world = await installedWorld();
+  const climates = new Set(['temperate', 'mountain', 'desert']);
+  const byGround = new Map();
+  const snowy = [];
+  for (const settlement of world.settlements()) {
+    assert.ok(climates.has(settlement.climate), `${settlement.name}: a ground to draw (${settlement.climate})`);
+    assert.ok(climates.has(settlement.architecture), `${settlement.name}: buildings to draw`);
+    byGround.set(settlement.climate, (byGround.get(settlement.climate) ?? 0) + 1);
+    // The `.INF` a page of this place composes its sky from is the **buildings'** climate — that is
+    // the file the level's walls come out of (`cityInfNames`' first name) — and its weather letter
+    // is the place's own. So the sky is a function of the two rows above and of nothing else, and a
+    // page that fell back to a default would show here as a letter that does not match.
+    const inf = cityInfName({ climate: settlement.architecture, location: 'city', weather: settlement.weather ?? 'clear' });
+    assert.equal(inf[0], { temperate: 'T', mountain: 'M', desert: 'D' }[settlement.architecture],
+      `${settlement.name}: ${inf} is its own architecture's climate`);
+    if (settlement.weather === 'snow') {
+      assert.equal(precipitationMode(skyClimateOf(inf).weather), 'snow', `${settlement.name} snows in the air`);
+      snowy.push(settlement.name);
+    } else {
+      assert.notEqual(skyClimateOf(inf).weather, 'S', `${settlement.name} is not a snow place`);
+    }
+  }
+  // All three biomes are really in the released world, so *"the backgrounds are correct for every
+  // biome"* is a statement about something: `unit/sky.test.mjs` holds the composer's card per
+  // climate, and this holds that every climate has places to build one for.
+  assert.deepEqual([...byGround.keys()].sort(), ['desert', 'mountain', 'temperate']);
+  // And exactly the owner's two cities never stop snowing.
+  assert.deepEqual(snowy.sort(), ['Bruma', 'Windhelm', 'Winterhold']);
 });

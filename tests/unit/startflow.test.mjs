@@ -20,7 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  SCENE_KEYS, START_INTERIOR, asksForScene, destinationParams, isGameStart, openingGate,
+  SCENE_KEYS, START_INTERIOR, asksForScene, destinationParams, isGameStart, resumeParams,
 } from '../../src/game/startFlow.js';
 import { START_DUNGEON } from '../../src/game/questData.js';
 
@@ -85,19 +85,30 @@ test('an asked-for scene survives creation untouched', () => {
 
 // ── when the opening movie is owed ────────────────────────────────────────────
 
-test('the opening is owed once per new game, not once per tab', () => {
-  // The reported missing cutscene: a tab that had seen the movie once never saw it again,
-  // so a reload between creation and the dungeon looked like a game without an opening.
-  assert.deepEqual(openingGate({ fresh: true, seen: true }),
-    { show: true, why: 'a new character is starting the game' });
-  assert.equal(openingGate({ fresh: true, seen: false }).show, true);
-  // …and the session flag still does its own job for a person who simply reloaded mid-game.
-  assert.equal(openingGate({ fresh: false, seen: true }).show, false);
-  assert.equal(openingGate({ fresh: false, seen: false }).show, true);
-  // Every answer says why, so the seam can report it rather than a bare boolean.
-  for (const state of [{ fresh: true, seen: true }, { fresh: false, seen: true }, { fresh: false, seen: false }]) {
-    assert.ok(openingGate(state).why.length > 0);
-  }
-  // A boot with nothing to say still answers the caller's own no-argument call.
-  assert.equal(openingGate().show, true);
+// ── Continue, from the start menu ─────────────────────────────────────────────
+
+test('Continue resumes the save\'s own last place, and drops the menu\'s own keys', () => {
+  const source = params('arena=C:/arena&interior=START.MIF&level=2');
+  const city = resumeParams(source, { name: 'Rihad', dungeon: false });
+  assert.equal(city.get('location'), 'Rihad');
+  assert.equal(city.get('interior'), null, 'a stale scene key cannot override the save');
+  assert.equal(city.get('level'), null);
+  assert.equal(city.get('arena'), 'C:/arena', 'the Arena folder travels with it');
+
+  const dungeon = resumeParams(params('arena=C:/arena'), { name: 'Fang Lair', dungeon: true, seed: 419 });
+  assert.equal(dungeon.get('dungeon'), 'Fang Lair');
+  assert.equal(dungeon.get('dungeonSeed'), '419');
+  assert.equal(dungeon.get('location'), null);
+
+  // A named interior (the cell, the palace) is a file, not a map location.
+  const cell = resumeParams(params(''), { name: 'START.MIF', dungeon: true });
+  assert.equal(cell.get('interior'), 'START.MIF');
+  assert.equal(cell.get('dungeon'), null);
+
+  const nowhere = resumeParams(params(''), null);
+  assert.equal(nowhere.get('map'), '', 'a character who has stood nowhere opens the map');
+  assert.equal(nowhere.get('interior'), null);
 });
+
+// The opening is no longer gated per tab: every new game plays `INTRO.FLC`, and the cell
+// always owes Ria's explanation (`unit/storyscript`), so a reload cannot swallow either.

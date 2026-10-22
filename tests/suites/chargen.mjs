@@ -85,7 +85,59 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
       (await page.evalJs('JSON.stringify(window.__debug.describe({ name: "A", raceId: "redguard" }))')).includes('at least two letters'));
 
     await page.clickSelector('#chargen-panel #cg-next');
-    await page.waitFor('window.__debug.state().step === "class"', { label: 'the class step' });
+
+    // ── the mirror: a body, a skin and a head of hair ────────────────────────
+    //
+    // The owner asked for a **visual** creator: pick any of the walking people Arena drew,
+    // recolour skin and hair, and watch the chosen body turn, walk and strike before taking
+    // it into Tamriel. This drives the real controls rather than the debug seam.
+    await page.waitFor('window.__debug.state().step === "appearance"', { label: 'the visual creator' });
+    const offered = await page.evalJs('window.__debug.appearanceOptions()');
+    check('the creator offers every walking body in the catalogue',
+      Array.isArray(offered) && offered.length >= 20
+        && new Set(offered.map((s) => s.id)).size === offered.length
+        && offered.every((s) => s.walk && s.attack),
+      `${offered?.length} bodies`);
+    check('the lizard-folk and the orange wolf are playable bodies, and the white wolf is not',
+      ['lizard-man', 'cat-folk'].every((id) => offered.some((s) => s.id === id))
+        && !offered.some((s) => s.id === 'wolf-snow'),
+      offered.map((s) => s.id).filter((id) => /lizard|wolf|cat/.test(id)).join(', ') || 'none');
+    const visibleBodies = await page.evalJs('document.querySelectorAll("#cg-sprites button[data-sprite]:not([hidden])").length');
+    check('the body grid draws the ones this install really ships', visibleBodies >= 6, `${visibleBodies} visible`);
+    // The cat is the wolf repainted: choosing it must arrive tawny and must not carry a human
+    // skin or hair over the fur. The lizard keeps Arena's scales, so it carries neither.
+    await page.clickSelector('#cg-sprites button[data-sprite="cat-folk"]');
+    const cat = await page.evalJs('window.__debug.state().appearance');
+    check('the orange cat arrives with a tawny coat and no human skin over it',
+      cat?.fur === 'tawny' && cat?.skin == null && cat?.hair == null, JSON.stringify(cat));
+    await page.clickSelector('#cg-fur button[data-look-fur="black"]');
+    check('the cat can wear another of Elsweyr\u2019s coats',
+      (await page.evalJs('window.__debug.state().appearance.fur')) === 'black');
+    await page.clickSelector('#cg-sprites button[data-sprite="lizard-man"]');
+    const lizard = await page.evalJs('window.__debug.state().appearance');
+    check('the Lizard Man keeps his own scales rather than a painted skin',
+      lizard?.spriteId === 'lizard-man' && lizard?.skin == null && lizard?.hair == null && lizard?.fur == null,
+      JSON.stringify(lizard));
+    // The stage paints after the grid's own thumbnails resolve, so wait for the drawing
+    // rather than sampling the canvas on the frame the panel appears.
+    const stagePainted = '(() => { const c = document.getElementById("cg-look"); return Boolean(c) && c.getContext("2d").getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v > 0); })()';
+    let stageOk = true;
+    try { await page.waitFor(stagePainted, { label: 'the live stage painted', timeoutMs: 10000 }); } catch { stageOk = false; }
+    const stage = await page.evalJs(`(() => { const c = document.getElementById("cg-look"); return c ? { w: c.width, h: c.height, painted: ${stagePainted} } : null; })()`);
+    check('the chosen body is drawn on the live stage', stageOk && stage?.painted === true, JSON.stringify(stage));
+    await page.clickSelector('#cg-sprites button[data-sprite="woman-dress"]');
+    await page.clickSelector('#cg-skin button[data-look-skin="darkElf"]');
+    await page.clickSelector('#cg-hair button[data-look-hair="blonde"]');
+    const chosenLook = await page.evalJs('window.__debug.state().appearance');
+    check('the skin and hair swatches recolour the same body',
+      chosenLook?.spriteId === 'woman-dress' && chosenLook?.skin === 'darkElf' && chosenLook?.hair === 'blonde',
+      JSON.stringify(chosenLook));
+    await page.clickSelector('#chargen-panel button[data-look-mode="attack"]');
+    check('the stage can play the body\u2019s attack frames',
+      (await page.evalJs('document.querySelector("#chargen-panel button[data-look-mode=\\"attack\\"]").classList.contains("on")')) === true);
+    await page.screenshot(path.join(shots, 'm4-chargen-look.png'));
+    await page.clickSelector('#chargen-panel #cg-look-next');
+    await page.waitFor('window.__debug.state().step === "class"', { label: 'the class step after the mirror' });
     const rolled = await page.evalJs('window.__debug.state()');
     check('the class step shows all eighteen classes', (await page.evalJs('document.querySelectorAll("#chargen-panel button[data-class]").length')) === 18);
     check('the questionnaire\'s suggestion is marked on its own class button',
@@ -144,6 +196,10 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
     check('the character is one of the eighteen classes', character && character.className.length > 2, character?.className);
     check('the character keeps the attributes that were spent',
       character?.attributes?.[0] === attrs[0] + pool, `${character?.attributes?.[0]}`);
+    check('the character is saved with the body, skin and hair the player chose',
+      character?.appearance?.spriteId === 'woman-dress'
+        && character?.appearance?.skin === 'darkElf' && character?.appearance?.hair === 'blonde',
+      JSON.stringify(character?.appearance ?? null));
     // Health = 25 + the class die + the Endurance bonus, per UESP.
     const endurance = character?.attributes?.[5] ?? 0;
     const endBonus = endurance >= 94 ? 5 : Math.max(0, Math.floor((endurance - 40) / 11));
@@ -228,6 +284,53 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
     check('and the fight reads those empty hands as fists, not a sword',
       String(fists?.weapon ?? '') === '' || fists?.weapon == null, JSON.stringify({ weapon: fists?.weapon ?? null }));
     await page.screenshot(path.join(shots, 'm4-chargen-first-person.png'));
+
+    // ── the chosen body is the one walking in the world ──────────────────────
+    //
+    // The creator's choice has to reach the third person, or the mirror was decoration.
+    // The body is chosen at creation, the save is read by the dungeon, and the third person
+    // loads all five shipped angles of **that** sprite plus its strike sheet.
+    await page.evalJs('window.__debug.setView("third")');
+    let viewsUp = true;
+    try {
+      await page.waitFor('window.__debug.state().playerViews?.length === 5', { label: 'the five angles of the chosen body', timeoutMs: 30000 });
+    } catch { viewsUp = false; }
+    const third = await page.evalJs('window.__debug.state()');
+    check('the third person draws all five angles of the body the player chose',
+      viewsUp && third?.appearance?.spriteId === 'woman-dress',
+      `${third?.appearance?.spriteId}: views ${third?.playerViews?.join(',')}`);
+    check('and its walk and strike are the chosen family\u2019s own sheets, in the chosen palette',
+      String(third?.playerSprite).startsWith('BABE05.CFA#darkElf+blonde')
+        && String(third?.attackSprite).startsWith('BABE01.CFA#darkElf+blonde'),
+      `${third?.playerSprite} / ${third?.attackSprite}`);
+    await page.screenshot(path.join(shots, 'm4-chargen-third-person.png'));
+
+    // The two beast bodies are the same law, and the world must draw them as what they are:
+    // the cat is the wolf under `khajiitFur` (tawny stripes) and the lizard is its own scales
+    // with no race ramp over them. The save is rewritten and the dungeon reloaded, which is
+    // exactly how a returning player's look reaches the scene.
+    const wear = async (appearance) => {
+      await page.evalJs(`(() => { const key = 'perfectarena.character'; const ch = JSON.parse(localStorage.getItem(key)); ch.appearance = ${JSON.stringify(appearance)}; localStorage.setItem(key, JSON.stringify(ch)); return ch.appearance; })()`);
+      await page.goto(`http://localhost:${port}/?interior=START.MIF&${q}`);
+      await page.waitFor('window.__debug?.combat && window.__debug.state().painted > 3', { label: 'the dungeon with the beast body', timeoutMs: 90000 });
+      await page.evalJs('window.__debug.setView("third")');
+      await page.waitFor('window.__debug.state().playerViews?.length === 5', { label: 'the beast\u2019s five angles', timeoutMs: 30000 });
+      return page.evalJs('window.__debug.state()');
+    };
+    const catWorld = await wear({ spriteId: 'cat-folk', skin: null, hair: null, fur: 'tawny' });
+    check('a Khajiit is the orange wolf in the world, under the fur palette',
+      String(catWorld?.playerSprite).startsWith('SWOLF05.CFA#khajiitFur')
+        && String(catWorld?.attackSprite).startsWith('SWOLF01.CFA#khajiitFur')
+        && catWorld?.appearance?.fur === 'tawny',
+      `${catWorld?.playerSprite} / ${catWorld?.attackSprite}`);
+    const lizardWorld = await wear({ spriteId: 'lizard-man', skin: null, hair: null, fur: null });
+    check('an Argonian is the Lizard Man, with the scales Arena drew and no palette over them',
+      String(lizardWorld?.playerSprite).startsWith('LIZARD5.CFA')
+        && !String(lizardWorld?.playerSprite).includes('#')
+        && String(lizardWorld?.attackSprite).startsWith('LIZARD1.CFA')
+        && !String(lizardWorld?.attackSprite).includes('#'),
+      `${lizardWorld?.playerSprite} / ${lizardWorld?.attackSprite}`);
+    await page.screenshot(path.join(shots, 'm4-chargen-lizard.png'));
 
     check('no console errors', realErrors(page.consoleErrors()).length === 0, realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));
     const pageErrs = await page.evalJs('window.__debug.pageErrors || []');

@@ -107,7 +107,7 @@ was copied, what was adapted and what was dropped. The bands that matter to this
 | `townsfolk.js` | The people: the roster from the install's `.CFA` files, outfits, views, description, their fighter. |
 | `townPaths.js` | The town's walking: `pathLine`/`pointOnLine`, and the path book that budgets a frame's searching. |
 | `services.js` | Trades, their hours and what a keeper says. |
-| `shops.js` | Door → room: the sign over a city door, the shop it means, the interior `.MIF` behind it, the keeper's greetings. |
+| `shops.js` | Door → room: **the door art painted on a wall** (`T_DEQ`, `T_DBS1..3`, `TZDFARM`, `TZDCRYPT`, …) bound by the level `.INF`'s `*MENU` table as OpenTESArena's `tryMakeVoxelTransitionDefGenInfo` reads it — `cityDoors` against the city table, `wildDoors` against the wilderness's — the `stand` cell a wall door is opened from, the interior `.MIF` behind it, the keeper's greetings. The hanging `0xA` signs are decoration, and `shopSignKinds` is their (separate) law. |
 | `regard.js` | The world's opinion of the player: one regard per person, keyed by place and cell. |
 | `radiantQuests.js` | Side work: five kinds of job drawn from the world, the board, and the person who gives one. |
 | `questData.js`, `questState.js` | The main quest as derived data (eight provinces, eight Staff dungeons, their map dungeons) and its ten-stage machine. |
@@ -118,6 +118,7 @@ was copied, what was adapted and what was dropped. The bands that matter to this
 | `save.js` | The one place saved things live: last location, quest, side work, character, regard, loot, world state. |
 | `worldState.js` | The persistent world: what has been visited, opened, taken and killed, versioned and migration-safe. |
 | `testmap.js` | The hand-made courtyard (needs no game data). |
+| `automap.js` | Arena's automap law, ported from OpenTESArena's `AutomapUiMVC`: every voxel's mark in the game's own palette, the eight 3×3 player arrows, the marker's cell and heading (B21). |
 
 ### 3d. `src/scenes/` — the hosts
 
@@ -127,6 +128,7 @@ was copied, what was adapted and what was dropped. The bands that matter to this
 | `worldmap.js` | The map of all Tamriel, travel, the job board, the regard ledger page. |
 | `chargen.js` | Character creation on Arena's own sheet. |
 | `testmap.js` | The Milestone-2 courtyard (renderer regression test, no data needed). |
+| `automap.js` | The automap sheet on a 2D canvas: the parchment, the reference's cell colours and the 3×3 arrow, with the cell scale kept a multiple of three. |
 | `newGame.js` | The "start over" flow. |
 
 ### 3e. `tools/` and `tests/`

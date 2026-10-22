@@ -43,11 +43,12 @@ import { fillTemplate } from '../arena/arenaText.js';
 import { DUNGEON_BLOCKS_MIF } from './dungeonPlan.js';
 import { stageMif } from './questData.js';
 import { personId } from './regard.js';
+import { CELLS_PER_PIXEL, pixelOfCell } from './tamrielGrid.js';
 import { MONSTERS as BESTIARY } from './monsters.js';
 
 /** Authored bounty contract. Original Arena monster art/stats, three actual combat targets. */
 export function slayProgress(quest) {
-  if (quest?.kind !== 'slay') return null;
+  if (quest?.kind !== 'slay' && quest?.kind !== 'hunt') return null;
   const named = MONSTERS.find(m => `${m.name}s` === quest.subject || m.cfa === quest.combat?.monster);
   const kind = BESTIARY.find(m => m.sprite?.replace(/0$/, '') === named?.cfa);
   if (!kind) return null;
@@ -110,6 +111,22 @@ export const MONSTERS = Object.freeze([
  * Trinkets for a fetch or a delivery. **AUTHORED** — see this file's header.
  * @type {ReadonlyArray<{name: string, tier: number}>}
  */
+/**
+ * Things that grow or lie in the country, for a gathering job. **AUTHORED**, like the trinkets:
+ * Arena's plant and loot names live in `A.EXE` (D11), so these are written in the game's voice
+ * rather than read. A gathering job names one of them instead of a town trinket, because a
+ * silver locket does not grow in a meadow.
+ * @type {ReadonlyArray<{name: string, tier: number}>}
+ */
+export const GATHERINGS = Object.freeze([
+  { name: "a sprig of dragon's tongue", tier: 1 },
+  { name: 'a bundle of marsh moss', tier: 1 },
+  { name: 'a cluster of night-cap mushrooms', tier: 1 },
+  { name: 'a shard of raw crystal', tier: 2 },
+  { name: 'a handful of grave-salt', tier: 2 },
+  { name: 'a piece of fallen star-metal', tier: 3 },
+]);
+
 export const ITEMS = Object.freeze([
   { name: 'a silver locket', tier: 1 },
   { name: 'a brass key', tier: 1 },
@@ -124,19 +141,25 @@ export const ITEMS = Object.freeze([
 ]);
 
 /**
- * The five kinds of work the board can offer.
+ * The eight kinds of work the board can offer.
  *
  * `data: true` marks the kinds whose offer text is Arena's own (`artfact*.dat`);
- * the others are written here in the game's voice and say so.
+ * the others are written here in the game's voice and say so. `where` says where the
+ * work happens — a dungeon, the open country, or either — and is how the board keeps
+ * half its work out of the same fourteen crypts: a hunter, a herb-gatherer and a
+ * missing traveller are all reasons to walk out of the gate rather than down a stair.
  *
- * @type {ReadonlyArray<{id: string, label: string, data: boolean, needsDungeon: boolean}>}
+ * @type {ReadonlyArray<{id: string, label: string, data: boolean, needsDungeon: boolean, where: 'dungeon'|'wild'|'either'}>}
  */
 export const RADIANT_KINDS = Object.freeze([
-  { id: 'artifact', label: 'recover an artifact', data: true, needsDungeon: true },
-  { id: 'slay', label: 'clear a lair', data: false, needsDungeon: true },
-  { id: 'fetch', label: 'fetch a lost thing', data: false, needsDungeon: true },
-  { id: 'rescue', label: 'rescue a captive', data: false, needsDungeon: true },
-  { id: 'deliver', label: 'carry a message', data: false, needsDungeon: false },
+  { id: 'artifact', label: 'recover an artifact', data: true, needsDungeon: true, where: 'dungeon' },
+  { id: 'slay', label: 'clear a lair', data: false, needsDungeon: true, where: 'dungeon' },
+  { id: 'hunt', label: 'hunt in the wild', data: false, needsDungeon: false, where: 'wild' },
+  { id: 'fetch', label: 'fetch a lost thing', data: false, needsDungeon: true, where: 'dungeon' },
+  { id: 'gather', label: 'gather a rare thing', data: false, needsDungeon: false, where: 'wild' },
+  { id: 'rescue', label: 'rescue a captive', data: false, needsDungeon: false, where: 'either' },
+  { id: 'deliver', label: 'carry a message', data: false, needsDungeon: false, where: 'either' },
+  { id: 'investigate', label: 'find a missing traveller', data: false, needsDungeon: false, where: 'wild' },
 ]);
 
 /** How many offers a board shows at once. Arena's own guilds offer one at a time;
@@ -211,11 +234,180 @@ export function namedSettlements(world) {
 function targetOf(location, province) {
   return {
     name: location.name,
+    kind: location.kind === 'dungeon' ? 'dungeon' : 'settlement',
     global: { x: location.global.x, y: location.global.y },
     mif: location.kind === 'dungeon' ? stageMif(location) : null,
     province,
     climate: location.climate,
+    near: null,
+    cell: null,
+    anchor: location.name,
   };
+}
+
+/**
+ * **A job in the open country.**
+ *
+ * The owner, 2026-10-19: *"some [radiant jobs] should also point to the wilderness instead of
+ * the dungeon of a city … not too far from a dungeon or city or village point of interest but
+ * nevertheless in the wilderness"*. So a wild target is a **world pixel just outside a real
+ * landmark** (a settlement or a dungeon in the giver's province), and its cell is the middle
+ * of that pixel — open country the persistent world already knows how to build, never the
+ * inside of a town.
+ *
+ * **The anchor is a town, village or city, and the spot is just outside it.** The latest
+ * owner's report (2026-10-19) is the rule: *"the questmarker should be closer to a dungeon
+ * village or town so you can teleport there instead and then reach the location walking in
+ * the wilderness"*, and then *"in the map it appears 'your job near North Keep' that is too far
+ * from North Keep to reasonably walk to it"*. So the anchor is drawn **first** — a settlement
+ * in the giver's own province — and the spot is measured in **cells out of that town's gate**,
+ * not in whole map pixels: 130–175 cells (roughly 325–440 metres) in one of the four cardinal
+ * directions. That is the next pixel over, so the map can draw the job's own mark beside the
+ * town instead of under its icon, and it is a short walk rather than a second journey. The
+ * player travels to the anchor (`?location=<anchor>`), then walks the last leg. A dungeon is
+ * never the anchor: `?location=` needs a settlement record, and a job anchored on one could be
+ * a second journey from the nearest town.
+ *
+ * @param {import('./worldMap.js').WorldMap} world
+ * @param {object} giver  the settlement offering the work
+ * @param {ArenaRandom} random
+ * @returns {{name: string, kind: 'wild', global: {x:number,y:number}, mif: null,
+ *   province: string, climate: string, near: string, cell: {row:number,col:number},
+ *   anchor: string, anchorID: number|null, anchorProvinceID: number, walk: number}}
+ */
+function wildTargetOf(world, giver, random) {
+  const provinceID = giver.provinceID;
+  const settlements = world.settlements().filter((s) => s.provinceID === provinceID && s.name);
+  const pool = settlements.length ? settlements : [giver];
+  const anchorPlace = pool[random.nextBelow(pool.length)];
+  const base = anchorPlace.tamriel ?? anchorPlace.global ?? giver.tamriel ?? giver.global;
+  // The town's own cell: the middle of the painted pixel its icon stands on. Offsets are
+  // added to this, so "how far" is the walk the player actually makes, not a pixel count.
+  const anchorCell = {
+    row: base.y * CELLS_PER_PIXEL + CELLS_PER_PIXEL / 2,
+    col: base.x * CELLS_PER_PIXEL + CELLS_PER_PIXEL / 2,
+  };
+  // A short ring of country out of the **anchor's gate**: 130–175 cells (about 325–440 m)
+  // along one of the four cardinal roads. The first step past half a pixel enters the next
+  // pixel, so the job's mark is drawn *beside* the town on the map rather than hidden under
+  // the town's own icon, and the last leg stays a walk rather than a second journey. The first
+  // land pixel in the giver's province wins; a sea edge or a border is skipped.
+  const CARDINALS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  let chosen = null;
+  for (const distance of [130, 150, 175]) {
+    const start = random.nextBelow(4);
+    for (let step = 0; step < 4; step++) {
+      const [dy, dx] = CARDINALS[(start + step) % 4];
+      const row = anchorCell.row + dy * distance;
+      const col = anchorCell.col + dx * distance;
+      const point = pixelOfCell(row, col);
+      if (point.x === base.x && point.y === base.y) continue;
+      const province = world.provinceAtWorld(point);
+      if (!province || province.id !== provinceID) continue;
+      if (!world.landAt(point, provinceID)) continue;
+      chosen = { row, col, point };
+      break;
+    }
+    if (chosen) break;
+  }
+  // Every cardinal road was sea or another province. A coast town can still have land
+  // behind it on a diagonal, so try the same short ring in eight directions before settling
+  // for the town's own centre — the walk must stay short whatever the coastline does.
+  if (!chosen) {
+    for (const distance of [130, 150, 175]) {
+      const start = random.nextBelow(8);
+      for (let step = 0; step < 8; step++) {
+        const angle = ((start + step) % 8) * (Math.PI / 4);
+        const row = anchorCell.row + Math.round(Math.sin(angle) * distance);
+        const col = anchorCell.col + Math.round(Math.cos(angle) * distance);
+        const point = pixelOfCell(row, col);
+        const province = world.provinceAtWorld(point);
+        if (!province || province.id !== provinceID) continue;
+        if (!world.landAt(point, provinceID)) continue;
+        chosen = { row, col, point };
+        break;
+      }
+      if (chosen) break;
+    }
+  }
+  if (!chosen) {
+    chosen = { row: anchorCell.row, col: anchorCell.col, point: { x: base.x, y: base.y } };
+  }
+  const province = anchorPlace.province ?? giver.province;
+  const anchor = anchorPlace.name ?? giver.name;
+  // How far the walk out of the anchor really is, in cells — the card says it, because a
+  // job the player cannot fast travel to has to say how far the last leg is.
+  const walk = Math.max(1, Math.round(Math.hypot(chosen.row - anchorCell.row, chosen.col - anchorCell.col)));
+  const climate = world.worldClimateAt(chosen.point);
+  return {
+    name: `the wilds near ${anchor}`,
+    kind: 'wild',
+    global: chosen.point,
+    mif: null,
+    province,
+    climate,
+    near: anchor,
+    cell: { row: chosen.row, col: chosen.col },
+    anchor,
+    anchorID: anchorPlace.id ?? null,
+    anchorProvinceID: anchorPlace.provinceID ?? provinceID,
+    walk,
+  };
+}
+
+/**
+ * Move a country job that an **older save** left a long walk from its anchor back beside it.
+ *
+ * Jobs written before the cell-distance rule (2026-10-19) put their target one or two whole
+ * map pixels out — 256–512 cells, the owner's *"too far from North Keep to reasonably walk
+ * to it"*. The job itself is still valid (its anchor, prose and reward are untouched), so
+ * rather than discard a player's work this draws the same direction out of the anchor's gate
+ * and stops at 130–175 cells, exactly what `wildTargetOf` now does for new postings. The
+ * marker, `targetWalk` and climate are updated together so the map and the objective agree.
+ *
+ * @param {object} state  a loaded radiant state
+ * @param {import('./worldMap.js').WorldMap} world
+ * @returns {boolean} whether anything was moved, so the caller can save the repair
+ */
+export function repairWildTargets(state, world) {
+  const active = state?.active;
+  if (!active || active.completed || active.targetKind !== 'wild' || !world) return false;
+  const anchor = (active.targetAnchorID != null && active.targetAnchorProvinceID != null
+    ? world.byId(active.targetAnchorProvinceID, active.targetAnchorID)
+    : null) ?? world.byName(active.targetAnchor, active.targetAnchorProvinceID ?? null);
+  const base = anchor?.tamriel ?? anchor?.global;
+  if (!base) return false;
+  const anchorCell = {
+    row: base.y * CELLS_PER_PIXEL + CELLS_PER_PIXEL / 2,
+    col: base.x * CELLS_PER_PIXEL + CELLS_PER_PIXEL / 2,
+  };
+  const old = active.targetCell;
+  const oldWalk = Math.hypot((old?.row ?? anchorCell.row) - anchorCell.row,
+    (old?.col ?? anchorCell.col) - anchorCell.col);
+  if (Number(active.targetWalk ?? oldWalk) <= 200 && oldWalk <= 200) return false;
+  // Keep the old bearing: the closest cardinal road out of the gate is the same direction
+  // the posting already pointed, now just a short walk down it.
+  const dRow = (old?.row ?? anchorCell.row + 1) - anchorCell.row;
+  const dCol = (old?.col ?? anchorCell.col + 1) - anchorCell.col;
+  const CARDINALS = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+  const roads = [...CARDINALS].sort((a, b) => (b[1] * dCol + b[0] * dRow) - (a[1] * dCol + a[0] * dRow));
+  for (const distance of [150, 130, 175]) {
+    for (const [dy, dx] of roads) {
+      const row = anchorCell.row + dy * distance;
+      const col = anchorCell.col + dx * distance;
+      const point = pixelOfCell(row, col);
+      const province = world.provinceAtWorld(point);
+      if (!province || province.id !== anchor.provinceID) continue;
+      if (!world.landAt(point, anchor.provinceID)) continue;
+      active.targetCell = { row, col };
+      active.targetGlobal = point;
+      active.targetWalk = distance;
+      active.targetProvince = province.name;
+      active.targetClimate = world.worldClimateAt(point);
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -307,18 +499,27 @@ export function generateQuest(opts) {
   // The giver's own province first: a job worth walking to, not a pilgrimage.
   const local = dungeons.filter((d) => d.provinceID === giver.provinceID);
   const pool = local.length ? local : dungeons;
-  const dungeon = pool[random.nextBelow(pool.length)];
+  const dungeon = pool.length ? pool[random.nextBelow(pool.length)] : null;
+
+  // **Dungeon or country.** A kind that can happen in either place draws for it, and an
+  // install with no enterable dungeon sends even a rescue to the country rather than
+  // refusing to offer the work at all. The draw is taken after the dungeon so an existing
+  // seed still opens with the same dungeon; what changes is where the job's *prose* sends
+  // the player, which is the point of the split.
+  const wild = spec.where === 'wild'
+    || (spec.where === 'either' && (!pool.length || random.nextBelow(100) < 50));
 
   const monster = tables.monsters[random.nextBelow(tables.monsters.length)];
   const trinket = tables.items[random.nextBelow(tables.items.length)];
+  const gathering = (tables.gatherings ?? GATHERINGS)[random.nextBelow((tables.gatherings ?? GATHERINGS).length)];
   const artifact = tables.artifacts[random.nextBelow(tables.artifacts.length)];
   const settlements = namedSettlements(world);
   const elsewhere = settlements.filter((s) => s.provinceID !== giver.provinceID || s.name !== giver.name);
   const recipient = elsewhere.length ? elsewhere[random.nextBelow(elsewhere.length)] : giver;
 
-  const target = spec.needsDungeon
-    ? targetOf(dungeon, dungeon.province)
-    : targetOf(recipient, recipient.province);
+  const target = wild ? wildTargetOf(world, giver, random)
+    : spec.where === 'dungeon' ? targetOf(dungeon, dungeon.province)
+      : targetOf(recipient, recipient.province);
   // A delivery has a *second* place: where it comes from, used for its prose.
   const away = targetOf(giver, giver.province);
 
@@ -327,6 +528,13 @@ export function generateQuest(opts) {
     id, kind, giver: giver.name, giverProvinceID: giver.provinceID,
     target: target.name, targetMif: target.mif, targetGlobal: target.global,
     targetProvince: target.province, offeredOn: day,
+    // **Where** the work happens: `dungeon`, `settlement`, or `wild`. A wild job also
+    // carries the world cell and the settlement that anchors it, so the map can mark the
+    // country and the arrival can boot `?location=<anchor>&wild=<cell>`.
+    targetKind: target.kind, targetCell: target.cell ?? null, targetNear: target.near ?? null,
+    targetAnchor: target.anchor ?? null, targetWalk: target.walk ?? null,
+    targetAnchorID: target.anchorID ?? null, targetAnchorProvinceID: target.anchorProvinceID ?? null,
+    targetClimate: target.climate ?? null,
   };
 
   /** @type {{title: string, text: string, subject: string, tier: number, dataText: boolean, source: string}} */
@@ -390,6 +598,18 @@ export function generateQuest(opts) {
       };
       break;
     }
+    case 'hunt': {
+      prose = {
+        title: `Hunt the ${monster.name}s near ${target.anchor ?? target.name}`,
+        text: `A pack of ${monster.name}s has been taking sheep and straying travellers out in ${target.name}, in ${target.province}. `
+          + `Three of them are worth a purse to ${giver.name}, and the herders will sleep better for it.`,
+        subject: `${monster.name}s`,
+        tier: monster.tier,
+        dataText: false,
+        source: 'authored',
+      };
+      break;
+    }
     case 'fetch': {
       prose = {
         title: `Recover ${trinket.name}`,
@@ -402,13 +622,40 @@ export function generateQuest(opts) {
       };
       break;
     }
+    case 'gather': {
+      prose = {
+        title: `Gather ${gathering.name} near ${target.anchor ?? target.name}`,
+        text: `The healer in ${giver.name} is short of ${gathering.name}, and the nearest patch grows out in ${target.name}, in ${target.province}. `
+          + `Bring it back whole and ${giver.name} will pay for the walk.`,
+        subject: gathering.name,
+        tier: gathering.tier,
+        dataText: false,
+        source: 'authored',
+      };
+      break;
+    }
     case 'rescue': {
       prose = {
-        title: `Rescue a captive from ${target.name}`,
-        text: `Someone's kin was taken alive into ${target.name}, in ${target.province}, and is being held there. `
-          + `${giver.name} has a purse for whoever walks in and walks out with them.`,
+        title: wild ? `Rescue a captive in ${target.name}` : `Rescue a captive from ${target.name}`,
+        text: wild
+          ? `Someone's kin was taken alive and is being held at a camp in ${target.name}, in ${target.province}. `
+            + `${giver.name} has a purse for whoever walks out there and walks back with them.`
+          : `Someone's kin was taken alive into ${target.name}, in ${target.province}, and is being held there. `
+            + `${giver.name} has a purse for whoever walks in and walks out with them.`,
         subject: 'a captive',
         tier: monster.tier + 1,
+        dataText: false,
+        source: 'authored',
+      };
+      break;
+    }
+    case 'investigate': {
+      prose = {
+        title: `Find the missing scout near ${target.anchor ?? target.name}`,
+        text: `A scout out of ${giver.name} went into ${target.name}, in ${target.province}, and has not come back. `
+          + `${giver.name} will pay for word of them \u2014 and better for the scout themselves.`,
+        subject: 'a missing scout',
+        tier: Math.max(2, monster.tier),
         dataText: false,
         source: 'authored',
       };
@@ -417,9 +664,12 @@ export function generateQuest(opts) {
     case 'deliver':
     default: {
       prose = {
-        title: `Carry word to ${target.name}`,
-        text: `${giver.name} needs a letter in ${target.name}, in ${target.province}, and will not trust it to a courier. `
-          + `Say nothing to anyone on the road.`,
+        title: wild ? `Carry word to the camp near ${target.anchor ?? target.name}` : `Carry word to ${target.name}`,
+        text: wild
+          ? `${giver.name} needs a letter carried to a hermit camped in ${target.name}, in ${target.province}, and will not trust it to a courier. `
+            + `Say nothing to anyone on the road.`
+          : `${giver.name} needs a letter in ${target.name}, in ${target.province}, and will not trust it to a courier. `
+            + `Say nothing to anyone on the road.`,
         subject: 'a sealed letter',
         tier: 1,
         dataText: false,
@@ -445,7 +695,7 @@ export function generateQuest(opts) {
     title: prose.title, text: prose.text, dataText: prose.dataText, source: prose.source,
     subject: prose.subject, tier: prose.tier, priceWord: prose.priceWord ?? null,
     days, reward,
-    ...(kind === 'slay' ? { combat: { monster: monster.cfa, required: 3, defeated: [] } } : {}),
+    ...(kind === 'slay' || kind === 'hunt' ? { combat: { monster: monster.cfa, required: 3, defeated: [] } } : {}),
   };
 }
 
@@ -513,12 +763,14 @@ export function buildBoard(opts) {
  * @param {object} opts.giver      the settlement the person stands in
  * @param {{place: {row: number, col: number}}} opts.person  how a person is addressed here
  * @param {number} [opts.day]
+ * @param {number} [opts.round]  how many of this person's jobs are already finished; each
+ *   round is a new draw, which is how a friend keeps having work to offer
  * @param {object[]} [opts.dungeons]  the enterable dungeons (see `enterableDungeons`)
  * @param {RadiantTables} [opts.tables]
  * @returns {RadiantQuest|null} null when this person has nothing to offer
  */
 export function personOffer(opts) {
-  const { world, library, giver, person, day = 1, dungeons = [], tables = DEFAULT_TABLES } = opts;
+  const { world, library, giver, person, day = 1, round = 0, dungeons = [], tables = DEFAULT_TABLES } = opts;
   if (!world || !library || !giver || !person?.place) return null;
   // **The cell they were placed on** (`home`), never the one they happen to be standing on:
   // the town's people walk, and a stranger who steps next door mid-conversation must hand
@@ -527,7 +779,11 @@ export function personOffer(opts) {
   const cell = person.home ?? person.place;
   const seed = ((((giver.citySeed ?? 0) >>> 0) * 31)
     + (Number(cell.row) || 0) * 7919
-    + (Number(cell.col) || 0) * 131 + 7) >>> 0;
+    + (Number(cell.col) || 0) * 131
+    // **A finished job asks for another.** The round is part of the draw, so the same
+    // person offers a new job after each payment and still offers the *same* one on every
+    // visit until it is done (the save only has to remember the count).
+    + Math.max(0, Math.trunc(Number(round) || 0)) * 104729 + 7) >>> 0;
   // A kind whose subject the install cannot open is not offered to anybody: the same rule
   // `buildBoard` applies, for the same reason — a job that names a place the game cannot
   // enter is worse than no job.
@@ -548,7 +804,8 @@ export function personOffer(opts) {
       giverPerson: typeof person.description === 'string' ? person.description : null,
       giverArmour: typeof person.armour === 'string' ? person.armour : null,
     };
-  } catch {
+  } catch (err) {
+    console.warn('[radiant] no offer for', person?.description, '-', err?.message ?? err);
     return null;
   }
 }
@@ -692,6 +949,8 @@ function giverRulerName(world, giver, seed) {
  * @property {number} gold              gold earned from radiant work
  * @property {string[]} log             the side journal, newest last
  * @property {number} day               the in-world day
+ * @property {Record<string, number>} people  finished jobs per person id (`regard.js`), so the
+ *   next conversation draws a *new* job instead of handing the same one back
  */
 
 /**
@@ -699,7 +958,31 @@ function giverRulerName(world, giver, seed) {
  * @returns {RadiantState}
  */
 export function createRadiantState() {
-  return { offers: [], active: null, taken: 0, failed: 0, gold: 0, log: [], day: 1 };
+  return { offers: [], active: null, taken: 0, failed: 0, gold: 0, log: [], day: 1, people: {} };
+}
+
+/**
+ * Is the player at the wild job's own spot?
+ *
+ * A country target is a **cell**, not a name: the player can be on the same 128-cell page
+ * and still be a hundred paces from the camp, so the cell is what the event checks when the
+ * caller can supply the player's own (`ctx.cell`, `scenes/interior.js`'s `worldCellNow`).
+ * A caller with no cell (a unit test, the world map) falls back to the target's name.
+ */
+function atTarget(active, where, ctx = {}) {
+  if (active?.targetKind === 'wild') {
+    const pc = ctx.cell;
+    if (pc && Number.isFinite(Number(pc.row)) && Number.isFinite(Number(pc.col))
+      && active.targetCell) {
+      // A camp is a place, not a pixel: the standable floor nearest a world pixel's centre
+      // can be a few cells off it (`scenes/interior.js`'s `standableNear`), and a hunter
+      // chases the quarry around the fire. Twelve cells is the camp's own clearing.
+      return Math.max(Math.abs(Number(pc.row) - active.targetCell.row),
+        Math.abs(Number(pc.col) - active.targetCell.col)) <= 12;
+    }
+    return Boolean(where) && where.toLowerCase() === active.target.toLowerCase();
+  }
+  return Boolean(where) && where.toLowerCase() === active.target.toLowerCase();
 }
 
 /** The events the radiant machine understands. */
@@ -714,7 +997,7 @@ export const RADIANT_EVENTS = Object.freeze(['accept', 'arrive', 'found', 'kille
  *
  * @param {RadiantState} state
  * @param {string} event
- * @param {{offer?: RadiantQuest, where?: string, days?: number}} [ctx]
+ * @param {{offer?: RadiantQuest, where?: string, cell?: {row:number,col:number}, days?: number}} [ctx]
  * @returns {{ok: boolean, reason?: string, state: RadiantState, gold?: number}}
  */
 export function applyRadiantEvent(state, event, ctx = {}) {
@@ -731,7 +1014,7 @@ export function applyRadiantEvent(state, event, ctx = {}) {
       if (!offer) return refuse('no offer was named');
       if (active) return refuse(`"${active.title}" is still unfinished`);
       const progress = slayProgress(offer);
-      if (offer.kind === 'slay' && !progress) return refuse('this bounty names no known creature');
+      if ((offer.kind === 'slay' || offer.kind === 'hunt') && !progress) return refuse('this bounty names no known creature');
       next.active = { ...offer, completed: false,
         ...(progress ? { combat: { ...offer.combat, ...progress, defeated: [] } } : {}) };
       next.offers = state.offers.filter((o) => o.id !== offer.id);
@@ -740,8 +1023,8 @@ export function applyRadiantEvent(state, event, ctx = {}) {
     }
     case 'arrive': {
       if (!active) return refuse('no job is in hand');
-      if (where && where.toLowerCase() !== active.target.toLowerCase()) {
-        return refuse(`"${active.title}" is at ${active.target}, not ${where}`);
+      if (!atTarget(active, where, ctx)) {
+        return refuse(`"${active.title}" is at ${active.target}${where ? `, not ${where}` : ''}`);
       }
       next.log.push(`Reached ${active.target}.`);
       return { ok: true, state: next };
@@ -751,9 +1034,10 @@ export function applyRadiantEvent(state, event, ctx = {}) {
     case 'rescue':
     case 'deliver': {
       if (!active) return refuse('no job is in hand');
-      const wanted = active.kind === 'rescue' ? 'rescue' : active.kind === 'deliver' ? 'deliver' : active.kind === 'slay' ? 'killed' : 'found';
+      const wanted = active.kind === 'rescue' ? 'rescue' : active.kind === 'deliver' ? 'deliver'
+        : active.kind === 'slay' || active.kind === 'hunt' ? 'killed' : 'found';
       if (event !== wanted) return refuse(`"${active.title}" is not finished by ${event}`);
-      if (!where || where.toLowerCase() !== active.target.toLowerCase()) {
+      if (!atTarget(active, where, ctx)) {
         return refuse(`that has to happen at ${active.target}`);
       }
       if (active.completed) return refuse('this job is already finished');
@@ -767,7 +1051,7 @@ export function applyRadiantEvent(state, event, ctx = {}) {
         next.log.push(`Hunt: ${defeated.length}/${progress.required} ${active.subject} defeated at ${active.target}.`);
         if (!next.active.completed) return { ok: true, state: next };
       } else next.active = { ...active, completed: true };
-      next.log.push(`${active.kind === 'slay' ? 'Cleared' : 'Recovered'}: ${active.subject} at ${active.target}. Return to ${active.giver}.`);
+      next.log.push(`${active.kind === 'slay' ? 'Cleared' : active.kind === 'hunt' ? 'Hunted' : active.kind === 'rescue' ? 'Rescued' : 'Recovered'}: ${active.subject} at ${active.target}. Return to ${active.giver}.`);
       return { ok: true, state: next };
     }
     case 'return': {
@@ -825,7 +1109,13 @@ export function radiantObjective(state) {
   if (!active.completed) {
     const progress = slayProgress(active);
     const hunt = progress ? ` Defeat ${active.subject}: ${progress.defeated.length}/${progress.required}.` : '';
-    return `${active.kind === 'deliver' ? 'Deliver to' : 'Travel to'} ${active.target} — ${active.title}.${hunt}`;
+    // **The last leg is on foot.** A country job is not a fast travel destination: the player
+    // arrives at its anchor (a town, village or dungeon) and walks out, so the line says how
+    // far that walk is rather than letting the map promise a door onto the camp.
+    const walk = active.targetKind === 'wild' && active.targetAnchor
+      ? ` ${active.targetWalk ?? ''} paces out of ${active.targetAnchor}, on foot.`.replace(/^\s+/, ' ')
+      : '';
+    return `${active.kind === 'deliver' ? 'Deliver to' : 'Travel to'} ${active.target} — ${active.title}.${walk}${hunt}`;
   }
   // *Who* pays, by name of what they are rather than of who they are (Arena's people have
   // no names in this install — S30): the person who asked, when the job came from one.
@@ -847,6 +1137,9 @@ export function radiantLog(state) {
         title: state.active.title,
         target: state.active.target,
         targetMif: state.active.targetMif,
+        targetKind: state.active.targetKind ?? (state.active.targetMif ? 'dungeon' : 'settlement'),
+        targetCell: state.active.targetCell ?? null,
+        targetAnchor: state.active.targetAnchor ?? null,
         giver: state.active.giver,
         giverId: state.active.giverId ?? null,
         giverPerson: state.active.giverPerson ?? null,
@@ -890,5 +1183,10 @@ export function deserializeRadiantState(saved) {
     gold: Number.isFinite(source.gold) ? Number(source.gold) : fresh.gold,
     log: Array.isArray(source.log) ? source.log.map(String) : fresh.log,
     day: Number.isFinite(source.day) ? Number(source.day) : fresh.day,
+    people: source.people && typeof source.people === 'object' && !Array.isArray(source.people)
+      ? Object.fromEntries(Object.entries(source.people)
+        .filter(([id, round]) => typeof id === 'string' && id && Number.isFinite(Number(round)))
+        .map(([id, round]) => [id, Math.max(0, Math.trunc(Number(round))) ]))
+      : fresh.people,
   };
 }

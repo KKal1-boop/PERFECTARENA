@@ -67,6 +67,42 @@ const CLOUD_COUNT = 14;
 /** How far a mountain or cloud is mixed toward the horizon colour (aerial perspective). */
 const MOUNTAIN_HAZE = 0.30;
 const CLOUD_HAZE = 0.18;
+/**
+ * **Where Red Mountain stands.** The owner, 2026-10-19: *"in all morrowind towns and villages and
+ * wilderness in the background there should be generally north east the vulcano sprite
+ * AR-sprite-VOLCANO3 … only when youre in morrowind"*, then *"morrowind's vulcano is actually
+ * at the center north of the country its position should be dinamic in the background in
+ * respect of where you are in morrowind"*. The panorama's azimuth is `atan(x, z)` with north at
+ * +Z and east at +X (`skyRenderer.js`), so the volcano is not a fixed north-east decoration: it
+ * is a **world point**, and each page's bearing to it becomes the panorama's azimuth.
+ *
+ * The point is `TAMRIEL.IMG`'s own pixel for Vvardenfell's **centre north**: Morrowind's city
+ * dots run from Blacklight `(207,44)` and Firewatch `(249,45)` down to Tear `(266,117)`, and
+ * the province's land at y≈46 spans x≈204…280, so `(240,46)` is the middle of the island and
+ * north of Ebonheart `(238,82)` and Mournhold `(255,92)`. It is `VOLCANO3.IMG`, the illustrated
+ * volcano Arena ships.
+ */
+export const RED_MOUNTAIN_PIXEL = Object.freeze({ x: 240, y: 46 });
+
+/**
+ * The bearing from a world-map pixel to Red Mountain, as a panorama azimuth (0 = north,
+ * 0.25 = east). The map's `y` grows south, so north is the negative `y` direction.
+ *
+ * @param {{x: number, y: number}|null|undefined} pixel  the player's `here.pixel`
+ * @returns {number} 0…1
+ */
+export function volcanoAzimuthFrom(pixel) {
+  if (!pixel || !Number.isFinite(pixel.x) || !Number.isFinite(pixel.y)) return 0.125;
+  const east = RED_MOUNTAIN_PIXEL.x - pixel.x;
+  const north = pixel.y - RED_MOUNTAIN_PIXEL.y;
+  if (!east && !north) return 0.125;
+  let turns = Math.atan2(east, north) / (Math.PI * 2);
+  if (turns < 0) turns += 1;
+  return turns % 1;
+}
+
+/** @deprecated The fixed north-east card; kept for callers that have no world point. */
+export const VOLCANO_AZIMUTH = 0.125;
 
 /** The gradient each climate's sky runs between, horizon first. */
 export const CLIMATE_GRADIENTS = Object.freeze({
@@ -167,7 +203,9 @@ export function precipitationMode(weather) {
  * @param {'T'|'D'|'M'} [opts.climate]
  * @param {'N'|'R'|'S'} [opts.weather]
  * @param {number} [opts.seed]
- * @returns {{colors: Uint8ClampedArray, width: number, height: number, clearColor: number[], fillColor: number[], art: {mountains: number, clouds: number}}}
+ * @param {{width:number,height:number,indices:Uint8Array}|null} [opts.volcano]  Morrowind's Red Mountain
+ * @param {number} [opts.volcanoAzimuth]  bearing to Red Mountain (0 = north, 0.25 = east)
+ * @returns {{colors: Uint8ClampedArray, width: number, height: number, clearColor: number[], fillColor: number[], art: {mountains: number, clouds: number, volcano: boolean}}}
  */
 /**
  * The night sky is the *climate's own night*, not a grey filter over the day card.
@@ -219,7 +257,8 @@ const STAR_BASE_COUNT = 220;
  */
 export function composeArenaSky(opts) {
   const {
-    mountains = [], clouds = [],
+    mountains = [], clouds = [], volcano = null,
+    volcanoAzimuth = VOLCANO_AZIMUTH,
     palette,
     climate = 'T', weather = 'N', seed = 1,
     night = false,
@@ -315,13 +354,26 @@ export function composeArenaSky(opts) {
     }
   }
 
+  // ── Red Mountain, in front of the ordinary mountain line ────────────────────
+  // The owner, 2026-10-19: *"the vulcano needs to show in front of the normal mountains
+  // background not behind otherwise only the smoke is visible"*. The mountain line is a
+  // horizon band drawn **over** the foot of anything standing behind it, so Red Mountain has
+  // to be composed after that band: otherwise its cone is hidden and only the plume above the
+  // ridge survives. It is a world point, so its azimuth changes with the page's own pixel.
+  if (volcano) {
+    const x0 = Math.round(PANO_WIDTH * volcanoAzimuth - volcano.width / 2);
+    // `blit` already wraps in x, so a volcano on the north seam is drawn on both sides.
+    blit(colors, volcano, rgb, x0, 0, 0.24, horizonRgb, false,
+      { dim: night ? NIGHT_DIM.mountains * 1.15 : 1 });
+  }
+
   return {
     colors,
     width: PANO_WIDTH,
     height: PANO_HEIGHT,
     clearColor: [horizon[0] / 255, horizon[1] / 255, horizon[2] / 255],
     fillColor: [zenith[0] / 255, zenith[1] / 255, zenith[2] / 255],
-    art: { mountains: mountains.length, clouds: clouds.length },
+    art: { mountains: mountains.length, clouds: clouds.length, volcano: Boolean(volcano) },
   };
 }
 
@@ -336,6 +388,7 @@ export function composeArenaSky(opts) {
  * @param {string} opts.infName    the level's own `.INF`, which names its climate and weather
  * @param {number} [opts.seed]
  * @param {boolean} [opts.night]  compose the night card instead of the day one
+ * @param {number} [opts.volcanoAzimuth]  the page's bearing to Red Mountain
  * @param {(name: string) => Promise<{rgb: Uint8Array}>} [opts.paletteOf]
  * @returns {Promise<object|null>}
  */
@@ -343,7 +396,14 @@ export async function buildArenaSky(data, opts) {
   let names = [];
   try { names = (await data.bsa()).names(); } catch { return null; }
   const { mountains, clouds } = collectSkyArt(names);
-  if (!mountains.length && !clouds.length) return null;
+  // **Morrowind's own horizon.** The volcano is not part of the generic climate art: it is
+  // `VOLCANO3.IMG`, the install's illustrated Red Mountain, and only a page in Morrowind asks for
+  // it. A missing record leaves the ordinary sky rather than failing the whole build.
+  let volcano = null;
+  if (opts.volcano) {
+    try { volcano = await data.img('VOLCANO3.IMG'); } catch { /* the sky is still a sky */ }
+  }
+  if (!mountains.length && !clouds.length && !volcano) return null;
 
   const palette = opts.paletteOf ? await opts.paletteOf('PAL.COL') : await data.palette('PAL.COL');
   // The *decoded art* is cached per archive, because the day and the night of one place
@@ -370,6 +430,8 @@ export async function buildArenaSky(data, opts) {
   return composeArenaSky({
     mountains: arts.mountains,
     clouds: arts.clouds,
+    volcano,
+    volcanoAzimuth: opts.volcanoAzimuth ?? VOLCANO_AZIMUTH,
     palette,
     climate,
     weather,

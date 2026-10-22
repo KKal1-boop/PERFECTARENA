@@ -20,6 +20,7 @@
 // distance (`DODGE.distance` 3.2 m) in about a quarter of a second, which is what makes
 // the dodge a *read* and not a spam.
 
+import { CASTER_IDS, elementOf, isIrresistible } from './bestiary.js';
 /** A bolt travels this fast, in metres a second. */
 export const BOLT_SPEED = 13;
 /** Within this of the player's body, a bolt lands. */
@@ -41,8 +42,16 @@ export const BOLT_DAMAGE_SCALE = 0.7;
  */
 export const CAST_RANGE = Object.freeze({ low: 4.0, high: 12.0 });
 
-/** The caster ids of the install's own roster (see `game/monsters.js`). */
-export const RANGED_IDS = Object.freeze(['ghost', 'wraith', 'homonculus', 'firedaemon', 'medusa', 'lich']);
+/**
+ * The caster ids, read off UESP's own ability lines (`game/bestiary.js`).
+ *
+ * The old list was six — ghost, wraith, homonculus, fire daemon, medusa lich — and it was
+ * missing the ones the source names in exactly the same sentence: the **snow wolf** (Ice
+ * Bolt, level 6), the **hell hound** (Fireball, 6), the **stone golem** (a ranged magic
+ * spell that no potion reduces), the **vampire** (spellcasting) and **Jagar Tharn** (six
+ * spells). A caster that never casts was the enemy port's largest quiet gap.
+ */
+export const RANGED_IDS = Object.freeze([...CASTER_IDS]);
 
 /**
  * Fire a bolt from a caster at where the player *is*.
@@ -53,7 +62,8 @@ export const RANGED_IDS = Object.freeze(['ghost', 'wraith', 'homonculus', 'fired
  *
  * @param {{x: number, y: number, z: number}} from  the caster's world position (eye height)
  * @param {{x: number, y: number, z: number}} to  the player's world position
- * @param {{damage: number}} wound  the caster's own damage table, un-scaled
+ * @param {{damage: number, id?: string}} wound  the caster's damage and its id, so the bolt
+ *   knows its own element (`bestiary.js`)
  * @returns {{x: number, y: number, z: number, vx, vy, vz, damage: number, life: number}}
  */
 export function fireBolt(from, to, wound) {
@@ -67,6 +77,15 @@ export function fireBolt(from, to, wound) {
     vz: dz / distance * BOLT_SPEED,
     damage,
     life: BOLT_LIFE,
+    // **What the bolt is made of.** A fire daemon's bolt is fire, an ice bolt is cold, and
+    // the stone golem's is the one kind UESP says a potion cannot reduce. The scene reads
+    // these against the player's resistances through `hurtPlayer`.
+    // A caster with several spells (Jagar Tharn's six) names the one this bolt is; anything
+    // else falls back to the creature's one element, which is the same answer it always gave.
+    element: wound?.element ?? elementOf(wound),
+    spell: wound?.spell ?? null,
+    irresistible: isIrresistible(wound),
+    caster: wound?.id ?? null,
   };
 }
 
