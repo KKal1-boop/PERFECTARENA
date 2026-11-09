@@ -29,11 +29,13 @@ import { DUNGEON_BLOCKS_MIF } from '../../src/game/dungeonPlan.js';
 import { decodeText, loadArenaText } from '../../src/arena/arenaText.js';
 import { loadWorldMap } from '../../src/game/worldMap.js';
 import {
-  ARTIFACTS, GATHERINGS, ITEMS, MONSTERS, OFFERS_PER_BOARD, RADIANT_EVENTS, RADIANT_KINDS,
-  advanceDays, applyRadiantEvent, buildBoard, createRadiantState, deserializeRadiantState,
-  discoverLooseMifs, enterableDungeons, enterableFromListing, generateQuest, offerReadsWhole,
-  personOffer, radiantLog, radiantObjective, repairWildTargets, serializeRadiantState, slayProgress,
+  ARTIFACTS, GATHERINGS, HARVEST_REQUIRED, ITEMS, MONSTERS, OFFERS_PER_BOARD, RADIANT_EVENTS,
+  RADIANT_KINDS, advanceDays, applyRadiantEvent, buildBoard, createRadiantState,
+  deserializeRadiantState, discoverLooseMifs, enterableDungeons, enterableFromListing, generateQuest,
+  harvestProgress, offerReadsWhole, personOffer, radiantLog, radiantObjective, repairWildTargets,
+  serializeRadiantState, slayProgress,
 } from '../../src/game/radiantQuests.js';
+import { personId } from '../../src/game/regard.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
 const folder = () => nodeSource(ARENA);
@@ -96,8 +98,9 @@ test('the trinkets and the reward tiers are coherent', () => {
       assert.ok(Number.isInteger(entry.tier) && entry.tier >= 1 && entry.tier <= 4, `${entry.name} has a tier`);
     }
   }
-  assert.equal(RADIANT_KINDS.length, 8, 'a board can hire an artifact hunter, a lair-clearer, a hunter, a fetcher, a gatherer, a rescuer, a courier or a searcher');
-  assert.equal(new Set(RADIANT_KINDS.map((k) => k.id)).size, 8, 'every kind has its own id');
+  assert.equal(RADIANT_KINDS.length, 9, 'a board can hire an artifact hunter, a lair-clearer, a hunter, a fetcher, a gatherer, a harvester, a rescuer, a courier or a searcher');
+  assert.equal(new Set(RADIANT_KINDS.map((k) => k.id)).size, 9, 'every kind has its own id');
+  assert.equal(HARVEST_REQUIRED, 5, 'a harvest asks for five bales');
   assert.ok(GATHERINGS.length >= 5, `${GATHERINGS.length} country finds`);
   assert.equal(OFFERS_PER_BOARD, 3);
 });
@@ -376,7 +379,7 @@ test('the state machine refuses work done in the wrong place, or out of order', 
   const board = buildBoard({ world, library, seed: 4242, giver, day: 1, dungeons });
   const offer = board.find((o) => o.kind !== 'deliver') ?? board[0];
   const finish = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
-    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver' }[offer.kind];
+    slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver', harvest: 'harvest' }[offer.kind];
 
   let state = createRadiantState();
   const logged = radiantLog(state);
@@ -408,6 +411,12 @@ test('the state machine refuses work done in the wrong place, or out of order', 
       const result = applyRadiantEvent(state, 'killed', { where: offer.target, questId: offer.id, monster: progress.monster, encounterId });
       assert.equal(result.ok, true, result.reason); state = result.state;
     }
+  } else if (offer.kind === 'harvest') {
+    const progress = harvestProgress(state.active);
+    for (const harvestId of progress.ids) {
+      const result = applyRadiantEvent(state, 'harvest', { where: offer.target, questId: offer.id, harvestId });
+      assert.equal(result.ok, true, result.reason); state = result.state;
+    }
   } else {
     assert.equal(applyRadiantEvent(state, finish, { where: offer.target }).ok, true);
     state = applyRadiantEvent(state, finish, { where: offer.target }).state;
@@ -430,6 +439,71 @@ test('the state machine refuses work done in the wrong place, or out of order', 
     if (!result.ok) assert.ok(result.reason, `${event} was refused for a stated reason`);
   }
   assert.equal(applyRadiantEvent(state, 'nonsense', {}).ok, false);
+});
+
+test('a harvest is five bales of the closest camp’s own hay, carried one at a time', () => {
+  // The owner, 2026-10-22: *"a new radiant quest that is to go pick up 5 hay bales of corn plants
+  // in the closest already generated camp in the wilds (the bales and corn sprites need to respawn
+  // as soon as the player leaves so if another quest points to that camp is ok)"*.
+  //
+  // Two halves are this test's: **the camp is the closest one** — its anchor is the town that
+  // offers the work, not a settlement drawn from the province — and **the five belong to the
+  // job**, so a second harvest at the same ground still finds five bales of its own.
+  const giver = world.byName('Daggerfall');
+  const offer = generateQuest({ world, library, kind: 'harvest', seed: 0x4ea5, giver, day: 1, dungeons });
+  assert.equal(offer.kind, 'harvest');
+  assert.equal(offer.targetKind, 'wild');
+  assert.equal(offer.targetAnchor, giver.name, 'the closest camp is just outside the giver’s gate');
+  assert.equal(offer.target, `the wilds near ${giver.name}`);
+  assert.ok(offer.targetWalk >= 100 && offer.targetWalk <= 200,
+    `${offer.targetWalk} paces out of ${offer.targetAnchor} is a short walk`);
+  assert.deepEqual({ ...offer.harvest }, { required: HARVEST_REQUIRED, taken: [] });
+  assert.match(offer.text, /five hay bales/);
+  const progress = harvestProgress(offer);
+  assert.equal(progress.required, 5);
+  assert.equal(progress.ids.length, 5);
+
+  let state = applyRadiantEvent(createRadiantState(), 'accept', { offer }).state;
+  assert.equal(harvestProgress(state.active).taken.length, 0);
+  assert.match(radiantObjective(state), /Gather the hay: 0\/5/);
+  const cell = offer.targetCell;
+
+  // **A bale is the camp's own.** Another job's bale, a made-up one, or one carried in from
+  // sixty cells away is refused with a reason, not counted.
+  const refused = [
+    applyRadiantEvent(state, 'harvest', { where: offer.target, cell, questId: 'somebody-else', harvestId: progress.ids[0] }),
+    applyRadiantEvent(state, 'harvest', { where: offer.target, cell, questId: offer.id, harvestId: 'hay9' }),
+    applyRadiantEvent(state, 'harvest', { where: 'Somewhere Else', cell: { row: cell.row + 60, col: cell.col }, questId: offer.id, harvestId: progress.ids[0] }),
+  ];
+  for (const result of refused) {
+    assert.equal(result.ok, false);
+    assert.ok(result.reason, 'a refusal says why');
+  }
+
+  // One at a time: the fourth leaves the job open, the fifth finishes it.
+  for (let i = 0; i < progress.ids.length; i++) {
+    const result = applyRadiantEvent(state, 'harvest', { where: offer.target, cell, questId: offer.id, harvestId: progress.ids[i] });
+    assert.equal(result.ok, true, result.reason);
+    state = result.state;
+    assert.equal(harvestProgress(state.active).taken.length, i + 1);
+    assert.equal(state.active.completed, i === progress.ids.length - 1);
+  }
+  // The same bale is never counted twice…
+  assert.equal(applyRadiantEvent(state, 'harvest', { where: offer.target, cell, questId: offer.id, harvestId: progress.ids[0] }).ok, false);
+  assert.match(radiantObjective(state), /Return to/);
+  assert.equal(radiantLog(state).active.harvest.taken.length, 5);
+
+  // **A second job at the same camp is its own five.** The ids carry the quest's, so the camp the
+  // first job emptied is stocked again for the next one that points at it.
+  const other = generateQuest({ world, library, kind: 'harvest', seed: 0x4ea6, giver, day: 1, dungeons });
+  const otherProgress = harvestProgress(other);
+  assert.equal(otherProgress.ids.length, 5);
+  assert.deepEqual(otherProgress.ids.filter((id) => progress.ids.includes(id)), []);
+
+  // And it is paid at the giver, like every other job.
+  const paid = applyRadiantEvent(state, 'return', { where: giver.name });
+  assert.equal(paid.ok, true, paid.reason);
+  assert.equal(paid.gold, offer.reward);
 });
 
 test('a deadline is measured in the world\'s own days', () => {
@@ -507,6 +581,24 @@ test('a person offers only what the install can honour, and nothing in a dungeon
   assert.equal(personOffer({ world, library, giver, person: {}, day: 1, dungeons }), null);
   assert.equal(personOffer({ world, library, person, day: 1, dungeons }), null, 'no giver, no job');
   assert.ok(personOffer({ world, library, giver, person, day: 1, dungeons }));
+});
+
+// The owner, 2026-10-22: *"the gui should point to the radiant quest npc who gave you the quest
+// when you have completed it and you need to come back to him"*. `giverId` is a regard key, so the
+// panel could name the person but never point at them; the offer now carries the **cell** they
+// were placed on, which is what an arrow and a pace count are made of.
+test('a person\'s offer remembers the cell they stand on, so a finished job can point back', () => {
+  const giver = world.byName('Daggerfall');
+  const offer = personOffer({ world, library, giver, person: { place: { row: 12, col: 4 } }, day: 2, dungeons });
+  assert.deepEqual(offer.giverCell, { row: 12, col: 4 });
+  assert.equal(offer.giverId, personId(giver.name, { row: 12, col: 4 }), 'and the same cell is its id');
+  // `home` is where they were placed, so a person who stepped next door hands back the same
+  // cell — a job is not re-homed by a walk.
+  const walked = personOffer({ world, library, giver, person: { home: { row: 12, col: 4 }, place: { row: 15, col: 9 } }, day: 2, dungeons });
+  assert.deepEqual(walked.giverCell, { row: 12, col: 4 });
+  // A board job has no person behind it and therefore no cell: the town is the destination.
+  const board = buildBoard({ world, library, seed: 3, giver, day: 1, dungeons, count: 1 })[0];
+  assert.equal(board.giverCell ?? null, null);
 });
 
 test('taking a person\'s offer runs through the board\'s own state machine', () => {

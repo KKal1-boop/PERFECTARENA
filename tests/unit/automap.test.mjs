@@ -20,7 +20,9 @@ import {
   AUTOMAP_COLORS, AUTOMAP_DIRECTIONS, AUTOMAP_KINDS, automapArrow, automapAt,
   automapDirection, automapKindOf, automapMarker, automapSummary, buildAutomap,
 } from '../../src/game/automap.js';
-import { automapLayout, drawAutomap, AUTOMAP_PARCHMENT } from '../../src/scenes/automap.js';
+import {
+  AUTOMAP_MAX_ZOOM, AUTOMAP_PARCHMENT, automapLayout, clampAutomapZoom, drawAutomap,
+} from '../../src/scenes/automap.js';
 import { CELL_SIZE } from '../../src/game/mifMesh.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 
@@ -226,6 +228,66 @@ test('a drawn map is a parchment sheet, the reference’s colours, and a yellow 
   const cellY = report.box.y;
   assert.ok(yellow.every((r) => r.x >= cellX && r.x < cellX + report.scale));
   assert.ok(yellow.every((r) => r.y >= cellY && r.y < cellY + report.scale));
+});
+
+// ── the magnifier: the sheet a phone can pinch (2026-10-22) ───────────────────
+//
+// The owner: *"the local dungeon map on android is too big and you cant zoom in or out"*. The panel
+// still opens on the whole level; `zoom` is what a thumb (or a wheel) may do to it, and the slide
+// is clamped so an enlarged sheet cannot be dragged into empty page.
+
+test('the sheet opens on the whole level and magnifies in whole 3-pixel cells', () => {
+  const map = { width: 128, depth: 128 };
+  const fit = automapLayout(map, 720, 480);
+  assert.equal(fit.zoom, 1, 'the opening state is the whole level');
+  assert.deepEqual(fit.limits, { x: 0, y: 0 }, 'a fit sheet cannot slide away from the middle');
+  assert.deepEqual(automapLayout(map, 720, 480, { panX: 400, panY: -400 }).box, fit.box,
+    'and a drag on it moves nothing');
+
+  const near = automapLayout(map, 720, 480, { zoom: 2 });
+  assert.equal(near.zoom, 2);
+  assert.equal(near.scale % 3, 0, 'the arrow’s third is still a whole pixel');
+  assert.ok(near.scale > fit.scale, 'twice the magnifier is a larger cell');
+  assert.ok(near.box.width > 720 && near.box.height > 480, 'and the sheet is now bigger than the page');
+  assert.ok(near.limits.x > 0 && near.limits.y > 0, 'so it has somewhere to slide');
+});
+
+test('a slide is clamped to the sheet’s own edge, and a bad zoom is the fit', () => {
+  const map = { width: 128, depth: 128 };
+  // Dragged as far as it will go, each direction stops with the sheet’s own edge on the canvas’s.
+  assert.equal(automapLayout(map, 720, 480, { zoom: 3, panX: 1e6 }).box.x, 0,
+    'the sheet’s left edge is the border');
+  const west = automapLayout(map, 720, 480, { zoom: 3, panX: -1e6 });
+  assert.equal(west.box.x, 720 - west.box.width, 'and its right edge in the other direction');
+  assert.equal(automapLayout(map, 720, 480, { zoom: 3, panY: 1e6 }).box.y, 0);
+  const north = automapLayout(map, 720, 480, { zoom: 3, panY: -1e6 });
+  assert.equal(north.box.y, 480 - north.box.height);
+  // …and a sheet that fits ignores the slide in that axis entirely.
+  const wide = automapLayout({ width: 128, depth: 8 }, 720, 480, { zoom: 2, panY: 999 });
+  assert.equal(wide.limits.y, 0);
+  assert.equal(wide.box.y, Math.round((480 - wide.box.height) / 2));
+
+  assert.equal(clampAutomapZoom(0), 1, 'the fit is the floor');
+  assert.equal(clampAutomapZoom(-2), 1);
+  assert.equal(clampAutomapZoom('wide'), 1);
+  assert.equal(clampAutomapZoom(Number.NaN), 1);
+  assert.equal(clampAutomapZoom(999), AUTOMAP_MAX_ZOOM, 'and four times the ceiling');
+});
+
+test('a drawn map says how far it is magnified, and paints at that scale', () => {
+  const map = buildAutomap({
+    width: 2, depth: 2,
+    cells: [cell(), cell({ kind: 'wall', solid: true }), cell(), cell()],
+  });
+  const { canvas, rects } = recordingCanvas(720, 480);
+  const fit = drawAutomap(canvas, { map });
+  const near = drawAutomap(canvas, { map, zoom: 2 });
+  assert.equal(fit.zoom, 1);
+  assert.equal(near.zoom, 2);
+  assert.ok(near.scale > fit.scale);
+  assert.ok(near.limits.x > 0, 'a magnified sheet can be slid');
+  // The parchment is the sheet it drew, at the magnified size.
+  assert.ok(rects.some((r) => r.style === AUTOMAP_PARCHMENT && r.w === near.box.width && r.w > fit.box.width));
 });
 
 test('a canvas with no context is answered, not thrown at', () => {

@@ -799,6 +799,31 @@ export function itemNote(item) {
  * @param {object[]} bag
  * @returns {{index: number, id: string, name: string, kind: string, qty: number, note: string}[]}
  */
+/**
+ * Which of the install's command icons a kind of thing wears.
+ *
+ * Arena's command strip (`S2.IMG`, 320×36) is **ten 32-pixel buttons**: crossed swords, two
+ * heraldic shields, two figures, a gold sunburst, a pointing hand, a fist, the winged staff, a
+ * marked map, a scroll and a cross-staff. Those are the game's own glyphs — the same strip the
+ * original put at the foot of the screen — so they are what the pack and the spellbook wear:
+ * a weapon takes the swords, armour the shields, a spell the sunburst, a potion the winged staff
+ * (Arena's own healing mark), a scroll the scroll. Nothing is drawn here; `engine/ui/guiKit.js`
+ * cuts the cells and `game/arenaGui.js` publishes them as `--gk-icon-0` … `--gk-icon-9`.
+ *
+ * @param {string} kind  an item's own `kind`
+ * @returns {'weapon'|'armour'|'potion'|'scroll'|'spell'|'misc'}
+ */
+export function iconRoleFor(kind) {
+  switch (kind) {
+    case 'weapon': case 'ammo': return 'weapon';
+    case 'armour': case 'shield': case 'jewelry': case 'material': return 'armour';
+    case 'potion': return 'potion';
+    case 'scroll': return 'scroll';
+    case 'spell': return 'spell';
+    default: return 'misc';
+  }
+}
+
 export function bagRows(bag) {
   return stacks(bag)
     .map((stack) => ({ stack, item: itemById(stack.id) }))
@@ -865,7 +890,7 @@ export function equipFromBag(character, bag, id) {
       ok: true,
       character: armed,
       bag: stacks(bag),
-      note: `${item.name} in hand — ${min}–${max} damage with a ${material.name.toLowerCase()} edge.`,
+      note: `${item.name} in hand — ${min}–${max} damage with ${/^[aeiou]/i.test(material.name) ? 'an' : 'a'} ${material.name.toLowerCase()} edge.`,
     };
   }
   if (item.kind === 'jewelry') {

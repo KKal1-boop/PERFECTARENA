@@ -52,9 +52,9 @@ export const CUTSCENES = Object.freeze([
   { file: 'AFLC2.FLC', beat: 'ending', what: 'a closing animation' },
   // **The revised release's endgame pair** (UESP's Deluxe note): `NUKING.FLC` is the newer
   // Emperor shot that replaced `KING.FLC`, and `NUJAGDTH.FLC` the newer Tharn death that
-  // replaced `JAGARDTH.FLC`. They are catalogued and playable through `?cutscene=`, while the
-  // main story keeps the pair its own quest machine was wired against; a build that wants the
-  // revision can name either file at that beat without a second reader.
+  // replaced `JAGARDTH.FLC`. They are catalogued and playable through `?cutscene=`; the main
+  // story plays the revised pair when the install carries it (`endingMoviesFor`) and falls
+  // back to the originals, so a build with only one release still has a whole ending.
   { file: 'NUKING.FLC', beat: 'ending', what: 'the revised Emperor shot' },
   { file: 'WARHAFT.FLC', beat: 'intro', what: 'the cut Warhaft slide' },
   { file: 'WALK.FLC', beat: 'tour', what: 'the walking tour' },
@@ -72,6 +72,13 @@ export const CUTSCENES = Object.freeze([
  * movie share a skip with them.
  */
 export const STARTUP_STEPS = Object.freeze([
+  // **The book comes first.** OpenTESArena's intro path (`IntroUiMVC.cpp`) opens the CD
+  // release with `INTRO.FLC` — the 3-D book whose last page reads “The Elder Scrolls /
+  // Chapter One: The Arena” — and only then shows the title and quote cards, the scroll
+  // movie and the three story pictures. The port had the book wired after character
+  // creation instead, so it was played twice if a new game was started and never at the
+  // one moment the original shows it. It belongs here.
+  Object.freeze({ kind: 'movie', file: 'INTRO.FLC' }),
   Object.freeze({ kind: 'still', file: 'TITLE.IMG', paletteFile: 'TITLE.IMG', seconds: 5 }),
   Object.freeze({ kind: 'still', file: 'QUOTE.IMG', paletteFile: 'QUOTE.IMG', seconds: 5 }),
   Object.freeze({ kind: 'movie', file: 'SCROLL.FLC' }),
@@ -81,16 +88,25 @@ export const STARTUP_STEPS = Object.freeze([
 ]);
 
 /**
- * The **new game** movie, after creation and before the cell: `INTRO.FLC`, the Emperor's
- * betrayal — the king murdered and Tharn wearing his face. It is Arena's own opening movie
- * (the executable plays `intro` at `0x125c`, and OpenTESArena's new-game path is creation →
- * cinematic → world), and the one movie a player must see to understand who imprisoned them.
+ * The **new game** sequence, before character creation: the opening scroll, then the nine
+ * illustrated history panels at five seconds each (`SCROLL.FLC`, `INTRO01–09.IMG`). This is
+ * OpenTESArena's `MainMenuUiController::onNewGameButtonSelected`: it links the opening scroll,
+ * the new-game story, and character creation, and the panels are the emperor's betrayal and the
+ * banishment of his champion. The startup's `SCROLL01–03.IMG` are a different, shorter set; the
+ * nine panels are the story the New Game button owes.
  *
- * It is deliberately **not** part of `STARTUP_STEPS`: skipping a title card must never skip the
- * story, and this movie plays on every new game (`scenes/newGame.js` and `main.js`).
+ * The pictures share `SCROLL03.IMG`'s palette, as Arena shows them. The sequence is not part of
+ * `STARTUP_STEPS`: a player who skips the title cards must still see the story when they choose
+ * New Game, and `scenes/newGame.js` owns that order.
  */
 export const NEW_GAME_STEPS = Object.freeze([
-  Object.freeze({ kind: 'movie', file: 'INTRO.FLC' }),
+  Object.freeze({ kind: 'movie', file: 'SCROLL.FLC' }),
+  ...Array.from({ length: 9 }, (_, i) => Object.freeze({
+    kind: 'still',
+    file: `INTRO0${i + 1}.IMG`,
+    paletteFile: 'SCROLL03.IMG',
+    seconds: 5,
+  })),
 ]);
 
 /**

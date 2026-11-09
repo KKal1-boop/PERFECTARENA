@@ -26,8 +26,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  DODGE, PARRY, attackPhase, attackProfile, hitSpark, resolveDefence, spendStamina,
-  staminaMax, stepStamina, syncStamina, telegraphReading,
+  DASH_CHANCE, DODGE, PARRY, attackPhase, attackProfile, attackShape, dashChance, hitSpark,
+  resolveDefence, spendStamina, staminaMax, stepStamina, syncStamina, telegraphReading,
 } from '../../src/game/combatStyle.js';
 
 /** A monster as the bestiary rolls one, with nothing but the fields this module reads. */
@@ -137,20 +137,46 @@ test('every creature, at any level, telegraphs its blow for a positive time', ()
   assert.ok(attackProfile(undefined).windup > 0, 'a monster with no level at all still telegraphs');
 });
 
-test('a big creature reaches further, winds up longer, and charges', () => {
+test('a big creature reaches further, winds up longer, and the dashing one cannot be parried', () => {
   const rat = attackProfile(creature(1));
-  const veteran = attackProfile(creature(6));
-  const lich = attackProfile(creature(30));
+  const veteran = attackProfile(creature(6), { shape: 'arc' });
+  const lich = attackProfile(creature(30), { shape: 'dash' });
+  const circle = attackProfile(creature(30), { shape: 'circle' });
   assert.ok(veteran.reach > rat.reach, 'reach grows with size');
   assert.ok(lich.reach > veteran.reach);
   assert.equal(lich.reach, 4.4, 'capped, so nothing outranges the player by a mile');
   assert.ok(lich.windup > rat.windup, 'and the telegraph takes longer: you can see it coming');
-  assert.equal(rat.charge, false, 'a rat does not charge');
-  assert.equal(veteran.charge, false, 'nor does a level-6 creature: it is quick');
-  assert.equal(lich.charge, true, 'a level-30 creature takes 2.5 s between blows');
+  assert.equal(rat.charge, false, 'a rat does not lunge');
+  assert.equal(rat.shape, 'arc', 'below the dash level every blow is the front arc');
+  assert.equal(lich.charge, true, 'a dash is the committed lunge');
   assert.equal(lich.unblockable, true, 'so its blow is not parried or blocked');
-  assert.ok(lich.damageScale > veteran.damageScale, 'and it hurts more when it lands');
+  assert.equal(circle.charge, false, 'the circle is not a lane');
+  assert.equal(circle.shape, 'circle');
+  assert.ok(circle.damageScale > veteran.damageScale, 'and it hurts more when it lands');
+  assert.ok(lich.damageScale > veteran.damageScale);
   assert.ok(veteran.damageScale > rat.damageScale);
+});
+
+test('every creature swings the arc by default, and a low roll buys the lunge more often as the player rises', () => {
+  // The owner, 2026-11-04: *"i want everyone to use the normal attack but have a random low
+  // chance to dash that increases with the increasing of the player level."* No breed is
+  // dash-only: the same rat can swing or lunge depending on the fight's roll.
+  assert.equal(attackShape({ id: 'rat', level: 1 }), 'arc', 'with no roll, the arc is the default');
+  assert.equal(attackShape({ id: 'wolf', level: 12 }, { playerLevel: 1, dashRoll: 0.9 }), 'arc');
+  assert.equal(attackShape({ id: 'wolf', level: 12 }, { playerLevel: 1, dashRoll: 0.01 }), 'dash', 'a low roll is the lunge');
+  const ratShapes = new Set([0, 0.1, 0.99].map((dashRoll) =>
+    attackShape({ id: 'rat', level: 1 }, { playerLevel: 10, dashRoll })));
+  assert.deepEqual([...ratShapes].sort(), ['arc', 'dash'], 'one creature holds both styles');
+  // The chance is low, rises with the player's level, and never becomes the ordinary blow.
+  assert.equal(dashChance(1), DASH_CHANCE.base);
+  assert.ok(dashChance(20) > dashChance(1));
+  assert.ok(dashChance(1000) <= DASH_CHANCE.max && DASH_CHANCE.max < 0.5, 'a lunge stays the exception');
+  assert.equal(dashChance(NaN), dashChance(1), 'nonsense reads as the start of the game');
+  // The boss and the elite keep their own signatures.
+  assert.equal(attackShape({ id: 'jagartharn', level: 40 }, { playerLevel: 40, dashRoll: 0 }), 'circle', 'Jagar Tharn keeps the circle');
+  assert.equal(attackShape({ id: 'goblin', level: 20, elite: true }, { index: 0 }), 'circle');
+  assert.equal(attackShape({ id: 'goblin', level: 20, elite: true }, { index: 1 }), 'dash', 'an elite alternates');
+  assert.equal(attackShape({ id: 'goblin', level: 20, charge: true }, { dashRoll: 1 }), 'dash', 'an explicit charge still lunges');
 });
 
 test('a phase walk covers the whole attack with no gap and no overlap', () => {
@@ -181,16 +207,17 @@ test('the indicator marks the ground the blow actually lands on', () => {
   const rat = attackProfile(creature(1));
   const windup = telegraphReading(rat, attackPhase(rat, 0));
   assert.equal(windup.ring, 'windup');
-  assert.equal(windup.ground, false, 'an ordinary blow is a ring, not a hazard on the floor');
+  assert.equal(windup.shape, 'arc', 'an ordinary blow is the wedge in front');
+  assert.equal(windup.ground, false, 'an ordinary blow is not a hazard on the whole floor');
   assert.ok(Math.abs(windup.radiusInCells - rat.reach / 2.5) < 1e-9, 'the radius is the reach, in cells');
   const strike = telegraphReading(rat, attackPhase(rat, rat.windup + rat.active / 2));
   assert.equal(strike.ring, 'active');
   assert.notEqual(strike.colour, windup.colour, 'a blow that is landing reads differently from one that is coming');
-  assert.deepEqual(telegraphReading(rat, { phase: 'recover' }), { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false });
-  assert.deepEqual(telegraphReading(rat, { phase: 'done' }), { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false });
-  // A charge is the one attack whose answer is to be somewhere else, so it is drawn on the
-  // ground — and the reading says so for the whole of it, wind-up included.
-  const lich = attackProfile(creature(30));
+  assert.deepEqual(telegraphReading(rat, { phase: 'recover' }), { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false, shape: 'none' });
+  assert.deepEqual(telegraphReading(rat, { phase: 'done' }), { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false, shape: 'none' });
+  // A dash is the one ordinary attack whose answer is to be somewhere else, so it is drawn on
+  // the ground — and the reading says so for the whole of it, wind-up included.
+  const lich = attackProfile(creature(30), { shape: 'dash' });
   for (const elapsed of [0, lich.windup / 2, lich.windup + 0.01]) {
     const reading = telegraphReading(lich, attackPhase(lich, elapsed));
     assert.notEqual(reading.ring, 'none');
@@ -259,8 +286,8 @@ test('a charge cannot be parried or blocked, and can still be dodged', () => {
   assert.deepEqual(resolveDefence({ ...charge, intent: 'parry', defence: 'parry' }), { outcome: 'hit', damageScale: 1, riposte: 0 });
   assert.deepEqual(resolveDefence({ ...charge, intent: 'block', defence: 'block' }), { outcome: 'hit', damageScale: 1, riposte: 0 });
   assert.equal(resolveDefence({ ...charge, intent: 'dodge', defence: 'dodge' }).outcome, 'dodged', 'being elsewhere is the whole answer');
-  // The charge's own profile is what sets the flag, so the two cannot disagree.
-  const lich = attackProfile(creature(30));
+  // The dash's own profile is what sets the flag, so the two cannot disagree.
+  const lich = attackProfile(creature(30), { shape: 'dash' });
   assert.equal(lich.unblockable, true);
   assert.equal(resolveDefence({ phase: 'active', intent: 'parry', defence: 'parry', unblockable: lich.unblockable }).outcome, 'hit');
 });

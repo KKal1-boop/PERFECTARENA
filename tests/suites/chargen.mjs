@@ -36,8 +36,17 @@ export function makeChargenSuite({ check, realErrors, shots, getPort }) {
     check('character creation boots without a boot error', !bootError, bootError ? String(bootError).slice(0, 300) : '');
 
     const start = await page.evalJs('window.__debug.state()');
+    // The room hangs the race's own sheet, **cut to the body the artist painted**: the 320×200
+    // `CHARBK0x.IMG` is a character sheet with the figure standing in its right-hand part, and
+    // the whole sheet stretched over a window is a poster. `tests/suites/gui.mjs` holds the
+    // crop and the frame; here the check is that the painting is the install's own and that it
+    // is the *cropped* one — a folder with no art is allowed to hang nothing, so this suite
+    // reads the crop only when the install answered with a painting.
     check('creation is its own scene, with Arena\'s own sheet art behind it',
-      start?.scene === 'chargen' && start?.art?.width === 320 && start?.art?.height === 200,
+      start?.scene === 'chargen'
+        && (start?.art === null || (start.art.file === 'CHARBK00.IMG'
+          && start.art.width > 0 && start.art.crop?.w === start.art.width
+          && start.art.crop.w < 320 && start.art.crop.h <= 200)),
       JSON.stringify(start?.art));
     check('the questionnaire came from question.txt', start?.questions?.length === 10, `${start?.questions?.length} scenarios drawn`);
     check('no character exists before creation', start?.saved === false && start?.character === null);

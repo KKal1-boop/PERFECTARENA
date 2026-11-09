@@ -12,8 +12,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BOW_FAMILIES, CLASS_ARMOUR, CLASS_WEAPON, HUMAN_FAMILY, HUMAN_SPRITE, RARE_METALS, familyForClass,
-  humanLevel, humanLoot, humanNote, humanSheets, humanShare, humanXp, isArcherClass, rollHuman,
+  ARCHER_BODY, BEAST_RACES, BOW_FAMILIES, CLASS_ARMOUR, CLASS_WEAPON, HUMAN_DEATH_SHEET, HUMAN_FAMILY, HUMAN_SPRITE,
+  RARE_METALS, familyForClass, humanLevel, humanLoot, humanNote, humanSheets, humanShare, humanXp,
+  isArcherClass, rollHuman, rosterFile,
 } from '../../src/game/humans.js';
 import { CLASSES, RACES } from '../../src/game/character.js';
 import { itemById } from '../../src/game/items.js';
@@ -252,12 +253,74 @@ test('a human\'s family follows their class\'s armour, and the sex prefixes the 
   assert.equal(familyForClass('barbarian'), 'BAR');
   assert.equal(familyForClass('monk'), 'MNK');
   assert.equal(familyForClass('bard'), 'LTR');
-  assert.deepEqual(humanSheets({ classId: 'archer', sex: 'male' }), { body: HUMAN_SPRITE, bow: '01CHNBOW.CFA' });
-  assert.deepEqual(humanSheets({ classId: 'ranger', sex: 'female' }), { body: HUMAN_SPRITE, bow: '11PLTBOW.CFA' });
-  // A swordsman carries no bow, whatever family he wears.
-  assert.equal(humanSheets({ classId: 'warrior', sex: 'male' }).bow, null);
+  // **A bowman's body is the plate fighter**, because that is the figure its bow sheet draws.
+  assert.deepEqual(humanSheets({ classId: 'archer', sex: 'male' }),
+    { body: null, bow: '01PLTBOW.CFA', roster: { sex: '0', family: 'PLT' } });
+  assert.deepEqual(humanSheets({ classId: 'ranger', sex: 'female' }),
+    { body: null, bow: '01PLTBOW.CFA', roster: { sex: '0', family: 'PLT' } },
+    'the archive ships no 11PLT art, so the body is the male sheet');
+  // A swordsman carries no bow, whatever family he wears, and keeps the watch's combat set.
+  assert.deepEqual(humanSheets({ classId: 'warrior', sex: 'male' }),
+    { body: HUMAN_SPRITE, bow: null, roster: null });
   assert.equal(humanSheets(null).bow, null, 'no class, no bow');
   for (const family of BOW_FAMILIES) assert.ok(HUMAN_FAMILY[family.toLowerCase()], `${family} is a family`);
+});
+
+// The owner, 2026-10-22: *"all ARCHER enemies need to use the sprite PLT FIGHTER AND NOT GUARD OF
+// THE WATCH given the shooting sprite they are using uses the PLT FIGHTER"*. The roster names each
+// file `<sex><angle><family><action>.CFA`, one angle per walk sheet, and the swing and the bow
+// only facing forward.
+test('an archer\'s roster file is the plate fighter\'s own, at every angle', () => {
+  assert.equal(rosterFile(ARCHER_BODY, 'WLK', 1), '01PLTWLK.CFA');
+  assert.equal(rosterFile(ARCHER_BODY, 'WLK', 4), '04PLTWLK.CFA');
+  assert.equal(rosterFile(ARCHER_BODY, 'ATT', 3), '01PLTATT.CFA', 'the swing faces forward only');
+  assert.equal(rosterFile(ARCHER_BODY, 'BOW', 5), '01PLTBOW.CFA');
+  assert.equal(rosterFile(ARCHER_BODY, 'WLK', 9), '05PLTWLK.CFA', 'the angles are 1…5');
+  assert.equal(rosterFile({ sex: '1', family: 'CHN' }, 'WLK', 2), '12CHNWLK.CFA');
+});
+
+// The owner, 2026-10-22: *"archers death animation is not working"*. The roster ships five walk
+// angles, a swing and a bow and **no sixth file**: the only human death art the archive has is the
+// watch's three-frame `GUARD06.CFA`, so that is what a fallen bowman is drawn from — in his own
+// skin — rather than his walk sheet's last, standing pose.
+test('a fallen archer falls on the watch\'s own death sheet — the archive has no other', () => {
+  assert.equal(HUMAN_DEATH_SHEET, 'GUARD06.CFA');
+  assert.equal(HUMAN_DEATH_SHEET, `${HUMAN_SPRITE}6.CFA`, 'named off the one human combat set');
+  // The roster has no death action in `rosterFile`: only WLK, ATT and BOW exist.
+  assert.equal(rosterFile(ARCHER_BODY, 'DIE', 1), '01PLTWLK.CFA', 'a death is not a roster action');
+  // And every human foe that is a bowman is still a human — the same death art covers it.
+  const archer = rollHuman({ classId: 'archer', level: 4, sex: 'male' });
+  assert.equal(archer.roster.family, 'PLT');
+  assert.equal(archer.sprite, HUMAN_SPRITE, 'the body a bowman falls from is the human set\'s name');
+});
+
+// The owner, 2026-10-22: *"human archer enemies should never be argonians or khajeets"* — those two
+// races are drawn as whole other figures, and neither of those figures has a bow.
+test('a bowman is never an Argonian or a Khajiit, even when the caller asks for one', () => {
+  assert.deepEqual([...BEAST_RACES].sort(), ['argonian', 'khajiit']);
+  for (const raceId of ['argonian', 'khajiit']) {
+    for (const classId of ['archer', 'ranger']) {
+      const foe = rollHuman({ classId, raceId, level: 5, random: new ArenaRandom(9) });
+      assert.ok(!BEAST_RACES.has(foe.human.raceId), `${classId} rolled ${foe.human.raceId}`);
+      assert.equal(foe.roster.family, 'PLT');
+      assert.equal(foe.bow, true);
+    }
+  }
+  // A rolled bowman of any class is the plate fighter, and no bowless class ever is.
+  const random = new ArenaRandom(77);
+  let archers = 0;
+  for (let i = 0; i < 400; i++) {
+    const foe = rollHuman({ level: 6, random });
+    if (foe.bow) {
+      archers++;
+      assert.equal(foe.bowFile, '01PLTBOW.CFA', foe.name);
+      assert.deepEqual(foe.roster, { sex: '0', family: 'PLT' }, foe.name);
+      assert.ok(!BEAST_RACES.has(foe.human.raceId), `${foe.name} is a beast`);
+    } else {
+      assert.equal(foe.roster, null, foe.name);
+    }
+  }
+  assert.ok(archers > 20, `${archers} archers in 400 rolls`);
 });
 
 test('the archer classes are exactly the two UESP gives a bow', () => {
@@ -270,9 +333,10 @@ test('the archer classes are exactly the two UESP gives a bow', () => {
 test('a rolled archer is a bowman in the world as well as in the numbers', () => {
   const archer = rollHuman({ classId: 'archer', level: 6, sex: 'male' });
   assert.equal(archer.bow, true);
-  assert.equal(archer.bowFile, '01CHNBOW.CFA');
+  assert.equal(archer.bowFile, '01PLTBOW.CFA', 'the plate fighter\'s own bow sheet');
   assert.equal(archer.human.bow, true);
-  assert.equal(archer.human.family, 'CHN');
+  assert.deepEqual(archer.roster, { sex: '0', family: 'PLT' }, 'and the body that draws it');
+  assert.equal(archer.human.family, 'CHN', 'the armour grade is still the class\'s');
   assert.equal(archer.human.sex, 'male');
   assert.equal(archer.human.weapon, 'short-bow', 'the class table\'s own weapon');
   const warrior = rollHuman({ classId: 'warrior', level: 6 });

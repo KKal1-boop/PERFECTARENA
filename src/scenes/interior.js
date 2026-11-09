@@ -90,7 +90,7 @@ import { drawCharacterPortrait } from '../game/characterPortrait.js';
 import { makeSpell, customSpell } from '../game/spellmaking.js';
 import { ARTIFACTS, artifactById, artifactSpell, useOrgnumsCoffer, canUseArtifact } from '../game/artifacts.js';
 import { equipmentCondition, wearEquipment, repairQuote, orderRepair, collectRepairs, enchantEquipment } from '../game/equipmentServices.js';
-import { decodeLevel, fillStairPair, openSettlementGate, wayOutCell } from '../game/mifLevel.js';
+import { decodeLevel, fillStairPair, isVoidCell, openSettlementGate, wayOutCell } from '../game/mifLevel.js';
 import { buildCityLevel } from '../game/cityPlan.js';
 import { CITY_BLOCKS_PER_SIDE, cityInfName, cityInfNames, cityTemplateName } from '../game/tables/cityBlocks.js';
 import { withGroundFloors, withGroundTreeFlats } from '../arena/infFile.js';
@@ -110,7 +110,7 @@ import {
 import {
   BLOCKS_PER_PIXEL, CELLS_PER_PIXEL, atSettlementGate, blockHash, cityCellOfWorld, countryAt, footprintOf,
   insideGateCell, isSeaCell, isSeaPixel, landwardOutsideGate, outsideGateCell, settlementAt, settlementInWindow, settlementOfBlock,
-  windowClimate, worldCellOfCity, youAreHere, pixelOfCell, WORLD_GRID_VERSION, migrateWildCell,
+  windowClimate, worldCellOfCity, youAreHere, pixelOfCell, cellOriginOfPixel, WORLD_GRID_VERSION, migrateWildCell,
 } from '../game/tamrielGrid.js';
 // **Where a dungeon's door is, out in the country** — the rule behind the owner's *"STILL
 // EXITING A DUNGEON JUST SHOWS YOU THE MAP NOT THE FUCKING WILDERNESS"*: the country is the
@@ -145,7 +145,7 @@ import { khajiitCoatFor, khajiitCoatSpec, figureKindFor, hairForPerson, hairIndi
 // one map that answers "where am I" inside a dungeon or a building, where `M` used to open the
 // continent.
 import { AUTOMAP_COLORS, AUTOMAP_LEGEND, automapDirection, automapMarker, automapSummary, buildAutomap } from '../game/automap.js';
-import { drawAutomap } from './automap.js';
+import { automapLayout, clampAutomapZoom, drawAutomap } from './automap.js';
 import { paletteForSheet } from '../game/spritePalette.js';
 // The dungeon's own pathfinding (`game/navFlow.js`): one breadth-first search from the player's
 // cell, read by every creature on the level (`stepMonsters`).
@@ -163,7 +163,7 @@ import { AMBUSH_MINIONS, HUNT_RUN, HUNT_SECONDS, dangerOf, huntStalled, isHuntin
 import { WILD_FOLK_MAX, wildernessPopulation } from '../game/wildernessBestiary.js';
 import {
   VIEWS as PEOPLE_VIEWS, balanceHousehold, folkCountFor, folkFromListing, isFemalePerson, personFighter,
-  placeTownsfolk, viewFacing, viewFileFor,
+  facingOffset, mirrorWithin, placeTownsfolk, viewFacing, viewFacingWithin, viewFileFor,
 } from '../game/townsfolk.js';
 // **What a person says** — the keyed banks of `template.dat`, the personality their own art carries,
 // and the words this game can honestly fill (`game/dialogue.js`). The owner, 2026-10-19: *"you need
@@ -174,8 +174,13 @@ import {
   SHOP_KINDS, cityDoors, serviceGreeting, serviceGreetings, shopForInteriorFile, shopSignKinds, wildDoors,
 } from '../game/shops.js';
 import { MONSTERS, monsterById } from '../game/monsters.js';
-import { LAYOUT_WALK_FRAMES, actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
-import { CombatFx, fitAttackToGround, insideAttack } from '../game/combatFx.js';
+import { ENEMY_DEATH_FRAME_SECONDS, LAYOUT_WALK_FRAMES, actorFrame, mirrorFor, stepActorAnimation } from '../game/actorAnimation.js';
+import { CombatFx, SPELL_ART, SPELL_ART_FPS, SPELL_SPLASH_ART, fitAttackToGround, insideAttack } from '../game/combatFx.js';
+// **The fight's readout** — Daggerfall's hit numbers, its screen wound and its target card.
+import { createDamageFlash, paintDamageFlash } from '../game/damageFlash.js';
+import {
+  hitNumberFor, playerDamageNumber, showHitMarker, showHitNumber, showWord as showCombatWord,
+} from '../game/hitNumbers.js';
 import { pushOutOfBodies } from '../game/bodyBlock.js';
 import { buildingWindowLights, fogForLevel, nearestSceneLights, SceneAtmosphere, sceneLightSources } from '../game/sceneLighting.js';
 import { CombatFxPass } from '../engine/render/combatFxPass.js';
@@ -185,15 +190,15 @@ import {
 } from '../game/dungeonItems.js';
 import {
   DOOR_CLOSE_SECONDS, DOOR_OPEN_SECONDS, FORCE_FAILED, HAND_FORCE_MAX, NEEDS_KEY,
-  doorLine, doorMatrix, forceChance, keyOpens, lockAt, lockTable, openReason, placeKeys,
-  riddleAnswerMatches, riddleDoors,
+  addKey, doorLine, doorMatrix, forceChance, keyIdForLock, keyOpens, lockAt, lockTable, openReason,
+  placeKeys, removeKey, riddleAnswerMatches, riddleDoors,
 } from '../game/doors.js';
 import { rollMonster } from '../game/combat.js';import { attackPhase, attackProfile, DODGE, PARRY, HEAVY, chargeScale, resolveDefence, spendStamina, stepStamina, syncStamina,
   payMonsterAttack, stepMonsterStamina, stepGuardStamina, wantsToFlee, staminaMax,
   STAGGER_SECONDS, poiseMax, poiseCost, applyPoise, foeReadsGuard, BAIT_PATIENCE,
 } from '../game/combatStyle.js';
 import { furnishRoom } from '../game/furnish.js';
-import { CAST_RANGE, RANGED_IDS, boltAtPlayer, castFootwork, fireBolt, resolveBolt, stepBolt } from '../game/ranged.js';
+import { CAST_RANGE, RANGED_IDS, boltAtPlayer, boltCrossedPlayer, castFootwork, fireBolt, resolveBolt, stepBolt } from '../game/ranged.js';
 // The player's own missile (`game/archery.js`): a bow that is a bow, not a club with a range.
 import { aimFromAngles, arrowAtMonster, isBow, looseArrow, stepArrow } from '../game/archery.js';
 // What each creature is besides its hit points: the immunity ladder, silver at a vampire,
@@ -208,13 +213,13 @@ import {
 } from '../game/progression.js';
 import { ATTRIBUTES, classById as classOf } from '../game/character.js';
 import { HIT_FORMULA_NOTE, attackInterval, attributeOf, monsterAttack, monsterXp, resolveAttack } from '../game/combat.js';
-import { humanLoot, rollHuman } from '../game/humans.js';
+import { HUMAN_DEATH_SHEET, humanLoot, rosterFile, rollHuman } from '../game/humans.js';
 import { corpseRows, takeCorpseLoot } from '../game/corpseLoot.js';
 import { BLOCK_NOTE, carried, guardDamage, weaponCarried } from '../game/inventory.js';
 import {
   addToBag, armourCoverage, armourOn, bagRows, carriedWeight, carryStatus, countInBag,
-  createBag, dropFromBag, equipFromBag, itemById, itemNote, itemsOfKind, maxCarryWeight, priceOf,
-  removeFromBag, startingKit, unequipItem, useFromBag, weaponHeld,
+  createBag, dropFromBag, equipFromBag, iconRoleFor, itemById, itemNote, itemsOfKind,
+  maxCarryWeight, priceOf, removeFromBag, startingKit, unequipItem, useFromBag, weaponHeld,
 } from '../game/items.js';
 import {
   CASTING_NOTE, LIGHT_SECONDS, applySpell, buildSpellLibrary, canCast, costOf, knownSpellsOf, learnSpell,
@@ -242,16 +247,27 @@ import { peopleKindsFromListing, standInKindsFromListing, actionFile } from '../
 import { ART_BASELINE, SCREEN, canRunUnlessDrawn, createWeaponRig, placeWeapon, swingDirection, weaponName } from '../game/weaponView.js';
 import { DUNGEON_BLOCKS_INF, DUNGEON_BLOCKS_MIF, assembleDungeon, spawnCellFor } from '../game/dungeonPlan.js';
 import { loadArenaText, cityTextKey, wrapText } from '../arena/arenaText.js';
-import { STAFF_PICKUP_LEVELS, CLUE_PICKUP_LEVELS, buildQuestChain, stageMif } from '../game/questData.js';
+import { STAFF_PICKUP_LEVELS, CLUE_PICKUP_LEVELS, buildQuestChain, stageMif, levelLabel } from '../game/questData.js';
 import { applyQuestEvent, currentObjective } from '../game/questState.js';
-import { ENDING_MOVIES, PALACE_SCENE, storyScenesFor } from '../game/storyBeats.js';
-import { dueAmbush, dueCellDream, dueDream, storyMovie, storySpeaker, storyText, DEATH_TEXT, EMPEROR_THANKS, ETERNAL_CHAMPION, JEWEL_CRY } from '../game/storyScript.js';
+import { ENDING_MOVIES, PALACE_SCENE, storyScenesFor, endingMoviesFor } from '../game/storyBeats.js';
+import { dueAmbush, dueCellDream, dueDream, dueDeathScene, storyMovie, storySpeaker, storyText, DEATH_TEXT, DEATH_TEXT_BAD, QUEST_OPENING, EMPEROR_THANKS, ETERNAL_CHAMPION, JEWEL_CRY } from '../game/storyScript.js';
 import { narrationFiles, narrationMs } from '../arena/storySpeech.js';
 import { dreamCaptions } from '../game/cutscene.js';
+// **The original's Staff-dungeon arrival page** — `DUNGEON.TXT`'s own prose, read out of the
+// player's install (`arena/dungeonTxt.js`), and the province art it stands in front of.
+import { parseDungeonTxt } from '../arena/dungeonTxt.js';
+import { questSplashFor, wrapSplashText } from '../game/questSplash.js';
+// **The films the story plays at its beats** (`game/cinematics.js`): the Staff's assembly, the
+// vision that follows Ria's 1500 dream, Tharn's shield, and the ending's whole chain.
+import { JEWEL_SHIELD_MOVIE, STAFF_VISION_MOVIE } from '../game/cinematics.js';
+// **The logbook** (`game/logbook.js`): the player's own notes, saved with the character.
+import { addNote, removeNote } from '../game/logbook.js';
+import { loadLogbook, saveLogbook } from '../game/save.js';
+import { renderLogbook } from './logbookPanel.js';
 import { beginNewGame } from './newGame.js';
 import {
   advanceDays, applyRadiantEvent, discoverLooseMifs, enterableDungeons, enterableFromListing,
-  handInAtPlace, handInWith, personOffer, radiantObjective, repairWildTargets, slayProgress,
+  handInAtPlace, handInWith, harvestProgress, personOffer, radiantObjective, repairWildTargets, slayProgress,
 } from '../game/radiantQuests.js';
 import { friendsInPlace, noteRegard, peopleKnown, personId, regardOf, regardTally, standingOf, standingWord } from '../game/regard.js';
 // **A house in the city** — the king's deed, its price and the door it is written against
@@ -266,6 +282,9 @@ import {
 import { getSfxVolume, playSfx, setSfxLoader, setSfxVolume, sfxState, unlockSfx, warmSfxClips } from '../game/combatSound.js';
 // **Arena's own 320×200 picture**, toggled from the pause menu (`game/videoSettings.js`).
 import { retro320Enabled, retro320Frame, setRetro320 } from '../game/videoSettings.js';
+// **The interface's own two switches** (`game/hudSettings.js`): the compass on or off, and the
+// whole HUD away for a photograph. Both the desk and the phone read the same two settings.
+import { applyHudSettings, compassEnabled, guiHidden, setCompassEnabled, setGuiHidden } from '../game/hudSettings.js';
 // The corpus the sibling install carries and this one does not (S30): Daggerfall's own
 // `NAMEGEN.DAT`, whose fragments build every race's names — a driver for the whole port's
 // "people have names" claim, degraded to no-name runs exactly as before without it.
@@ -534,6 +553,19 @@ const SIGHT_MARGIN = 0.4;
  */
 const WALK_CYCLE_METRES = CELL_SIZE;
 /**
+ * **How far past a facing boundary the eye has to go before the player's body turns.**
+ *
+ * The five views are forty-five degrees apart (`viewFacing` rounds the angle between the player's
+ * own heading and the camera). Without a dead band a camera sweeping across one boundary — which
+ * walking forward while turning does on every frame — alternated the body between two sheets and
+ * flickered (the owner, 2026-10-22: *"when you move your visual in third person and are walking
+ * forward your character flickers too much"*). Six degrees either side is small enough that a
+ * deliberate turn still shows the next side immediately.
+ */
+const FACING_HYSTERESIS = 0.10;
+/** The same dead band for the mirror, measured as |sin| of the same angle (0.12 ≈ 7°). */
+const MIRROR_HYSTERESIS = 0.12;
+/**
  * How fast a person's **talk** sheet runs while the player is speaking to them.
  *
  * GUESS, and the smallest honest one: the talk sheets are nine frames of a figure
@@ -567,6 +599,17 @@ const FOLK_ANGER_SECONDS = 45;
 // on the window's edge. A window slides in `WILD_CHUNK` steps, so the honest reach is one step
 // plus the camp's own spread; beyond that the player is not near the mark at all.
 const RADIANT_EDGE_REACH = WILD_CHUNK + 6;
+/**
+ * **A harvest camp's own pictures.** `NHAYM.IMG` is Arena's hay rick (76×47 px) — the bale a
+ * player carries in — and `THRUSH01/02.IMG` are the install's corn/reeds (33×41 and 53×56), the
+ * same flats the wilderness already grows in its shallows (`flats.js`'s `onWater`). The camp is
+ * dressed with them rather than with new art, because the whole job is about the country's own
+ * crop.
+ */
+const HARVEST_ART = 'NHAYM.IMG';
+const HARVEST_CORN_ART = Object.freeze(['THRUSH01.IMG', 'THRUSH02.IMG']);
+/** How many stands of corn frame a camp. */
+const HARVEST_CORN = 4;
 
 const TRIGGER_SOUND_COOLDOWN = 2;
 /** How loud those clips sit against the rest: ambience, not an event. GUESS, deliberately low. */
@@ -957,6 +1000,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   let automapOpen = false;
   /** Whether *this* panel stopped the world (a pause somebody else owns is left standing). */
   let automapPaused = false;
+  /**
+   * **The sheet's magnifier.** `zoom` 1 is the whole level in the frame — what the panel has always
+   * drawn and what it opens on; a phone pinches or scrolls past it to read a corridor the fit made
+   * small, and drags the enlarged sheet around (`scenes/automap.js`'s `automapLayout` clamps it).
+   */
+  let automapView = { zoom: 1, panX: 0, panY: 0 };
   // **The song last asked for**, declared before the first `loadLevel` runs: the level load resets
   // it so the new place's tune is asked for, and the frame loop's `updateMusic` is a no-op until
   // the place moves. (A `let` further down the scene is in TDZ at the first load — measured as
@@ -1265,11 +1314,42 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   const sbSpellBar = document.getElementById('sb-spell-bar');
   const sbGold = document.getElementById('sb-gold');
   const sbLevel = document.getElementById('sb-level');
+  const sbName = document.getElementById('sb-name');
   const sbHotbarHint = document.getElementById('sb-hotbar-hint');
+  // ── the plateau's own doors ────────────────────────────────────────────────
+  // One plate in the top-left holds the vitals, the hotbar and the four pages a player opens
+  // mid-fight (`#statusbar`). The chevron folds it to itself and opens it again; the four
+  // buttons are the keys a player already knows, wired to the same functions the keyboard
+  // calls rather than to a second, parallel way of opening a page.
+  const plateau = document.getElementById('statusbar');
+  const plateauToggle = document.getElementById('plateau-toggle');
+  for (const button of document.querySelectorAll?.('#statusbar [data-panel]') ?? []) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const open = {
+        bag: () => openBag(), spells: () => openSpellbook(),
+        logbook: () => toggleLogbook(), map: () => openWorldMap(),
+      }[button.dataset.panel];
+      void open?.();
+    });
+  }
+  plateauToggle?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const folded = plateau?.classList.toggle('folded') ?? false;
+    plateauToggle.setAttribute('aria-expanded', String(!folded));
+    plateauToggle.title = folded ? 'Show the panel' : 'Hide the panel';
+    dbg.plateau = { folded };
+  });
   /** The paintings `game/arenaGui.js` found in this install, once they have loaded. */
   let guiArt = null;
   /** The touch layer, on a phone. */
   let touchLayer = null;
+  // **The switches are the page's, not the scene's** (`game/hudSettings.js`): written on
+  // `<body>` at boot so a page that was reloaded with the interface hidden opens hidden, and
+  // re-written by the ticks in the pause menu. `saveHudSetting` is the one door both ticks use.
+  applyHudSettings();
   // ── the compass (`game/compass.js`) ──────────────────────────────────────────
   // Eight points once, then only the facing one's class and the bearing's text change — the
   // HUD's own law (write a band, never the element) applied to the one reading that moves every
@@ -1313,7 +1393,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       compassWrote.point = reading.index;
     }
     compassWrote.heading = heading;
-    compassFace.textContent = `${reading.point} ${heading}°`;
+    // **The window holds the reading, and the reading is two pieces of type**: the point is the
+    // gold letter the strip already lights (`.at`), so the face writes only the degree. Written as
+    // one string it would say `E E 90°` inside `COMPASS.IMG`'s window; `compassReading().text` is
+    // still the whole reading (`E 90°`) for the debug seam and for anything that wants one line.
+    compassFace.textContent = `${heading}°`;
     dbg.compass = { ...reading, heading };
     return reading;
   }
@@ -1330,6 +1414,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // is false on (`populate` sets it, because `inhabited` lives in that function's own scope).
   let levelInhabited = false;
   const dbg = { frame: 0, painted: 0, seconds: 0, shotReady: false, reloaded: 0, notice: null, figures: 0 };
+  /** The two HUD switches as the page holds them (`game/hudSettings.js`), for the menu and the seam. */
+  dbg.hud = { compass: compassEnabled(), hidden: guiHidden() };
 
   /**
    * The country's own block lists, once per page (see `countryLists`).
@@ -1837,15 +1923,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // flat the map painted on a raised block (a platform, a crate, a step) stands on the block's
       // own top. Based on `level.floorY` alone, the hay and grass of a camp stood at floor level and
       // read as floating in the middle of the block (or buried in it).
-      const centers = list.map((flat) => [
-        (flat.row + 0.5) * CELL_SIZE,
-        flatBaseY(flat.yOffset ?? 0, {
-          height: size.h,
-          floorY: flatGroundY(level.cells[flat.row * level.width + flat.col], { floorY, cellSize: CELL_SIZE }),
-          ceilingY,
-        }),
-        (flat.col + 0.5) * CELL_SIZE,
-      ]);
+      const centers = list.map((flat) => {
+        const cell = level.cells[flat.row * level.width + flat.col];
+        return [
+          (flat.row + 0.5) * CELL_SIZE,
+          flatBaseY(flat.yOffset ?? 0, {
+            height: size.h,
+            floorY: flatGroundY(cell, { floorY, cellSize: CELL_SIZE }),
+            ceilingY,
+            // **The water line is the ground of a flat standing on water** (`flats.js`): the
+            // install's corn and boats carry `Y:20` and used to hover half a metre over the sea.
+            onWater: Boolean(flat.chasm ?? cell?.floor?.chasm),
+          }),
+          (flat.col + 0.5) * CELL_SIZE,
+        ];
+      });
       batches.push({
         batch: renderer.createBillboardBatch(ARENA_TEXTURE_ARCHIVE, image.frames ? `${name}#0` : name, size, centers, { dynamic: false }),
         name, frames: image.frames?.length ?? 1, size,
@@ -3087,6 +3179,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // player owns, and its contents are the character's own (`player.homeChest`).
       if (!spot.homeChest && emptied.has(`${spot.row},${spot.col}`)) spot.taken = true;
     }
+    // ── a harvest camp's hay ───────────────────────────────────────────────────
+    // **The bales and the corn stand on the country's own ground**, made here with the level so
+    // they are back the moment the window is built again (“respawn as soon as the player
+    // leaves”) and never written to the loot ledger. Placed after the ledger above because the
+    // hay is not map loot: it belongs to the job, not to the place.
+    if (wildRequest && wildOrigin && radiant.active?.kind === 'harvest' && !radiant.active.completed) {
+      const cell = radiant.active.targetCell;
+      const row = Math.round(Number(cell?.row) - Number(wildOrigin.row));
+      const col = Math.round(Number(cell?.col) - Number(wildOrigin.col));
+      if (Number.isFinite(row) && Number.isFinite(col)
+        && row >= 0 && col >= 0 && row < level.depth && col < level.width) {
+        const camp = harvestCampSpots(level, { row, col }, radiant.active);
+        lootSpots.push(...camp.bales, ...camp.corn);
+        dbg.harvestCamp = {
+          quest: radiant.active.id, cell: { row, col },
+          bales: camp.bales.length, corn: camp.corn.length,
+        };
+      }
+    }
     const lootBatches = await loadLoot(lootSpots, level);
     // What this level's `.INF` says may live in it. `monsterRosterFromInf` is the map's
     // own list; an empty one means the level has no monsters, not that the game should
@@ -3227,46 +3338,69 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // install's `1447`, where he says he has watched the player blunder to this place and waits
     // below. `quest`/`chain` are declared below the first `loadLevel` (the TDZ rule this file has
     // paid for), so the state is read through its own loader here rather than through the later `let`.
+    const palaceState = loadQuestState();
     if (!palaceMovieShown && index === 0 && /^IMPPAL/i.test(String(mapName))
-      && loadQuestState().step >= 9) {
+      && palaceState.step >= 9 && !palaceState.ended) {
       palaceMovieShown = true;
-      const state = loadQuestState();
+      const state = palaceState;
       // **His last answer comes first** (`1399`, the eighth piece): the palace is the next
       // encounter, so the vision he owes after Dagoth-Ur is played here rather than lost — the
       // adventure path goes from the last piece straight to the palace, where the ambush is
       // otherwise skipped in favour of `1447`. The ledger is written through the loader because
       // `quest` is declared below this point (the TDZ the comment above records).
       const owed = dueAmbush(state);
+      // **The gate is two movies**: Tharn's change of face (`MORPH.FLC`), then his own 1447
+      // taunt in `JAGAR.FLC` (`storyBeats.js`'s `PALACE_SCENES`). The reveal used to be unwired,
+      // so the port cut from the player's arrival straight to a talking face.
+      const reveal = async () => { await maybeStoryMovie('palaceGate', state); };
       if (owed) {
         saveQuestState({ ...state, ambushSeen: [...(state.ambushSeen ?? []), owed] });
-        void playStoryScene(owed).then(() => playStoryScene(PALACE_SCENE.textKey));
+        void playStoryScene(owed).then(reveal);
       } else {
-        void playStoryScene(PALACE_SCENE.textKey);
+        void reveal();
       }
     }
+    // **Tharn's shield over the Jewel** (`JAGRSHLD.FLC`). The original raises it in the
+    // palace's last chamber before the player can reach the Jewel; UESP describes the shield
+    // and the movie is the install's own. Played on the bottom floor, once per page, so the
+    // descent does not lose it and a reload does not stack it. It is the chamber's opening
+    // beat, not a reprise: a player who already holds the Jewel or has finished the story does
+    // not see the shield raised over an empty altar.
+    const shieldState = loadQuestState();
+    if (!dbg.jewelShieldShown && /^IMPPAL/i.test(String(mapName)) && index === levelCount - 1
+      && shieldState.step >= 9 && !shieldState.hasKeyItem && !shieldState.ended) {
+      dbg.jewelShieldShown = true;
+      void playStoryMovie(JEWEL_SHIELD_MOVIE);
+    }
     if (hud) {
+      // **What a player can use, and nothing a loader would log.** The place line used to read
+      // `50×50 cells · 6088 quads · 15 materials · 15 textures · 264 water cells in 243 planes` —
+      // the owner, 2026-10-25: *"the block at the top left of the screen with all that info i dont
+      // even know if its usefull"*. Those figures are the build's, not the player's: they live on
+      // `dbg.build` (and `__debug.state()`) where the audits read them. The card says where the
+      // player is and what kind of place it is, in two lines of the same brass.
+      // A town's own name is what the player calls it; a map file name is what the install
+      // calls it. The card leads with the first, and keeps the second on the quiet line.
+      const label = city && place?.name ? place.name : mapName;
       const what = city
-        ? `${cityRequest.kind} · seed ${cityRequest.seed} · ${city.stats.stamped}/${city.slots.length} blocks`
+        ? cityRequest.kind
         : wild
-          // **The country says what country it is** (B26): the biome of the cell, the wall that is in
-          // the window (if any), and the blocks the window is made of. It used to say `wilderness`,
-          // which is true of every one of the 4 096 cells per pixel and therefore says nothing.
-          ? `the country · ${wild.climate ?? climate}${country ? ` · outside ${country.settlement.name}` : ''} · blocks ${wild.blocks.join(', ')}${wild.missing.length ? ` · ${wild.missing.length} missing` : ''}`
-          : `level ${index + 1}/${levelCount}`;
-      // The level's own line, kept on `current` so the objective can be appended to it
-      // whenever it changes — including the frame after this one, when the quest has
-      // had a chance to say what is here (the quest is loaded after the first level,
-      // so this cannot be built here).
-      current.hudBase =
-        `${mapName} · ${what} · ${infName}\n`
-        + `${levelWidth}×${levelDepth} cells · ${built.stats.quads} quads · ${built.materials.length} materials · ${uploaded} textures`
-        + `${scenery.flats.length ? ` · ${scenery.flats.length} flats in ${sceneryBatches.length} batches` : ''}`
-        + `${surfaces.length ? ` · ${surfaces.map((s) => `${s.cells} ${surfaceLabel(s.kind)} cells in ${s.quads.length} planes`).join(' + ')}` : ''}`;
-      // The place band: where the player is, and what the level they stand in is made of.
-      // It is painted in the panel's own dim ink (the fight band below it carries the
-      // numbers a player looks at every second), and the movement keys are on the fight
-      // band's one control line rather than repeated here.
-      hudPlace.innerHTML = `<span class="hint">${escapeHtml(current.hudBase).replace(/\n/g, '<br>')}</span>`;
+          // **The country says what country it is** (B26): the biome of the cell, the wall that is
+          // in the window (if any), and the name of the settlement it stands outside. It used to
+          // say `wilderness`, which is true of every one of the 4 096 cells per pixel.
+          ? `the country · ${wild.climate ?? climate}${country ? ` · outside ${country.settlement.name}` : ''}`
+          : (levelCount > 1 ? `dungeon · level ${index + 1} of ${levelCount}` : 'dungeon');
+      dbg.build = {
+        map: mapName, inf: infName, cells: [levelWidth, levelDepth], quads: built.stats.quads,
+        materials: built.materials.length, textures: uploaded,
+        flats: scenery.flats.length, batches: sceneryBatches.length,
+        surfaces: surfaces.map((s) => ({ kind: s.kind, cells: s.cells, planes: s.quads.length })),
+      };
+      // The level's own line, kept on `current` so the world page can answer where the player is
+      // without reading the DOM (the quest marker and the leave-the-dungeon line use it).
+      current.hudBase = `${label}\n${what} · ${infName}`;
+      hudPlace.innerHTML = `<b class="hp-name">${escapeHtml(label)}</b>`
+        + `<span class="hp-meta">${escapeHtml(`${what} · ${infName}`)}</span>`;
     }
     // **The wild lands in the save**, as a **world cell** (B26): a page load lands the player on the
     // country cell they *stood on* rather than at a gate or in the middle of a city block, and — since
@@ -3506,6 +3640,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // own arrival text for a quest dungeon — and, when the player has come here for a
   // reason, there is something to find.
   const library = await loadArenaText(data);
+  // **The main-quest dungeons' own words** (`DUNGEON.TXT`). The original prints the prose when
+  // the player stands before a Staff dungeon; the file is loose, so an install without it simply
+  // has no splash, never a broken boot.
+  let dungeonEntries = [];
+  try {
+    const text = await data.bytes('DUNGEON.TXT');
+    if (text) dungeonEntries = parseDungeonTxt(text);
+  } catch (err) {
+    console.warn('[arrival] DUNGEON.TXT could not be read', err?.message ?? err);
+  }
   const chain = buildQuestChain(world);
   let quest = loadQuestState();
   // The people's art and their words, both read off the player's own install: the 65
@@ -3578,6 +3722,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   /** The five shipped angles of the player's chosen body, and the side the eye is on. */
   const playerSets = new Map();
   let playerFacing = 0;
+  /**
+   * **The body's own stride, in metres, shared by every angle of it.** Each of the five sheets
+   * used to keep its own `phase`, so the frame that was drawn depended on how long *that sheet*
+   * had been on the screen: a body that changed angle mid-stride restarted its walk, and a
+   * body that changed angle on alternate frames flickered between two poses (D-94).
+   */
+  let playerStride = 0;
+  /** When the body's heading was last turned, so the turn can be smoothed over ~100 ms (D-94). */
+  let playerFacingAt = 0;
+  /** The angle and the mirror the eye last chose, so a boundary cannot be crossed every frame. */
+  let playerFacingView = BACK_VIEW;
+  let playerMirrored = false;
   /** The look the player's sheets were loaded from, for the debug seam and the HUD. */
   let playerLook = null;
   let swingCooldown = 0;
@@ -3623,46 +3779,90 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     chargePulse: 0,
   };
   const combatFx = new CombatFx();
-  // **Arena's own particle art** (`game/combatFx.js`'s records, drawn here). `SPPARTS.RCI` is
-  // the install's 9×9 spell spark and `BLOODEXP.CFA` its five-frame blood explosion; the effects
-  // pass (`engine/render/combatFxPass.js`) is a flat-colour program with no texture unit, so the
+  // **Arena's own effect art** (`game/combatFx.js`'s records, drawn here). `BLOODEXP.CFA` is the
+  // install's five-frame blood explosion and `SPELL_ART` the 27-name effect table's spell art —
+  // the `FX_*` projectiles, the `EXP_*` bursts and the five screen sheets. The effects pass
+  // (`engine/render/combatFxPass.js`) is a flat-colour program with no texture unit, so the
   // sprites go through the same billboard pass every other piece of Arena art uses. Loaded once
   // with the level's figures and torn down with them.
-  let sparkBatch = null;
-  let sparkSize = null;
+  /** @type {Map<string, object>} the effect sheets (`FX_AB.CFA`…`EXP_MB.CFA`, `FIRE.CFA`…). */
+  const spellSets = new Map();
+  /**
+   * The screen sheets' frames as 2D canvases, for the **view** half of a cast.
+   *
+   * `FIRE.CFA` (155 × 102), `ICE.CFA` (103 × 60), `ACID.CFA` (160 × 147), `SHOCK.CFA` (160 × 147),
+   * `MAGIC.CFA` (160 × 144) and `SMOKE.CFA` (160 × 100) are half the 320 × 200 view: the original
+   * paints them across the screen when a spell is cast. A canvas per frame is what
+   * `drawSpellView` blits, exactly as `loadWeaponArt` gives the weapon's `.CIF` its own.
+   *
+   * @type {Map<string, HTMLCanvasElement[]>}
+   */
+  const spellFrames = new Map();
   /** `BLOODEXP.CFA` loaded as the crowd's loader loads a figure. */
   let bloodSet = null;
-  const FX_SPRITE_CAPACITY = 192;
+  /**
+   * Arena's effect sprites are **tall pixels**.
+   *
+   * The game drew its 320 × 200 view squeezed into 4:3, so a spell's art is stretched by
+   * `(320/200) / (4/3)` = 1.2 vertically — OpenTESArena's `TALL_PIXEL_RATIO`, applied to exactly
+   * these two animation kinds and nothing else. Widths are the sheet's own.
+   */
+  const SPELL_TALL_PIXEL = 1.2;
 
   /**
-   * Load the two particle sheets the install ships.
+   * Load the effect animations the install ships.
    *
-   * A missing file is a missing effect, not a crash: `SPPARTS.RCI` is loose in the install and
-   * `BLOODEXP.CFA` is in the archive, so the picked-folder and dev doors both answer them, and
-   * an install that does not is simply drawn with no spray.
+   * This used to waste a read on `SPPARTS.RCI` and draw it as the spark. That file is a 9 × 9
+   * field of drab palette indices **with no cutout at all** (`combatFx.js`'s note), so every cast
+   * threw a solid brown block, the same block for every element. The spell's picture is the
+   * install's own `.CFA` animations instead: six families of projectile and burst, and the five
+   * screen sheets the original paints across the view.
+   *
+   * A missing file is a missing effect, not a crash: an install that does not ship one is simply
+   * drawn without it.
    */
   async function ensureArenaParticles() {
-    if (!bloodSet) {
-      try { bloodSet = await loadSpriteSet('BLOODEXP.CFA', 8); } catch { bloodSet = null; }
-    }
-    if (!sparkBatch) {
+    spellSets.clear();
+    spellFrames.clear();
+    bloodSet = null;
+    try { bloodSet = await loadSpriteSet('BLOODEXP.CFA', 8); } catch { bloodSet = null; }
+    const frames = new Map();
+    const screenSheets = new Set(Object.values(SPELL_SPLASH_ART));
+    for (const file of SPELL_ART) {
       try {
-        const bytes = await data.bytes('SPPARTS.RCI');
-        if (bytes?.length) {
-          const field = parseRci(bytes, 'SPPARTS.RCI');
-          const palette = await data.palette();
-          renderer.uploadTexture(CREATURE_ARCHIVE, 'SPPARTS.RCI',
-            imageToUpload(field.indices, field.width, field.height, palette));
-          // A spark is 9 pixels of Arena's own field, at the figure scale: about 40 cm.
-          sparkSize = { w: field.width * SPRITE_SCALE, h: field.height * SPRITE_SCALE };
-          sparkBatch = renderer.createBillboardBatch(CREATURE_ARCHIVE, 'SPPARTS.RCI', sparkSize,
-            [...Array(FX_SPRITE_CAPACITY)].map(() => [0, -1000, 0]), { dynamic: true });
-        }
-      } catch (err) {
-        data.warn(`spark sprites: ${err.message}`);
-        sparkBatch = null;
-      }
+        const set = await loadSpriteSet(file, 8);
+        if (!set) continue;
+        spellSets.set(file, set);
+        frames.set(file, set.cfa.frames.length);
+        // Only the screen sheets need a 2D copy: the world's are textures the billboard pass uses.
+        if (screenSheets.has(file)) spellFrames.set(file, await frameCanvases(set.cfa));
+      } catch { /* a missing sheet is a missing effect */ }
     }
+    // A burst's clock is its own sheet's length, not a guess.
+    combatFx.setArtFrames(frames);
+  }
+
+  /**
+   * One sheet's frames as canvases, for the 2D layer.
+   *
+   * The palette is the same one `loadSpriteSet` uploads the texture with
+   * (`paletteForSheet`), so the screen's copy of a spell and the world's cannot come out in two
+   * different sets of colours. Index 0 is the cutout, as everywhere else in Arena's art.
+   *
+   * @param {object} cfa  a parsed `.CFA`
+   * @returns {Promise<HTMLCanvasElement[]>}
+   */
+  async function frameCanvases(cfa) {
+    const palette = await paletteForSheet(cfa.frames, spritePaletteName(), (name) => data.palette(name));
+    return cfa.frames.map((frame) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = frame.width;
+      canvas.height = frame.height;
+      canvas.getContext('2d').putImageData(new ImageData(
+        toRgba(frame.indices, palette, { width: frame.width, height: frame.height }),
+        frame.width, frame.height), 0, 0);
+      return canvas;
+    });
   }
   const atmosphere = new SceneAtmosphere();
   let sceneLightsEnabled = true;
@@ -3687,6 +3887,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * uses (0.3 for a heavy, 0.15 for a knock) — because this is presentation, not data.
    */
   let screenShake = 0;
+  /**
+   * **Daggerfall's wound on the lens.** A physical blow fills the page's red layer at 0.4
+   * alpha; it fades at 0.7 a second on the real clock (`game/damageFlash.js`). The layer is
+   * painted from the step below, so a flash survives a frame that does no HUD work.
+   */
+  const damageFlash = createDamageFlash();
+  const damageFlashEl = globalThis.document?.getElementById?.('damageflash') ?? null;
   // **A hold is a clock, not a flag** (a spider's venom, a medusa's spell, a lizard man's
   // bite — UESP's own bestiary lines, `bestiary.js`'s `paralyses`). While it runs the player
   // neither walks nor swings; `Free Action`, the potion of Purification and a Knight's own
@@ -4288,6 +4495,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // treasure art; `E` on it belongs to `takeObjective`, not `takeLoot`, or the job would be
       // "picked up" as generic loot and never completed.
       if (spot.marker) continue;
+      // **A camp's corn is scenery.** A harvest camp is dressed with stands of corn the player
+      // walks past; only the bales are `E`'s business.
+      if (spot.prop) continue;
       const distance = Math.hypot(pos[0] - (spot.row + 0.5) * CELL_SIZE, pos[2] - (spot.col + 0.5) * CELL_SIZE);
       if (distance > DOOR_REACH) continue;
       if (!best || distance < best.distance) {
@@ -4336,11 +4546,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       openRiddleForLeaf(leaf);
       return false;
     }
+    let usedKey = null;
     if (leaf.locked) {
       // The palace's own cell is sealed by the quest, not by a lock: only the mithril key turns
       // it (Arena's own `HasKeyItem`). A generic key of its level is not that key.
       const key = leaf.questSeal ? null : keyOpens(player.keys, leaf.lockLevel);
-      if (key) used = 'key';
+      if (key) {
+        used = 'key';
+        usedKey = key;
+        // **Arena spends the key.** OpenTESArena's `MapLogic::handleDoorOpen` removes it from
+        // the key inventory; the same key cannot then open a second sealed door, which is
+        // what makes the level's own placement one key per door a rule and not a decoration.
+        player.keys = removeKey(player.keys, key);
+        showNotice(`The ${key.label ?? 'key'} turns — and is spent.`, 1400);
+      }
       else if (quest.mithrilKey && /^IMPPAL/i.test(mapName) && current.index===3 && leaf.row===24 && leaf.col===21) {
         used = 'key';
         showNotice('The mithril key turns, and the seal gives.', 2000);
@@ -4365,7 +4584,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     playSfx('door');
     const reason = openReason(used);
     if (reason && used !== 'key') showNotice(reason, 1600);
-    dbg.lastDoor = { row: leaf.row, col: leaf.col, result: used ?? 'opened', lockLevel: leaf.lockLevel, kind: leaf.kind };
+    if (used === 'key') savePlayer();
+    dbg.lastDoor = {
+      row: leaf.row, col: leaf.col, result: used ?? 'opened', lockLevel: leaf.lockLevel,
+      kind: leaf.kind, key: usedKey?.label ?? null, keyId: usedKey?.keyId ?? null,
+    };
     updateObjectiveHud();
     return true;
   }
@@ -4383,6 +4606,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   function takeLoot(spot) {
     if (spot.taken) return false;
+    // **A hay bale is the job's, not gold.** A harvest camp's bales are picked up with the same
+    // `E` as a chest, but they pay into `radiant.active` and never into the purse
+    // (`takeHarvest`), which is what makes five of them the job.
+    if (spot.harvest) return takeHarvest(spot);
     // **Your own chest is storage, not loot** (`homeChest` below). `E` at it opens the
     // two-list page rather than paying out a random find.
     if (spot.homeChest) return openHomeChest();
@@ -4390,7 +4617,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // taken and the mirror stays on its wall for the next visit.
     if (spot.kind === 'mirror') return openMirror();
     let gold = 0;
-    const find = lootFind(spot);
+    // **An equipment flat is a weapon or a piece of armour** (`equipmentFind`), so it is a real
+    // thing in the pack and not a line of prose: the draw is the spot's own, and the carry check
+    // below is therefore made against it.
+    const find = spot.kind === 'equipment' ? equipmentFind(spot) : lootFind(spot);
     // **A back has a limit** (`items.js`). The pack is refused before the spot is marked
     // taken, so the thing stays on the floor for a player who comes back lighter. A chest of
     // gold is still loot: a full player is refused it as well, rather than being able to fill
@@ -4400,18 +4630,38 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       showNotice(`You cannot lift it — ${room.reason}`, 3200);
       return false;
     }
+    let keyNote = null;
+    let keyId = null;
     if (spot.kind === 'key') {
       // **A key names its door.** `placeKeys` answers one key per sealed door and says which
       // one it is for; a pack that reads only "a key for a lock of level 254" leaves a player
       // holding three identical labels and no idea which door each belongs to.
-      player.keys = [...(player.keys ?? []), {
+      //
+      // **Arena's key ring is twelve slots, one per key id** (`Player::addToKeyInventory`): a
+      // second key of a type already held is not stacked, and a full ring leaves the key on
+      // the floor. The pickup only marks the spot taken when it was really taken.
+      const added = addKey(player.keys, {
         lock: spot.lock ?? 0,
+        // Arena's own key type, not just the lock's level: `(lockLevel - 1) % 12`.
+        keyId: spot.keyId ?? keyIdForLock(spot.lock ?? 0),
         label: spot.door
           ? `a key for the sealed door at ${spot.door.row},${spot.door.col}`
           : `a key for a lock of level ${spot.lock ?? 0}`,
-      }];
+      });
+      if (!added.ok) {
+        showNotice(added.reason, 3000);
+        dbg.lastLoot = { kind: spot.kind, refused: true, reason: added.reason, row: spot.row, col: spot.col };
+        return false;
+      }
+      player.keys = added.keys;
+      keyId = spot.keyId ?? keyIdForLock(spot.lock ?? 0);
+      keyNote = added.reason;
     } else if (spot.kind === 'equipment') {
+      // The gear is the whole find: it goes into the pack here and onto the player below
+      // (`equipThing` is the same door the pack's own Equip button uses, so a picked-up cuirass
+      // is worn and a picked-up sword is in hand, with the notice saying which).
       gold = goldFor(spot.kind, () => 0);
+      if (find) setBag(addToBag(bagOf(), find, 1));
     } else {
       goldDraw++;
       const random = new ArenaRandom((spot.row * 7919 + spot.col * 104729 + goldDraw) >>> 0);
@@ -4430,11 +4680,49 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const item = find ? itemById(find) : null;
     dbg.lastLoot = {
       kind: spot.kind, itemIndex: spot.itemIndex, gold, row: spot.row, col: spot.col,
-      find: item ? item.id : null,
+      find: item ? item.id : null, keyId,
     };
-    showNotice(`${pickupNote(spot, gold)}${item ? ` And a ${item.name.toLowerCase()} for the pack.` : ''}`, 2600);
-    if (spot.kind === 'equipment') void wieldFromLoot();
-    else updateInventoryPanel();
+    if (spot.kind === 'equipment') {
+      // **The find says what it is.** `equipThing` writes the line the player needs — *"steel
+      // cuirass worn — 9 more armour"*, *"steel longsword in hand — 4–9 damage"* — so the old
+      // fixed sentence about a weapon here is gone with the crash behind it (D-102).
+      if (find) void equipThing(find);
+      else showNotice(pickupNote(spot, gold), 2600);
+    } else {
+      showNotice(`${keyNote ? `${keyNote} ` : ''}${pickupNote(spot, gold)}${item ? ` And a ${item.name.toLowerCase()} for the pack.` : ''}`, 2600);
+      updateInventoryPanel();
+    }
+    return true;
+  }
+
+  /**
+   * **Take one bale off a harvest camp's ground.**
+   *
+   * The event goes to the job's own machine (`applyRadiantEvent`'s `harvest`), which is where the
+   * law lives: the bale has to be the camp's, it can only be counted once, and the fifth finishes
+   * the work. The spot is then marked taken like any loot — `batchRecord.sync()` drops its quad —
+   * and because nothing is written to the loot ledger it is back with the next visit.
+   *
+   * @param {object} spot  a spot `harvestCampSpots` placed
+   * @returns {boolean}
+   */
+  function takeHarvest(spot) {
+    if (spot.taken) return false;
+    const result = applyRadiantEvent(radiant, 'harvest', {
+      where: place?.name, cell: worldCellNow(),
+      questId: spot.harvest.questId, harvestId: spot.harvest.id,
+    });
+    if (!result.ok) { showNotice(result.reason, 2200); return false; }
+    radiant = result.state;
+    saveRadiantState(radiant);
+    spot.taken = true;
+    spot.batchRecord?.sync();
+    playSfx('pickup');
+    updateObjectiveHud();
+    const progress = harvestProgress(radiant.active);
+    const count = progress ? `${progress.taken.length}/${progress.required}` : '1';
+    dbg.lastHarvest = { row: spot.row, col: spot.col, quest: spot.harvest.questId, count };
+    showNotice(`A bale of hay — ${count}.\n\n${radiantObjective(radiant) ?? ''}`, 3200);
     return true;
   }
 
@@ -4466,26 +4754,37 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
-   * The weapon an `EQUIPMEN` flat leaves behind: the next one up Arena's own weapon table.
+   * What an `EQUIPMEN` flat leaves behind: **a weapon or a piece of armour**, drawn from the
+   * spot itself.
    *
-   * The item numbers are indices into a table in `A.EXE` this data set does not ship (S14),
-   * so what the flat *is* cannot be read off; what can be read off is the level's own
-   * danger (`game/encounters.js`), and the weapon it hands over is drawn from UESP's table
-   * around that. The sheet changes with it — `loadWeaponArt` reloads for the new family.
+   * The item numbers on Arena's flats are indices into a table in `A.EXE` this data set does not
+   * ship (S14), so what a particular flat *is* cannot be read off. What the owner asked for is
+   * the thing the flat is for — *"piles of loot … dont give a random weapon/piece of armor"* —
+   * and the honest table is `game/items.js`'s own catalogue: every weapon in every material, the
+   * three armour materials' pieces and the shields, sorted by price and drawn by the **cell's**
+   * own dice, so the same pile holds the same find on every visit and two piles hold two
+   * different ones. A deeper level skews the draw upward (`current.index` is the storey), which
+   * is this project's rule and says so.
+   *
+   * @param {object} spot  an `equipment` loot spot the level's own flats placed
+   * @returns {string|null} an item id from `game/items.js`
    */
-  async function wieldFromLoot() {
-    const index = Math.min(WEAPONS.length - 1, 1 + (current?.index ?? 0) + Math.floor((dbg.frame ?? 0) % 3));
-    const weapon = WEAPONS[index];
-    // The blade goes **in the pack as well as in the hand**: a weapon the player has found is
-    // theirs to keep, to sell and to swap back out again (`game/items.js`'s law — equipping
-    // never destroys anything).
-    player = { ...player, weapon: weapon.id, bag: addToBag(bagOf(), weapon.id, 1) };
-    weaponRig.reset(player.weapon);
-    await loadWeaponArt();
-    savePlayer();
-    updateCombatHud();
-    updateInventoryPanel();
-    showNotice(`${weapon.name} — taken up.`, 2600);
+  function equipmentFind(spot) {
+    // **Hands are not a find.** `items.js` lists `fists` (and the gauntlet rows are *armour*),
+    // so the weapon pool's cheapest row is the player's own hand — a pile that "gives fists" is
+    // the message-without-a-thing this whole function replaced.
+    const pool = [...itemsOfKind('weapon'), ...itemsOfKind('armour'), ...itemsOfKind('shield')]
+      .filter((item) => item.id !== 'fists');
+    if (!pool.length) return null;
+    pool.sort((a, b) => a.price - b.price || a.name.localeCompare(b.name));
+    const roll = new ArenaRandom(((spot.row * 4099 + spot.col * 131 + (spot.itemIndex ?? 0) * 17) >>> 0)).nextBelow(1000) / 1000;
+    const depth = Math.max(0, Math.min(8, Math.floor(Number(current?.index) || 0)));
+    // The pool is cheapest-first, and the draw is skewed toward its foot by the storey: an
+    // entrance floor holds iron and leather, a deep one can hold ebony. `roll ** skew` with
+    // skew 4.6 at the door and 1.0 at the bottom is the whole rule — a rank draw, not a price.
+    const skew = 1 + (8 - depth) * 0.45;
+    const index = Math.min(pool.length - 1, Math.floor(Math.pow(roll, skew) * pool.length));
+    return pool[index].id;
   }
 
   /**
@@ -5378,6 +5677,43 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /**
+   * **The golden outline of an elite** — the same creature sheet, cut to a gold silhouette.
+   *
+   * The owner, 2026-11-04: *"a feature similar to the one present in daggerfall js which is at
+   * high levels powerfull version of normal enemies with a golden outline"*. The install draws
+   * one body per creature, so the outline is a **second upload of that body** whose every
+   * non-transparent pixel is gold, drawn at 15 % larger and a few centimetres behind the
+   * creature. The opaque sprite covers its middle, and what is left is the rim — a golden edge
+   * exactly the shape of the creature, at no new art and no new draw program.
+   *
+   * It is cached on the normal set (`set.goldSet`), so a level with ten elites of one breed
+   * uploads one silhouette, not ten.
+   *
+   * @param {object} set  a loaded `spriteSets` entry
+   * @returns {object} the gold set, with the same `.cfa` and a larger `.size`
+   */
+  function goldSetFor(set) {
+    if (set.goldSet) return set.goldSet;
+    const file = `gold~${set.file}`;
+    for (const frame of set.cfa.frames) {
+      const colors = new Uint8Array(frame.width * frame.height * 4);
+      for (let i = 0; i < frame.indices.length; i++) {
+        if (frame.indices[i] === 0) continue;
+        colors[i * 4] = 246; colors[i * 4 + 1] = 198; colors[i * 4 + 2] = 74; colors[i * 4 + 3] = 255;
+      }
+      renderer.uploadTexture(CREATURE_ARCHIVE, `${file}#${frame.index}`,
+        { width: frame.width, height: frame.height, colors });
+    }
+    const size = { w: set.size.w * 1.15, h: set.size.h * 1.15 };
+    const batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, `${file}#0`, size, [[0, -1000, 0]], { dynamic: true });
+    // The silhouette is behind the body: its own shadow would be a second, doubled blob.
+    batch.noShadow = true;
+    const gold = { file, source: set.source, cfa: set.cfa, size, batch, capacity: 0, gold: true };
+    set.goldSet = gold;
+    return gold;
+  }
+
+  /**
    * Load the sheets a town's people answer and fall in, beyond their walk.
    *
    * The armoured roster ships a walk (and an attack); the archive's other families carry
@@ -5473,7 +5809,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // races, and the lizard or the snow wolf when the race is one this install draws with a
       // whole body (`raceSkin.js`'s `RACE_FIGURE`).
       const figure = figureForMonster(spawn.monster, index);
-      spawn.file = figure.sprite ? `${figure.sprite}1.CFA` : null;
+      // **A bowman's body is the armoured roster's plate fighter** (`figureForMonster`): five
+      // walk sheets, one angle each (`0#PLTWLK.CFA`), and a forward-facing swing (`01PLTATT.CFA`)
+      // — named by `rosterFile` rather than by an action digit the roster does not use.
+      spawn.roster = figure.roster ?? null;
+      spawn.file = figure.roster
+        ? rosterFile(figure.roster, 'WLK', 1)
+        : figure.sprite ? `${figure.sprite}1.CFA` : null;
       // A human bowman's own sheet, if the install draws one for their family.
       spawn.bowFile = spawn.monster?.human?.bowFile ?? null;
       // **The figure's own base name**, not the monster row's: an Argonian's art is the Lizard
@@ -5482,6 +5824,45 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       spawn.sprite = figure.sprite;
       spawn.skin = figure.skin;
     });
+  }
+
+  /**
+   * Upload every sheet one figure is drawn from, and answer the ones this install lacks.
+   *
+   * A creature's figure is `<sprite>1.CFA` … `<sprite>6.CFA` — five directions with the attack
+   * inside and a death sheet. **A bowman's** is the armoured roster's plate fighter instead: five
+   * angle files (`0#PLTWLK.CFA`, six frames each, one angle per file) and a forward-facing swing
+   * (`01PLTATT.CFA`), named by `humans.js`'s `rosterFile`.
+   *
+   * @param {string} file  the figure's own base sheet (already named for its roster action)
+   * @param {{sex?: string, family?: string}|null} roster  a bowman's roster figure, or null
+   * @param {number} capacity  how many actors draw from it
+   * @param {string|null} [skin]  the palette the figure wears
+   * @returns {Promise<string[]>} the sheets this install does not ship
+   */
+  async function loadFigureArt(file, roster, capacity, skin = null) {
+    const missing = [];
+    if (!await loadSpriteSet(file, capacity, skin)) missing.push(file);
+    if (roster) {
+      for (const view of PEOPLE_VIEWS) {
+        const walk = rosterFile(roster, 'WLK', view);
+        if (!await loadSpriteSet(walk, capacity, skin)) missing.push(walk);
+      }
+      const swing = rosterFile(roster, 'ATT');
+      if (!await loadSpriteSet(swing, capacity, skin)) missing.push(swing);
+      // **The roster ships no death**, so a fallen bowman is drawn from the watch's three-frame
+      // death (`humans.js`'s `HUMAN_DEATH_SHEET`) in his own skin. Loaded here rather than
+      // discovered at the moment of death: a sheet that is not uploaded when a body falls is a
+      // corpse the page cannot draw.
+      if (!await loadSpriteSet(HUMAN_DEATH_SHEET, capacity, skin)) missing.push(HUMAN_DEATH_SHEET);
+    } else {
+      const base = file.slice(0, -5);
+      for (let action = 2; action <= 6; action++) {
+        const sheet = `${base}${action}.CFA`;
+        if (!await loadSpriteSet(sheet, capacity, skin)) missing.push(sheet);
+      }
+    }
+    return missing;
   }
 
   /**
@@ -5496,10 +5877,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    */
   async function loadSpawnArt(list) {
     const usable = list.filter((s) => s.file);
+    /** @type {Map<string, {file: string, skin: string|null, roster: object|null, count: number}>} */
     const perFile = new Map();
     for (const spawn of usable) {
       const key = `${spawn.file}|${spawn.skin ?? ''}`;
-      perFile.set(key, (perFile.get(key) ?? 0) + 1);
+      const entry = perFile.get(key) ?? { file: spawn.file, skin: spawn.skin ?? null, roster: spawn.roster ?? null, count: 0 };
+      entry.count++;
+      perFile.set(key, entry);
     }
     // **A bowman's own shot** (`humans.js`'s `humanSheets`): the family's `*BOW.CFA` sheet is a
     // single three-frame draw, so it is loaded beside the body it belongs to and drawn only on
@@ -5511,12 +5895,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       bows.set(key, (bows.get(key) ?? 0) + 1);
     }
     const missing = new Set();
-    for (const [key, capacity] of perFile) {
-      const [file, skin = ''] = key.split('|');
-      const set = await loadSpriteSet(file, capacity, skin || null);
-      if (!set) missing.add(file);
-      const base = file.slice(0, -5);
-      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${base}${action}.CFA`, capacity, skin || null);
+    for (const { file, skin, roster, count } of perFile.values()) {
+      for (const sheet of await loadFigureArt(file, roster, count, skin)) missing.add(sheet);
     }
     for (const [key, capacity] of bows) {
       const [file, skin = ''] = key.split('|');
@@ -5567,7 +5947,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (outside > RADIANT_EDGE_REACH) return 0;
       local = { row: nearRow, col: nearCol, edge: true };
     }
-    const held = new Set(monsters.filter((m) => m.bounty?.questId === active.id && m.health > 0)
+    // **A creature's hit points live on its monster record, not on the actor** (`m.health` is a
+    // field the *report* builds). This read `m.health` alone, so it always answered "nobody is
+    // here" and every slide fielded the camp again — six liches for a contract of three, the
+    // first time a window reached the job's own cell. The actors' own shape is `monster.health`.
+    const hitPoints = (m) => Number(m?.health ?? m?.monster?.health ?? 0);
+    const held = new Set(monsters.filter((m) => m.bounty?.questId === active.id && hitPoints(m) > 0)
       .map((m) => m.bounty.encounterId));
     const wanted = hunt.ids.filter((id) => !hunt.defeated.includes(id) && !held.has(id));
     if (!wanted.length) return 0;
@@ -5617,7 +6002,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       }
       spriteSets.clear();
       bloodSet = null;
-      if (sparkBatch) { renderer.destroyBillboardBatch(sparkBatch); sparkBatch = null; }
+      spellSets.clear();
       playerSet = null;
       attackSet = null;
       swingAnim = 0;
@@ -5739,10 +6124,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         near: wildCamp ? { row: wildCamp.row, col: wildCamp.col } : null,
         radius: wildCamp ? 6 : 0,
         exclude: new Set(spawned.map(s => `${s.place.row},${s.place.col}`)) });
+      let camped = 0;
       targets.forEach((spawn, i) => {
         const encounterId = hunt.ids[i];
-        if (!hunt.defeated.includes(encounterId)) spawned.push({ ...spawn, bounty: { questId: active.id, encounterId } });
+        if (!hunt.defeated.includes(encounterId)) {
+          spawned.push({ ...spawn, bounty: { questId: active.id, encounterId } });
+          camped++;
+        }
       });
+      // **The level that was built holding the cell fields the camp itself.** `ensureRadiantCamp`
+      // is the *slide's* answer; a window built around the job (a boot at the spot, the refill a
+      // slide runs when it kept nobody) gets its quarry here, and says so on the same seam so a
+      // page can report where the three came from.
+      if (wildCamp) dbg.radiantCamp = { quest: active.id, cell: wildCamp, spawned: camped, when: 'window-build' };
     }
 
     // **Tharn's minions arrive with his vision** (`1392`…`1399`). The install's own words have
@@ -5952,12 +6346,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    *
    * @param {object|null} monster  a `combat.js` monster (or a corpse's own record)
    * @param {number} [index]  the spawn's own number, so two cats differ
-   * @returns {{sprite: string|null, skin: string|null}}
+   * @returns {{sprite: string|null, skin: string|null, roster: {sex?: string, family?: string}|null}}
+   *   `roster` is set for a bowman — the plate fighter of the armoured roster, whose sheets
+   *   `humans.js`'s `rosterFile` names — and null for every figure drawn by an action digit.
    */
   function figureForMonster(monster, index = 0) {
     const race = raceKey(monster?.human?.raceId ?? null);
+    // **A bowman is the plate fighter.** The owner, 2026-10-22: *"all ARCHER enemies need to use
+    // the sprite PLT FIGHTER AND NOT GUARD OF THE WATCH given the shooting sprite they are using
+    // uses the PLT FIGHTER"*. The roster ships the bow (`01PLTBOW.CFA`) and the body that draws
+    // it (`0#PLTWLK.CFA`, `01PLTATT.CFA`), so a human who carries a bow is drawn from that figure
+    // and from no other — the race is a palette over it, and `humans.js` keeps the two beast
+    // races (whose bodies are whole other figures with no bow) out of a bowman's roll.
+    if (monster?.human?.bow) {
+      return { sprite: null, skin: skinForMonster(monster, index), roster: monster.human.roster ?? null };
+    }
     const standIn = figureKindFor(race);
-    if (standIn === 'ARGONIAN') return { sprite: 'LIZARD', skin: null };
+    if (standIn === 'ARGONIAN') return { sprite: 'LIZARD', skin: null, roster: null };
     if (standIn === 'KHAJIIT') {
       return {
         sprite: 'SWOLF0',
@@ -5967,9 +6372,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           col: Number(index) || 0,
           key: monster?.human?.classId ?? '',
         })),
+        roster: null,
       };
     }
-    return { sprite: monster?.sprite ?? null, skin: skinForMonster(monster, index) };
+    return { sprite: monster?.sprite ?? null, skin: skinForMonster(monster, index), roster: null };
   }
 
   function giveTheCrowdTheirRaces(placed, seed, provinceID) {
@@ -6516,6 +6922,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // player just took work in the street and should not have to walk anywhere to be told
     // where it is.
     updateObjectiveHud();
+    // **A harvest taken out here dresses its own camp** (`ensureHarvestCamp`): the window was
+    // built before the job existed, so the bales have to be added to it.
+    void ensureHarvestCamp();
     // The panel says what was taken where the offer stood, so the player is not left
     // wondering whether the click registered.
     const block = document.getElementById('talk')?.querySelector('.job');
@@ -6964,7 +7373,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       + `<ul>${topics.map((topic) => `<li><button data-topic="${topic.key}">Ask about ${escapeHtml(topic.label)}</button></li>`).join('')}</ul>`
       + (opts.handIn ? handInBlock(opts.handIn) : '')
       + (offer ? jobBlock(offer) : '')
-      + '<p class="hint">Click a question · T again for another line · Escape to leave</p>';
+      // **Closing a conversation is a click, not a key nobody has.** Escape is the desk's door;
+      // on a phone this panel is drawn over the layer that carries it, so it carries its own.
+      + '<p class="hint"><button data-talk="leave">Leave this conversation</button> Click a question · T again for another line</p>';
+    const leave = el.querySelector('button[data-talk="leave"]');
+    if (leave) leave.onclick = () => closeTalk();
     for (const button of el.querySelectorAll('button[data-topic]')) {
       button.onclick = () => askTopic(button.dataset.topic);
     }
@@ -7202,8 +7615,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // the Ranger carry a short bow, so they keep their distance and loose instead of closing
       // — the same band a caster holds (`ranged.js`), with an arrow instead of a bolt.
       spawn.archer = Boolean(spawn.monster.human?.bow);
-      spawn.caster = (RANGED_IDS.includes(spawn.monster.id) || spawn.archer)
-        && (spawn.silencedUntil ?? 0) <= dbg.seconds;
+      // **A fixture's caster flag is its own word.** The roster's answer is for wild spawns;
+      // a suite that arms or disarms a human's rare spell must not have it recomputed away on
+      // the first frame (`prepareCombat`'s `caster` option sets the lock).
+      if (!spawn.casterFixture) {
+        spawn.caster = (RANGED_IDS.includes(spawn.monster.id) || spawn.archer)
+          && (spawn.silencedUntil ?? 0) <= dbg.seconds;
+      }
       // …and a poisoned one loses its blood a second at a time (`Wyvern's Sting`, `Toxic
       // Cloud`, `Cause Disease`). The carry keeps the rate honest between frames.
       if (spawn.venom && dbg.seconds < spawn.venom.until) {
@@ -7399,7 +7817,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // **A wall is not a weapon.** A blow is only ever *begun* with the two in sight of each
       // other (`sees`), and it is only ever *landed* with them still in sight (`strikeFromMonster`).
       spawn.nextAttack = (spawn.nextAttack ?? 0) - dt;
-      if (!spawn.attack && distance <= REACH && spawn.nextAttack <= 0 && spawn.sees) beginAttack(spawn, distance);
+      if (!spawn.attack && distance <= REACH && spawn.nextAttack <= 0 && spawn.sees) {
+        // **An elite caster alternates the circle with its spells.** An ordinary caster throws
+        // and throws only (`spawn.caster` above); an elite is the powerful version of its kind,
+        // so every second commitment is the melee circle and the ones between are bolts. A
+        // non-casting elite alternates circle and dash inside `attackShape` instead.
+        if (spawn.elite && spawn.caster && (spawn.attackCount ?? 0) % 2 === 1) beginSpellAttack(spawn, distance);
+        else beginAttack(spawn, distance);
+      }
       if (spawn.attack) stepAttack(spawn, distance, dt);
     }
     separateBodies();
@@ -7480,9 +7905,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!spawn || spawn.attack || spawn.stagger > 0) return false;
     const fighter = spawn.monster ?? spawn.fighter;
     if (!fighter) return false;
-    const profile = attackProfile(fighter, { distance });
-    // A caster does not lunge: the arm comes over, the body stays in its band.
+    const profile = attackProfile(fighter, { distance, index: spawn.attackCount ?? 0, shape: 'arc' });
+    spawn.attackCount = (spawn.attackCount ?? 0) + 1;
+    // A caster does not lunge: the arm comes over, the body stays in its band. A spell is not
+    // a melee shape at all — the bolt is the whole answer — so the profile's shape is only for
+    // the animation's clock and never plants a wedge.
     profile.charge = false;
+    profile.shape = 'arc';
     const feet = feetOf();
     spawn.attack = fitAttackToGround({ profile, elapsed: 0, struck: false, spell: true,
       origin: { ...spawn.world }, yaw: Math.atan2(feet[0] - spawn.world.x, feet[2] - spawn.world.z) }, current.collider);
@@ -7490,8 +7919,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return true;
   }
 
-  function beginAttack(spawn, distance) {
-    const profile = attackProfile(spawn.monster ?? spawn.fighter, { distance });
+  function beginAttack(spawn, distance, { shape = null } = {}) {
+    // **The lunge is the fight's dice, not the creature's breed.** Every creature swings the
+    // arc; a random low roll — whose chance rises with the player's level (`dashChance` in
+    // `game/combatStyle.js`) — buys the committed dash instead. The roll is drawn from the
+    // scene's seeded battle stream, so a replay of a fight is the same fight. A fixture's
+    // explicit `shape` (`prepareCombat`) pins it instead, which is how a suite can hold a
+    // parry against an arc rather than happening to meet a lunge.
+    const profile = attackProfile(spawn.monster ?? spawn.fighter, {
+      distance,
+      index: spawn.attackCount ?? 0,
+      playerLevel: player?.level ?? 1,
+      dashRoll: battle.nextBelow(1000) / 1000,
+      shape,
+    });
+    spawn.attackCount = (spawn.attackCount ?? 0) + 1;
     // **A blow costs the creature too.** A spent creature does not commit: it keeps its
     // distance (the approach loop above still closes it) and pushes the next attempt out,
     // so a broken bar is a pause to breathe, not a deadlock — and `MONSTER_REGEN` gives
@@ -7562,11 +8004,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (archer) {
       bolt.arrow = true;
       bolt.fire = false;
+      // A shaft is no spell: `ARROW02.CFA`'s flight is the arrow pass's, not a spell family's.
+      bolt.art = null;
       playSfx('bow', { volume: 0.8 });
     }
     bolts.push(bolt);
-    // The cast's own tell at the caster's hands, in the spell's element.
-    if (!archer) combatFx.magicBurst(spawn.world.x, spawn.world.y + 1.5, spawn.world.z, { element: wound.element, power: 1 });
+    // **The bolt *is* the cast's tell** (`bolt.art`, the install's own projectile loop). There used
+    // to be a spark at the caster's hands as well as the crossing streak over the view; the
+    // original has neither — a cast at the player is the projectile and, where it stops, its
+    // burst (`magicBurst` in `stepBoltsSim`), which is what `game/combatFx.js` now draws.
     dbg.casts = (dbg.casts ?? 0) + 1;
     return true;
   }
@@ -7633,11 +8079,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const feet = feetOf();
       // The bolt's passage is the *segment* it is about to fly — the same ray the sight
       // test trusts — rather than the destination's cell: a bolt skimming a cell edge must
-      // not be eaten by the rounding of a cell centre.
+      // not be eaten by the rounding of a cell centre. The player's body is read on the whole
+      // segment too (`boltCrossedPlayer`), or a fast bolt could step over the 0.55 m it is
+      // aimed at between two frames.
+      const from = { x: bolt.x, y: bolt.y, z: bolt.z };
       const nextX = bolt.x + bolt.vx * dt, nextY = bolt.y + bolt.vy * dt, nextZ = bolt.z + bolt.vz * dt;
       const passage = stepBolt(bolt, dt, (x, y, z) => !sightClear(bolt.x, bolt.y, bolt.z, nextX, nextY, nextZ));
+      // Its own clock, which is what the sprite's frames are read from (`liveBatches`).
+      bolt.age = (bolt.age ?? 0) + dt;
       if (passage.dead) {
         bolt.dead = true;
+        // **A bolt that hits the wall bursts on it**, exactly as one that reaches a body does:
+        // Arena destroys the projectile on contact with anything solid and spawns its explosion
+        // there (`PhysicsContactListener`). A shaft does not — it is an arrow, and its art has no
+        // burst in the effect table.
+        if (!bolt.arrow && bolt.art) combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element });
         if (passage.wallhit) dbg.boltWall = (dbg.boltWall ?? 0) + 1;
         else dbg.boltOut = (dbg.boltOut ?? 0) + 1;
         continue;
@@ -7645,7 +8101,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // **Shalidor's Mirror turns the spell around** (UESP's own note: reflection is the
       // answer to a caster). The bolt becomes its caster's problem: it flies home, and the
       // loop below lands it on the body that threw it.
-      if (player.mirror && !bolt.reflected && boltAtPlayer(bolt, feet)) {
+      if (player.mirror && !bolt.reflected && boltCrossedPlayer(from, bolt, feet)) {
         bolt.reflected = true;
         bolt.vx = -bolt.vx; bolt.vy = -bolt.vy; bolt.vz = -bolt.vz;
         dbg.reflected = (dbg.reflected ?? 0) + 1;
@@ -7657,11 +8113,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         if (caster && Math.hypot(caster.world.x - bolt.x, caster.world.z - bolt.z) < 0.9) {
           damageMonster(caster, bolt.damage, 'a reflected bolt');
           bolt.dead = true;
-          combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element, power: bolt.damage > 10 ? 2 : 1 });
+          combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element });
         }
         continue;
       }
-      if (!boltAtPlayer(bolt, feet)) continue;
+      if (!boltCrossedPlayer(from, bolt, feet)) continue;
       const landed = resolveBolt(bolt, { defence: liveDefence() });
       bolt.dead = true;
       if (landed.outcome === 'dodged') {
@@ -7679,10 +8135,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       });
       const casterSpawn = monsters.find((spawn) => spawn.monster?.id === bolt.caster);
       if (casterSpawn && paralyses(casterSpawn.monster) === 'ranged') maybeHold(casterSpawn, 25);
-      // **A bolt lands as what it is made of** — the same element motes a cast throws
-      // (`combatFx.magicBurst`), not the blood a blade draws. The colour is the bolt's own,
-      // so an ice bolt leaves frost and a fire daemon's leaves fire.
-      combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element, power: landed.damage > 10 ? 2 : 1 });
+      // **A bolt lands as what it is made of** — its own family's burst (`EXP_…B.CFA`), not the
+      // blood a blade draws. The sheet is the element's: an ice bolt bursts in ice's shards and a
+      // fire daemon's in fire's ball. A shaft leaves the wound instead (`combatFx.blood`).
+      if (!bolt.arrow) combatFx.magicBurst(bolt.x, bolt.y, bolt.z, { element: bolt.element });
       dbg.lastBolt = landed.outcome === 'blocked' ? 'blocked' : 'struck';
     }
     for (let i = bolts.length - 1; i >= 0; i--) if (bolts[i].dead) bolts.splice(i, 1);
@@ -7748,7 +8204,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     spawn.lastBlow = blow;
     // A charge cannot be guarded: the guard is not applied to it (`unguarded`).
     if (blow.hit) {
-      combatFx.burst(feet[0], feet[1] + 0.9, feet[2], outcome.outcome);
       hurtPlayer(Math.max(1, Math.round(blow.damage * profile.damageScale)), (spawn.monster ?? spawn.fighter).name, {
         unguarded: profile.unblockable,
         element: blow.element,
@@ -7909,7 +8364,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     lavaBurned += dt;
     while (lavaBurned >= 1) {
       lavaBurned -= 1;
-      hurtPlayer(LAVA_DAMAGE_PER_SECOND, 'the lava');
+      // A burn is a wound the player can read, but a red flash and a number every second
+      // would be noise; the bar and the burn notice already carry it.
+      hurtPlayer(LAVA_DAMAGE_PER_SECOND, 'the lava', { number: false });
     }
   }
 
@@ -7954,6 +8411,32 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // blow that is `unguarded` (a charge) is not turned aside by it.
     const guarded = opts.unguarded ? { damage: incoming, blocked: 0 } : guardDamage(incoming, guarding());
     const taken = guarded.damage;
+    // **The player's wound is Arena's own blood.** `BLOODEXP.CFA` is the install's five-frame
+    // burst and the scene already draws it where a spray stands; a physical wound used to call
+    // `combatFx.burst`'s coloured quads instead, which is the *"particles that are now"* the
+    // owner asked to replace (2026-11-04). The single door a wound reaches the player through
+    // is this one, so every physical blow — a blade, an arrow, lava — throws the original art.
+    if (taken > 0 && !opts.spell && from !== 'the lava') {
+      const feet = feetOf();
+      combatFx.blood(feet[0], feet[1] + 1.0, feet[2], {
+        power: 1 + Math.min(3, taken / Math.max(1, (player.maxHealth ?? 1) / 4)),
+      });
+    }
+    // **Daggerfall's two edges, on the one door a wound reaches the player through.** A
+    // physical blow flashes the lens; a spell does not (the reference's `RemoveHealth` path).
+    // Every wound still raises its number, and a blow wholly turned by the guard says so.
+    if (taken > 0 && !opts.spell && opts.number !== false) damageFlash.flash();
+    if (opts.number !== false) {
+      const number = playerDamageNumber({
+        damage: taken, blocked: guarded.blocked, spell: Boolean(opts.spell),
+        warded, resisted, shielded,
+      });
+      if (number) {
+        showHitNumber(number);
+        showHitMarker(number.kind === 'blocked' ? 'block' : 'taken');
+        dbg.lastHitNumber = number;
+      }
+    }
     if (taken > 0) for (const id of [player.shield, ...Object.values(player.armour ?? {})].filter(Boolean)) player = wearEquipment(player,id,0.25);
     // A blow that lands shakes the view by its weight — the same language the heavy's own
     // impact speaks, so damage has a body and not only a number.
@@ -8008,9 +8491,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     dbg.death = { by: from ?? null, gold: lost, to: START_INTERIOR };
     savePlayer();
     updateCombatHud();
-    showNotice(`${from ?? 'A blow'} struck you down.${lost ? ` ${lost} gold slips from your purse.` : ''} Ria's voice finds you in the dark.`, 6000);
+    // **Two deaths, both the install's.** Ria's farewell (`1402`) is the death before the
+    // quest and after it; Tharn's gloating (`1403`) is the "game over" scene UESP records
+    // while the main quest is still running, from the escape to the Emperor's freedom.
+    const deathKey = dueDeathScene(quest);
+    const deathSpeaker = deathKey === DEATH_TEXT_BAD ? 'Tharn' : 'Ria';
+    showNotice(`${from ?? 'A blow'} struck you down.${lost ? ` ${lost} gold slips from your purse.` : ''} ${deathSpeaker}'s voice finds you in the dark.`, 6000);
     try {
-      await playStoryScene(DEATH_TEXT);
+      await playStoryScene(deathKey);
     } catch (err) {
       console.warn('[death] Ria could not speak', err?.message ?? err);
     }
@@ -8169,14 +8657,24 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       });
       if (blow.immune) {
         showNotice(blow.reason, 2200);
+        showHitNumber(hitNumberFor({ ineffective: true }));
+        showHitMarker('miss');
         dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: 'no wound', target: struck.monster.name, reason: blow.reason };
         continue;
       }
       if (!blow.hit) {
+        showHitNumber(hitNumberFor({ hit: false }));
+        showHitMarker('miss');
         dbg.lastArrow = { ...(dbg.lastArrow ?? {}), state: 'missed', target: struck.monster.name };
         continue;
       }
       const after = damageMonster(struck, blow.damage, `an arrow from your ${weaponName(arrow.weapon).toLowerCase()}`);
+      const arrowNumber = hitNumberFor({
+        damage: blow.damage, critical: blow.critical, backstab: blow.backstab,
+      });
+      showHitNumber(arrowNumber);
+      showHitMarker('hit');
+      dbg.lastHitNumber = arrowNumber;
       dbg.arrowHits = (dbg.arrowHits ?? 0) + 1;
       dbg.lastArrow = {
         ...(dbg.lastArrow ?? {}), state: 'struck', target: after.name, damage: blow.damage,
@@ -8278,10 +8776,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // rather than spilling blood over a wound that did not happen.
       playSfx('clang');
       showNotice(blow.reason, 2400);
+      showHitNumber(hitNumberFor({ ineffective: true }));
+      showHitMarker('miss');
       dbg.lastImmune = { target: best.spawn.monster.name, weapon: player.weapon, material: player.material, reason: blow.reason };
       return { ok: true, hit: false, immune: true, target: best.spawn.monster.name, reason: blow.reason };
     }
-    if (!blow.hit) return { ok: true, hit: false, target: best.spawn.monster.name, reason: 'missed' };
+    if (!blow.hit) {
+      showHitNumber(hitNumberFor({ hit: false }));
+      showHitMarker('miss');
+      return { ok: true, hit: false, target: best.spawn.monster.name, reason: 'missed' };
+    }
     if (blow.backstab) {
       dbg.backstabs = (dbg.backstabs ?? 0) + 1;
       showNotice('A backstab — landed before the turn.', 1100);
@@ -8327,8 +8831,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       best.spawn.nextAttack = 0.8;
       hitStop = Math.max(hitStop, 0.12);
       showNotice(best.spawn.monster.name + ' staggers!', 900);
+      showCombatWord('Stagger');
       dbg.staggers = (dbg.staggers ?? 0) + 1;
     }
+    // **The blow's own number, where it landed.** The HUD's corner row says the health left;
+    // this says what this swing took, in Daggerfall's colours and with its backstab tag.
+    const hitNumber = hitNumberFor({
+      damage: blow.damage, critical: blow.critical, backstab: blow.backstab,
+      warded: Boolean(blow.guard),
+    });
+    showHitNumber(hitNumber);
+    showHitMarker(hitNumber?.kind === 'crit' ? 'crit' : 'hit');
+    dbg.lastHitNumber = hitNumber;
     if (monster.health === 0) {
       beginMonsterDeath(best.spawn);
       kills++;
@@ -8568,6 +9082,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     ['C', 'your spellbook'],
     ['Z', 'cast the spell you read last'],
     ['P', 'your portrait and character sheet'],
+    ['J', 'your logbook — the quest’s notes and your own'],
     ['L', 'spend a level when one is owed'],
     // ── the world and the level ──
     ['V', 'first or third person'],
@@ -8604,16 +9119,34 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       menuRow('controls', 'Esc', 'Settings', menuControls ? 'hide' : 'sound, picture and every key'),
       menuRow('newgame', 'N', 'New Game…', 'forget everything and start over'),
     ];
+    // **A sheet, not a paragraph.** The page used to be eleven lines of running prose at one
+    // weight — the owner, 2026-10-25: *"everything looks like shit and cheap"*. A menu is a
+    // character sheet: a name, a column of labelled facts, and the quest in its own block. The
+    // words are the same; the hierarchy is the work.
     el.innerHTML = '<div class="panel">'
       + `<h2>${escapeHtml(where)} — paused</h2>`
-      + `<p class="who">${escapeHtml(player.name)}, level ${player.level ?? 1} ${escapeHtml(player.race ?? '')} ${escapeHtml(player.gender ?? '')} ${escapeHtml(player.className ?? 'adventurer')}</p>`
-      + `<p class="stat"><b>${player.health ?? 0}</b>/${player.maxHealth ?? 0} health${spells} · <span class="gold">${player.gold ?? 0} gold</span> · <b>${xp ?? 0}</b> experience · <b>${kills ?? 0}</b> slain</p>`
-      + `<p class="stat">In hand: ${escapeHtml(weapon.name)} (${escapeHtml(weapon.materialName)}) — ${weapon.min}–${weapon.max} damage</p>`
-      + `<p class="obj">The main quest: ${escapeHtml(objective ?? 'complete')}</p>`
+      + `<div class="who"><b>${escapeHtml(player.name)}</b>`
+      + `<span>level ${player.level ?? 1} ${escapeHtml(player.race ?? '')} ${escapeHtml(player.gender ?? '')} ${escapeHtml(player.className ?? 'adventurer')}</span></div>`
+      // **Two columns, one sheet.** A pause page set as a single file of rows ran past the
+      // window: the actions — the one thing a player came here to press — fell off the bottom.
+      // The character reads on the left, the things that can be done and set on the right.
+      + '<div class="sheet">'
+      + '<div class="sheet-main">'
+      + '<div class="facts">'
+      + `<div><span class="fl">Vitals</span><span class="fv"><b>${player.health ?? 0}</b> / ${player.maxHealth ?? 0} health${spells}</span></div>`
+      + `<div><span class="fl">Purse</span><span class="fv"><b class="gold">${player.gold ?? 0}</b> gold</span></div>`
+      + `<div><span class="fl">Record</span><span class="fv"><b>${xp ?? 0}</b> experience · <b>${kills ?? 0}</b> slain</span></div>`
+      + `<div><span class="fl">In hand</span><span class="fv">${escapeHtml(weapon.name)} (${escapeHtml(weapon.materialName)}) — ${weapon.min}–${weapon.max} damage</span></div>`
+      + `<div><span class="fl">Known</span><span class="fv">Who knows you: <b>${tally.known}</b> met · ${tally.friends} ${tally.friends === 1 ? 'friend' : 'friends'} · ${tally.enemies} ${tally.enemies === 1 ? 'enemy' : 'enemies'} · ${tally.hostile} hostile</span></div>`
+      + `<div><span class="fl">Travelled</span><span class="fv"><b>${radiant.day ?? 0}</b> days</span></div>`
+      + '</div>'
+      + `<div class="questline"><span class="ql">The main quest</span><p class="obj">${escapeHtml(objective ?? 'complete')}</p></div>`
       + (side
-        ? `<p class="side">Side work: ${escapeHtml(side)}</p>`
-        : '<p class="stat">No side work in hand — a tavern is where the world hands it out.</p>')
-      + `<p class="stat">Who knows you: <b>${tally.known}</b> met · ${tally.friends} ${tally.friends === 1 ? 'friend' : 'friends'} · ${tally.enemies} ${tally.enemies === 1 ? 'enemy' : 'enemies'} · ${tally.hostile} hostile · <b>${radiant.day ?? 0}</b> days travelled</p>`
+        ? `<div class="questline side"><span class="ql">Side work:</span><p class="side">${escapeHtml(side)}</p></div>`
+        : '<p class="nostat">No side work in hand — a tavern is where the world hands it out.</p>')
+      + '</div>'
+      + '<div class="sheet-side">'
+      + `<div class="rows">${rows.join('')}</div>`
       + `<div class="volume"><label for="music-volume">Music</label>`
       + `<input id="music-volume" type="range" min="0" max="100" step="5" value="${Math.round(getMusicVolume() * 100)}">`
       + `<output id="music-volume-value">${Math.round(getMusicVolume() * 100)}%</output></div>`
@@ -8623,7 +9156,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // **The original picture.** Arena draws at 320×200; the tick gives the world that image
       // and that lens, presented point-sampled over the canvas (`game/videoSettings.js`).
       + `<label class="tick"><input id="retro-320" type="checkbox"${retro320Enabled() ? ' checked' : ''}> 320×200 — Arena's own resolution</label>`
-      + `<div class="rows">${rows.join('')}</div>`
+      // **The compass's own switch** (the owner, 2026-10-25: *"you should be able to turn on and
+      // off the compass in the settings, the compass need to appear on android too"*). On by
+      // default; the phone's strip is the same reading in a narrower pill.
+      + `<label class="tick"><input id="hud-compass" type="checkbox"${compassEnabled() ? ' checked' : ''}> Compass — the bearing at the top of the screen</label>`
+      // **The photograph's switch.** *"there should be a setting that turns gui both for android
+      // and pc off to take screenshots"* — the world with nothing of the interface over it. The
+      // menu stays: Esc on a desk, a long press on a phone.
+      + `<label class="tick"><input id="hud-hidden" type="checkbox"${guiHidden() ? ' checked' : ''}> Hide the interface — a clean picture of the world (Esc brings this menu back; on a phone, hold a finger on the screen)</label>`
+      + '</div>'
+      + '</div>'
       + '<div class="confirm' + (menuConfirm ? ' on' : '') + '">'
       + '<p>Begin a new game? ' + escapeHtml(player.name) + ', the quest, the purse and everyone who has met you are all forgotten. This cannot be undone.</p>'
       + `<div class="rows">${menuRow('newgame-confirm', '↵', 'Begin a new game', 'character creation')}${menuRow('resume', 'Esc', 'Keep playing', 'nothing is lost')}</div>`
@@ -8705,6 +9247,21 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // **The 320×200 tick** — a change, not a button: the renderer's own source reads the setting
   // every world frame, and `paint` takes the lens at once.
   document.getElementById('menu')?.addEventListener('change', (e) => {
+    // **The compass**, and **the interface's own photograph switch** (`game/hudSettings.js`):
+    // both are classes of `<body>`, so the stylesheet is the whole of the change and the next
+    // painted frame is already the new picture.
+    if (e.target?.id === 'hud-compass') {
+      const on = setCompassEnabled(Boolean(e.target.checked));
+      dbg.hud = { ...(dbg.hud ?? {}), compass: on, ...applyHudSettings({ compass: on }) };
+      playSfx('ui');
+      return;
+    }
+    if (e.target?.id === 'hud-hidden') {
+      const on = setGuiHidden(Boolean(e.target.checked));
+      dbg.hud = { ...(dbg.hud ?? {}), hidden: on, ...applyHudSettings({ hidden: on }) };
+      playSfx('ui');
+      return;
+    }
     if (e.target?.id !== 'retro-320') return;
     const on = setRetro320(Boolean(e.target.checked));
     renderer.setRetroSource?.(retro320Frame);
@@ -8735,10 +9292,120 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (button.dataset.automap === 'worldmap') {
       toggleAutomap(false);
       void openWorldMap();
+    } else if (button.dataset.automap === 'fit') {
+      fitAutomapSheet();
     } else if (button.dataset.automap === 'close') {
       toggleAutomap(false);
     }
   }, { signal });
+
+  // ── the sheet's own hand: pinch to magnify it, drag to slide it ──────────────
+  //
+  // The whole level opens in the frame (`zoom` 1, what the panel always drew). A 128-cell city at
+  // that fit is five pixels a cell on a phone, so the sheet is a magnifier — and a magnified sheet
+  // is bigger than the page, so it also slides. The arithmetic is `scenes/automap.js`'s
+  // (`automapLayout` clamps both the zoom and the slide); this is the finger and the wheel.
+  const automapSheet = document.getElementById('automap-canvas');
+  /** Where each finger is on the sheet: a pinch is two of them, never two looks. */
+  const sheetPointers = new Map();
+  let sheetPinch = null;
+
+  /** How far the sheet may slide at this magnifier (0 while the whole level fits). */
+  function automapSheetLimits(zoom = automapView.zoom) {
+    if (!automapMap || !automapSheet) return { x: 0, y: 0 };
+    return automapLayout(automapMap, automapSheet.width, automapSheet.height, { zoom }).limits;
+  }
+
+  /** Back to the whole level — the panel's opening state and its own `fit` button. */
+  function fitAutomapSheet() {
+    automapView = { zoom: 1, panX: 0, panY: 0 };
+    paintAutomap();
+    return automapView.zoom;
+  }
+
+  /** Magnify the sheet about its centre, keeping the slide inside what the new size allows. */
+  function zoomAutomapSheet(zoom) {
+    const next = clampAutomapZoom(zoom);
+    if (next === automapView.zoom) return next;
+    automapView.zoom = next;
+    const limits = automapSheetLimits(next);
+    automapView.panX = Math.min(limits.x, Math.max(-limits.x, automapView.panX));
+    automapView.panY = Math.min(limits.y, Math.max(-limits.y, automapView.panY));
+    paintAutomap();
+    return next;
+  }
+
+  /** Slide a magnified sheet by a finger's own pixels (which are not the canvas's). */
+  function slideAutomapSheet(dx, dy) {
+    if (!automapMap || !automapSheet || (!dx && !dy)) return automapView;
+    const rect = automapSheet.getBoundingClientRect();
+    const kx = automapSheet.width / Math.max(1, rect.width);
+    const ky = automapSheet.height / Math.max(1, rect.height);
+    const limits = automapSheetLimits();
+    automapView.panX = Math.min(limits.x, Math.max(-limits.x, automapView.panX + dx * kx));
+    automapView.panY = Math.min(limits.y, Math.max(-limits.y, automapView.panY + dy * ky));
+    paintAutomap();
+    return automapView;
+  }
+
+  automapSheet?.addEventListener('pointerdown', (e) => {
+    if (!automapOpen) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    sheetPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { automapSheet.setPointerCapture(e.pointerId); } catch { /* the pointer is already gone */ }
+    if (sheetPointers.size === 2) {
+      const [a, b] = [...sheetPointers.values()];
+      sheetPinch = {
+        distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        zoom: automapView.zoom,
+      };
+    }
+    e.preventDefault();
+  }, { signal });
+
+  automapSheet?.addEventListener('pointermove', (e) => {
+    const record = sheetPointers.get(e.pointerId);
+    if (!record) return;
+    const wasX = record.x;
+    const wasY = record.y;
+    record.x = e.clientX;
+    record.y = e.clientY;
+    if (sheetPointers.size >= 2) {
+      const [a, b] = [...sheetPointers.values()];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      if (!sheetPinch) {
+        sheetPinch = { distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), mid, zoom: automapView.zoom };
+        e.preventDefault();
+        return;
+      }
+      const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+      const midDx = mid.x - sheetPinch.mid.x;
+      const midDy = mid.y - sheetPinch.mid.y;
+      sheetPinch.mid = mid;
+      zoomAutomapSheet(sheetPinch.zoom * (distance / sheetPinch.distance));
+      slideAutomapSheet(midDx, midDy);
+      e.preventDefault();
+      return;
+    }
+    slideAutomapSheet(e.clientX - wasX, e.clientY - wasY);
+    e.preventDefault();
+  }, { signal });
+
+  const sheetLetGo = (e) => {
+    if (!sheetPointers.delete(e.pointerId)) return;
+    try { automapSheet.releasePointerCapture(e.pointerId); } catch { /* not held */ }
+    if (sheetPointers.size < 2) sheetPinch = null;
+  };
+  automapSheet?.addEventListener('pointerup', sheetLetGo, { signal });
+  automapSheet?.addEventListener('pointercancel', sheetLetGo, { signal });
+
+  // A desk has a wheel where a phone has two fingers: the same magnifier, for the same reason.
+  automapSheet?.addEventListener('wheel', (e) => {
+    if (!automapOpen) return;
+    e.preventDefault();
+    zoomAutomapSheet(automapView.zoom * Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false, signal });
 
   /**
    * Start over.
@@ -8786,8 +9453,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // shrine are `game/services.js`. What is here is the buttons and the notices, which is the
   // only part that needs a page.
   /**
-   * Which page the panel is showing: `bag` or `spells`.
-   * @type {'bag'|'spells'}
+   * Which page the panel is showing: `bag`, `spells`, `portrait`, `mirror` or `corpse`.
+   * @type {'bag'|'spells'|'portrait'|'mirror'|'corpse'}
    */
   let panelMode = 'bag';
   let searchedCorpse = null;
@@ -8810,6 +9477,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   function searchCorpse(spawn) {
     searchedCorpse = spawn;
+    // **A body is its own page.** The panel keeps whichever page it last showed, and the portrait
+    // is one of them (`panelMode === 'portrait'`, which `updateInventoryPanel` answers before it
+    // ever looks at `searchedCorpse`). So a player who had opened their own face and then pressed
+    // `E` on a body was shown the portrait again — the owner's *"interacting with him opens the
+    // portrait and i need to first open inventory or book and then interact to actually loot
+    // him"*. The search page claims the panel back before it opens — and names itself, so the
+    // debug seam (`panel().mode`) reports the page a player is reading rather than the pack.
+    panelMode = 'corpse';
+    homeChestOpen = false;
     toggleInventory(true);
     document.exitPointerLock?.();
     return true;
@@ -9683,7 +10359,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return `<li class="${full ? 'full' : spent ? 'spent' : ''}">`
         + `<span class="key">${i + 1}</span> <b>${escapeHtml(attribute.abbr)}</b> ${escapeHtml(attribute.name)} `
         + `<b>${value}</b>${spent ? ` <span class="sub">+${spent}</span>` : ''}`
-        + `${full ? ` <span class="sub">at its maximum</span>` : ''}</li>`;
+        + `${full ? ` <span class="sub">at its maximum</span>` : ''}`
+        // **The digit is also a button.** A phone has no `1`–`8`, and this panel is drawn over
+        // the layer that carries them, so the row itself is how a point is spent.
+        + `${full ? '' : ` <button type="button" data-level="${i}" aria-label="Add a point to ${escapeHtml(attribute.name)}">+</button>`}`
+        + '</li>';
     }).join('');
     const klass = classOf(player.classId);
     el.innerHTML = `<h2>You have gained a level of experience</h2>`
@@ -9692,7 +10372,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       + `<p><span class="left">${levelUp.left}</span> still to spend${levelUp.left ? '' : ' — press Enter'}`
       + `${owed > 1 ? ` <span class="sub">(${owed} levels owed)</span>` : ''}</p>`
       + `<ul>${rows}</ul>`
-      + `<p class="hint">Press 1–8 to raise an attribute. Enter takes the level; Escape postpones it.</p>`
+      + `<p class="row"><button type="button" data-level-take="true">Take the level${levelUp.left ? '' : ' (Enter)'}</button>`
+      + ` <button type="button" data-level-later="true">Later</button></p>`
+      + `<p class="hint">Press 1–8 or the + beside an attribute. Take the level when you are done; Later keeps the points for L.</p>`
       + `<p class="src">points: ${escapeHtml(ATTRIBUTE_POINTS_SOURCE)}<br>`
       + `health: ${escapeHtml(HEALTH_GAIN_SOURCE)}<br>`
       + `thresholds: ${escapeHtml(XP_SOURCE)}<br>`
@@ -9700,6 +10382,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     el.classList.add('on');
     return { points: levelUp.points, left: levelUp.left };
   }
+
+  /**
+   * The level panel's own buttons, so a finger can answer it: the `+` beside a row is its
+   * digit, Take is `Enter`, Later is `Escape`.
+   */
+  document.getElementById('levelup')?.addEventListener('click', (e) => {
+    const button = e.target?.closest?.('button');
+    if (!button || button.disabled) return;
+    const data = button.dataset ?? {};
+    if (data.level != null) { placeLevelPoint(Number(data.level)); return; }
+    if (data.levelTake) { takeLevel(); return; }
+    if (data.levelLater) document.getElementById('levelup')?.classList.remove('on');
+  });
 
   /**
    * `1`–`8`: put a point into an attribute. `Enter`: take the level.
@@ -9775,6 +10470,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const on = typeof force === 'boolean' ? force : !el.classList.contains('on');
     el.classList.toggle('on', on);
     el.classList.toggle('portrait-mode', on && panelMode === 'portrait');
+    // **The pack's paper doll sits beside the pack.** Only the bag page is a spread; the
+    // spellbook stays a single page, and a corpse or chest page keeps the old measure.
+    el.classList.toggle('bag-mode', on && panelMode === 'bag' && !searchedCorpse && !homeChestOpen);
     if (!on) homeChestOpen = false;
     if (on) updateInventoryPanel();
     dbg.inventoryOpen = on;
@@ -9797,30 +10495,55 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   let portraitRender = 0;
-  function renderPortrait() {
+
+  /**
+   * Paint the original paper doll into a canvas, and make the face itself the next-face
+   * control.
+   *
+   * The bag's portrait is redrawn whenever the page is rebuilt and whenever a face changes,
+   * but its canvas is not replaced, so the click listener is wired once. It reads the live
+   * `dbg.portrait` rather than closing over one draw's head rectangle: a different face can
+   * sit at a different offset.
+   *
+   * @param {HTMLCanvasElement|null} canvas
+   * @returns {Promise<object|null>|null}
+   */
+  function paintPortrait(canvas) {
+    if (!canvas) return null;
     const revision = ++portraitRender;
-    const el = document.getElementById('inventory');
-    el.classList.add('portrait-mode');
     dbg.portraitError = null;
-    el.innerHTML = `<h2>${escapeHtml(player.name)} — Arena character portrait</h2>`
-      + '<p class="hint">Original race, face and equipped-item artwork. Click the face to change it; this changes appearance only.</p>'
-      + '<canvas id="character-portrait" width="320" height="200" style="image-rendering:pixelated;cursor:pointer" aria-label="Original Arena character and equipment"></canvas>'
-      + '<p><button data-face="next">Next face</button> <button data-panel="bag">Equipment (I)</button> <button data-portrait-close="true">Close (P)</button></p>';
-    const canvas = el.querySelector('canvas');
-    drawCharacterPortrait(canvas, data, player).then((portrait) => {
-      if (!canvas.isConnected || revision !== portraitRender) return;
+    return drawCharacterPortrait(canvas, data, player).then((portrait) => {
+      if (!canvas.isConnected || revision !== portraitRender) return portrait;
       dbg.portrait = portrait;
-      canvas.addEventListener('click', (event) => {
-        const bounds = canvas.getBoundingClientRect();
-        const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
-        const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
-        const h = portrait.head;
-        if (x >= h.x && x < h.x + h.width && y >= h.y && y < h.y + h.height) nextPortraitFace();
-      }, { signal });
+      if (!canvas.dataset.portraitWired) {
+        canvas.dataset.portraitWired = '1';
+        canvas.addEventListener('click', (event) => {
+          const shown = dbg.portrait;
+          if (!shown) return;
+          const bounds = canvas.getBoundingClientRect();
+          const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
+          const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
+          const h = shown.head;
+          if (x >= h.x && x < h.x + h.width && y >= h.y && y < h.y + h.height) nextPortraitFace();
+        }, { signal });
+      }
+      return portrait;
     }).catch((error) => {
       dbg.portraitError = error.message;
       if (canvas.isConnected) canvas.replaceWith(document.createTextNode(`Portrait unavailable: ${error.message}`));
+      return null;
     });
+  }
+
+  function renderPortrait() {
+    const el = document.getElementById('inventory');
+    el.classList.add('portrait-mode');
+    el.classList.remove('bag-mode');
+    el.innerHTML = `<h2>${escapeHtml(player.name)} — Arena character portrait</h2>`
+      + '<p class="hint">Original race, face and equipped-item artwork. Click the face to change it; this changes appearance only.</p>'
+      + '<canvas id="character-portrait" width="320" height="200" style="image-rendering:pixelated;cursor:pointer" aria-label="Original Arena character and equipment"></canvas>'
+      + '<p><button data-face="next">Next face</button> <button data-panel="bag">Equipment (I)</button> <button data-portrait-close="true">Close (Escape)</button></p>';
+    paintPortrait(el.querySelector('canvas'));
     return { mode: 'portrait' };
   }
 
@@ -9840,7 +10563,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function renderMirror() {
     const el = document.getElementById('inventory');
     if (!el) return null;
-    el.classList.remove('portrait-mode');
+    el.classList.remove('portrait-mode', 'bag-mode');
     const look = normalizeAppearance(player.appearance, player);
     const sprite = spriteById(look.spriteId);
     el.innerHTML = '<h2>Your mirror — choose the body you wear</h2>'
@@ -9909,6 +10632,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function nextPortraitFace() {
     player = { ...player, portraitFace: ((Number(player.portraitFace) || 0) + 1) % (dbg.portrait?.faceCount || 10) };
     savePlayer();
+    if (panelMode === 'portrait') { renderPortrait(); return; }
+    const canvas = document.querySelector('#inventory #character-portrait');
+    if (canvas) { paintPortrait(canvas); return; }
     renderPortrait();
   }
 
@@ -9922,6 +10648,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   }
 
   /** One row of the pack: what it is, what it does, and what can be done with it. */
+  /**
+   * A row's icon: one of the install's command glyphs (`S2.IMG`), or the purse's own coin.
+   *
+   * The cell is published by `game/arenaGui.js` as `--gk-icon-N`; the role is a *kind of
+   * thing* (`items.js`'s `iconRoleFor`), never a picture of the exact item — Arena's command
+   * strip has ten glyphs, not a catalogue of swords.
+   *
+   * @param {string} [role]
+   * @returns {string} markup
+   */
+  function rowIcon(role) {
+    return `<i class="item-icon" data-icon="${escapeHtml(role ?? 'misc')}" aria-hidden="true"></i>`;
+  }
+
   function bagRow(row) {
     const trade = shopTrade();
     // **A pinned thing says `Unpin`.** The pack is where a pin is made, so it is where it is
@@ -9936,7 +10676,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       trade && buys(trade, row.kind) ? `<button data-bag="${escapeHtml(row.id)}" data-do="sell">Sell</button>` : '',
       `<button data-bag="${escapeHtml(row.id)}" data-do="drop">Drop</button>`,
     ].filter(Boolean).join(' ');
-    return `<li><b>${escapeHtml(row.name)}</b>${row.qty > 1 ? ` ×${row.qty}` : ''} `
+    return `<li>${rowIcon(iconRoleFor(row.kind))}<b>${escapeHtml(row.name)}</b>${row.qty > 1 ? ` ×${row.qty}` : ''} `
       + `<span class="sub">${escapeHtml(row.note)}</span> ${buttons}</li>`;
   }
 
@@ -9945,7 +10685,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const cost = costOf(player, entry);
     const check = canCast(player, entry);
     const element = entry.element && entry.element !== 'none' ? ` · ${entry.element}` : '';
-    return `<li><b>${escapeHtml(entry.name)}</b> <span class="sub">${escapeHtml(entry.note)} · ${cost} spell points${element}</span>`
+    return `<li>${rowIcon('spell')}<b>${escapeHtml(entry.name)}</b> <span class="sub">${escapeHtml(entry.note)} · ${cost} spell points${element}</span>`
       + ` <button data-cast="${escapeHtml(entry.name)}"${check.ok ? '' : ` title="${escapeHtml(check.reason ?? '')}"`}>Cast</button>`
       + (slotOf(player, 'spell', entry.name) >= 0
         ? ` <button data-unpin-spell="${escapeHtml(entry.name)}" title="Take this spell off the hotbar">Unpin</button>`
@@ -9994,6 +10734,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function openHomeChest() {
     homeChestOpen = true;
     searchedCorpse = null;
+    // The same claim `searchCorpse` makes: the chest's page must not be the portrait's because
+    // the player looked at their own face last.
+    panelMode = 'bag';
     playSfx('chest');
     toggleInventory(true);
     return true;
@@ -10068,13 +10811,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (panelMode === 'portrait') return renderPortrait();
     if (panelMode === 'mirror') return renderMirror();
     el.classList.remove('portrait-mode');
+    // The bag is the one page that is a spread: the original paper doll on the left, the
+    // carried things on the right. A corpse or a chest keeps the narrow page.
+    el.classList.toggle('bag-mode', panelMode === 'bag' && !homeChestOpen && !searchedCorpse);
     if (homeChestOpen) return renderHomeChest();
     if (searchedCorpse) {
       const rows = corpseRows(searchedCorpse.loot);
       el.innerHTML = `<h2>Search ${escapeHtml(searchedCorpse.monster.name)}</h2>`
         + (rows.length ? `<ul>${rows.map((row) => `<li>${escapeHtml(row.name)} ×${row.qty} <button data-corpse="${escapeHtml(row.id)}">Take ${escapeHtml(row.name)}</button></li>`).join('')}</ul><button data-corpse="all">Take all</button>` : '<p>The body is empty.</p>')
         + '<p><button data-corpse-close="true">Close</button> · Escape to return</p>';
-      return { mode: 'corpse', rows: rows.length };
+      dbg.panel = { mode: 'corpse', rows: rows.length };
+      return dbg.panel;
     }
     const bag = bagOf();
     resolveKnownSpells();
@@ -10088,10 +10835,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       bag,
     });
     const carriedHtml = sections.map((section) => `<h3>${escapeHtml(section.section)}</h3><ul>`
-      + section.rows.map((row) => `<li><b>${escapeHtml(row.name)}</b> <span class="sub">${escapeHtml(row.note)}</span></li>`).join('')
+      + section.rows.map((row) => `<li>${rowIcon(row.icon)}<b>${escapeHtml(row.name)}</b> <span class="sub">${escapeHtml(row.note)}</span></li>`).join('')
       + '</ul>').join('');
+    // **A page has its own way out.** On a desk `I` or `Escape` closes the pack; on a phone the
+    // pack is drawn over the layer that carries those keys, so the door has to be on the page.
     const head = `<h2>${escapeHtml(player.name)} — ${panelMode === 'spells' ? 'your spellbook' : 'what you carry'}</h2>`
-      + `<p class="hint"><button data-panel="bag">Pack (I)</button> <button data-panel="spells">Spells (C)</button>`
+      + `<p class="hint panel-tabs"><button data-panel="bag"><span class="key">I</span> Pack</button><button data-panel="spells"><span class="key">C</span> Spells</button>`
+      + `<button data-panel="close">Close</button>`
       + (kind ? ` · ${escapeHtml(SERVICE_KINDS[kind]?.name ?? kind)}` : '') + '</p>'
       // **The counter, said out loud.** The shop lives here (`shelfSection`), so the page says so:
       // otherwise a player stands at a smith, presses `E` at the door, and never learns that the
@@ -10122,7 +10872,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         const forSale = shopShelf().spells;
         shelf = forSale.length;
         body += `<h3>The guild's shelf — spells for sale</h3>` + (forSale.length
-          ? `<ul>${forSale.map((row) => `<li><b>${escapeHtml(row.spell.name)}</b> <span class="sub">${escapeHtml(row.spell.note)} · ${row.spell.points} spell points</span>`
+          ? `<ul>${forSale.map((row) => `<li>${rowIcon('spell')}<b>${escapeHtml(row.spell.name)}</b> <span class="sub">${escapeHtml(row.spell.note)} · ${row.spell.points} spell points</span>`
             + ` <button data-spell="${escapeHtml(row.spell.name)}">Learn — ${row.price} gold</button></li>`).join('')}</ul>`
           : '<p class="sub">The shelf holds nothing this character could learn.</p>');
       }
@@ -10136,9 +10886,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const shelfRows = shelfSection(kind);
     if (shelfRows) shelf += (shopShelf().items ?? []).length;
     body += shelfRows + serviceSection(kind) + craftingSection(kind);
-    el.innerHTML = head + body
+    const content = body
       + `<p class="hint">I the pack · C the spellbook · Z casts the spell you read last · Escape puts this away</p>`
       + `<p class="hint">${escapeHtml(HIT_FORMULA_NOTE)} ${escapeHtml(CASTING_NOTE)}</p>`;
+    // **The portrait is part of the pack, not a page behind `P`.** The owner, 2026-11-04:
+    // *"instead of opening the portrait with P the portrait and next face button should be to
+    // the left of the inventory (not the book of spells)"*. It is drawn here, in the bag's
+    // left column; `nextPortraitFace` repaints this same canvas, so the pack is not replaced.
+    const portrait = '<aside class="bag-portrait" aria-label="Arena character portrait">'
+      + '<canvas id="character-portrait" width="320" height="200" style="image-rendering:pixelated;cursor:pointer" aria-label="Original Arena character and equipment"></canvas>'
+      + '<button type="button" data-face="next">Next face</button>'
+      + '<p class="hint">Original race, face and equipped-item artwork. Click the face to change it; this changes appearance only.</p>'
+      + '</aside>';
+    el.innerHTML = head + (panelMode === 'bag'
+      ? `<div class="bag-spread">${portrait}<div class="bag-list">${content}</div></div>`
+      : content);
+    if (panelMode === 'bag') paintPortrait(el.querySelector('#character-portrait'));
     dbg.panel = {
       mode: panelMode,
       sections: sections.length,
@@ -10182,6 +10945,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return;
     }
     if (data.panel) {
+      if (data.panel === 'close') { toggleInventory(false); return; }
       panelMode = data.panel === 'spells' ? 'spells' : 'bag';
       if (panelMode === 'spells') void ensureSpellLibrary().then(() => updateInventoryPanel());
       else updateInventoryPanel();
@@ -10732,7 +11496,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return spawn;
   }
 
-  /** The last scene: Tharn's fall, then Arena's own closing movie and page. */
+  /** The last scene: the whole closing chain, then the Emperor's page. */
   function playTheEnding() {
     // **His cry belongs to the Jewel, and his fall to the last blow.** `1404` plays when the
     // Jewel is taken (Tharn feels his lifeforce go); this is the other half — the two ending
@@ -10894,9 +11658,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           continue;
         }
         const power = Math.max(0, Math.round(event.power * multiplier));
-        if (!power) { outcomes.push(`${spawn.monster.name} is unharmed by it`); continue; }
+        if (!power) {
+          outcomes.push(`${spawn.monster.name} is unharmed by it`);
+          showHitNumber(hitNumberFor({ ineffective: true }));
+          showHitMarker('miss');
+          continue;
+        }
         playSfx('spellHit', { element: event.element, volume: 0.85 });
         const after = damageMonster(spawn, power, entry.name);
+        const spellNumber = hitNumberFor({ damage: power });
+        showHitNumber(spellNumber);
+        showHitMarker('hit');
+        dbg.lastHitNumber = spellNumber;
         outcomes.push(`${power} to ${after.name}${after.health === 0 ? ' (dead)' : ` (${after.health} left)`}${multiplier !== 1 ? ` ×${multiplier}` : ''}`);
       } else if (event.kind === 'open') outcomes.push(shiftLock(true));
       else if (event.kind === 'lock') outcomes.push(shiftLock(false));
@@ -10965,22 +11738,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ?? elementOf(entry.element)
       ?? elementOf(result.events.find((event) => event.element)?.element)
       ?? 'magic';
-    const castPower = Math.max(1, Number(result.damage) || Number(result.heal) || Number(result.ward) || Number(entry.points) || 1);
-    let motes = 0;
-    if (landed) {
-      const feet = feetOf();
-      const spawn = target.spawn;
-      motes = combatFx.magicBurst(spawn.world.x, spawn.world.y + 0.9, spawn.world.z, {
-        element: castElement, power: castPower,
-        dir: [spawn.world.x - feet[0], spawn.world.z - feet[2]],
-      });
-    } else {
-      const feet = feetOf();
-      motes = combatFx.magicBurst(
-        feet[0] + Math.sin(cam.yaw) * 0.6, feet[1] + 1.2, feet[2] + Math.cos(cam.yaw) * 0.6,
-        { element: castElement, power: castPower },
-      );
-    }
+    const feet = feetOf();
+    // **The screen is the caster's** (`SPELL_SPLASH_ART`): the install's own big sheet for the
+    // element goes up the instant the spell leaves the hands — `FIRE.CFA` for fire, `ICE.CFA` for
+    // cold, `ACID.CFA` for poison, `SHOCK.CFA` for shock, `MAGIC.CFA` for everything else. It is
+    // the picture the original paints over the 320 × 200 view as a spell is thrown.
+    combatFx.spellSplash(castElement);
+    // **And the spell crosses the room** — `FX_…B.CFA` from the hands, then its own burst
+    // (`EXP_…B.CFA`) where it lands: on the creature it was aimed at, or at the hands when the
+    // spell was cast on the caster themselves (a heal, a ward, a light).
+    const hands = [feet[0] + Math.sin(cam.yaw) * 0.35, feet[1] + 1.15, feet[2] + Math.cos(cam.yaw) * 0.35];
+    const motes = landed
+      ? combatFx.magicBurst(target.spawn.world.x, target.spawn.world.y + 0.9, target.spawn.world.z,
+        { element: castElement, from: hands })
+      : combatFx.magicBurst(hands[0], hands[1], hands[2], { element: castElement });
     showNotice(`${result.note}${outcomes.length ? ` (${outcomes.join('; ')})` : ''}`, 3400);
     // **A spell the player casts pins itself to the hotbar.** The bar fills with what is
     // actually used, so the player never has to visit a setup screen to make it useful — the
@@ -10990,7 +11761,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ok: true, spell: entry.name, cost: result.cost, damage: result.damage, heal: result.heal,
       ward: result.ward, events: result.events.map((event) => event.kind), outcomes,
       target: target?.spawn?.monster?.name ?? null, spellPoints: player.spellPoints, fromScroll: Boolean(opts.fromScroll),
-      fx: { particles: motes, element: castElement, at: landed ? 'target' : 'caster' },
+      fx: { effects: motes, element: castElement, at: landed ? 'target' : 'caster' },
     };
     return dbg.lastCast;
   }
@@ -11028,24 +11799,32 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (nearest) properNameFor(nearest);
     // The level and how far the experience has climbed toward the next one (`game/progression.js`):
     // the number the fight has been paying into, and the one a player watches.
-    const progress = progressOf({ ...player, xp });
     const owed = pendingLevels({ ...player, xp });
-    // The vitals row: the four numbers a player watches (level, health, the experience the
-    // fight is paying into, the count of what is down) and nothing else.
-    // Health and magicka live in the vitals plate, so this row keeps only what that plate has
-    // no room for: who the player is, the experience, and the count of what is down.
-    const rows = [`<b>${escapeHtml(player.name)}</b> — level <b>${player.level}</b>`
-      + ` · ${xp} xp${progress.next ? ` (${progress.needed} to level ${progress.earned + 1})` : ''}`
-      + ` · ${kills} slain`];
-    // The foe in front of them, or the plain fact that the field is clear.
-    rows.push(nearest
-      ? `${nearest.monster.proper ? `${escapeHtml(nearest.monster.proper)} — ${escapeHtml(nearest.monster.name)}` : escapeHtml(nearest.monster.name)} <b>${nearest.monster.health}</b>/${nearest.monster.maxHealth} · ${Math.round(nearest.distance ?? 0)} m`
-      : 'Nothing stirs here.');
+    // **The card says what is happening, not who the player is.** The vitals carry the level
+    // and the purse, the portrait carries experience and the count of the slain, and the
+    // pause menu carries the whole sheet — so a permanent row repeating them here was the
+    // third telling of the same numbers. What is left is the place (written by `loadLevel`),
+    // the foe, the flags and what is in reach.
+    const rows = [];
+    // **The foe in front of them — and nothing when the field is clear.** "Nothing stirs here."
+    // sat on every quiet frame of the game, saying what the empty screen already said.
+    if (nearest) {
+      const hp = Math.max(0, Math.round(Number(nearest.monster.health) || 0));
+      const maxHp = Math.max(1, Math.round(Number(nearest.monster.maxHealth) || 1));
+      const share = Math.max(0, Math.min(1, hp / maxHp));
+      const named = Boolean(nearest.monster.proper);
+      rows.push(`<div class="hf-foe"><span class="hf-foe-name">${escapeHtml(named ? nearest.monster.proper : nearest.monster.name)}</span>`
+        + `<span class="hf-foe-hp">${hp} / ${maxHp}</span></div>`
+        + `<div class="hf-foe-sub">${escapeHtml(named ? nearest.monster.name : 'in front of you')}`
+        + ` · ${Math.round(nearest.distance ?? 0)} m</div>`
+        + `<div class="hf-foe-bar"><i style="width:${(share * 100).toFixed(1)}%"></i></div>`);
+    }
     // **The flags, on one row, joined**: a level owed, a guard up, a stairway underfoot, the
     // water the player is standing in, and a weapon whose first-person art this install does
     // not carry. Each was its own full sentence with its own line before; a player needs the
     // fact, not the grammar.
     const flags = [];
+    if (nearest?.monster?.elite) flags.push('<span class="elite">elite</span>');
     if (owed > 0) flags.push(`<span class="level">${owed} level${owed === 1 ? '' : 's'} owed (L)</span>`);
     if (guarding()) flags.push('<span class="guard">guard up</span>');
     // The lasting magic, on the same row: a ward with points left, the player's own light,
@@ -11074,13 +11853,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (weaponMissing) flags.push(`<span class="hint">no ${escapeHtml(weaponMissing)} first-person art for a drawn ${escapeHtml(weaponName(weaponRig.weapon).toLowerCase())}</span>`);
     else if (weaponRig.substitute) flags.push(`<span class="hint">${escapeHtml(weaponRig.ownFile)} is not in this install — drawn from ${escapeHtml(weaponRig.file)}</span>`);
     else if (view === 'first' && weaponRig.drawn) flags.push(`<span class="hint">${escapeHtml(weaponRig.file)} ${escapeHtml(weaponRig.state)}</span>`);
-    if (flags.length) rows.push(flags.join(' · '));
+    if (flags.length) rows.push(`<div class="hf-flags">${flags.join('<span class="hf-dot">·</span>')}</div>`);
     // **The HUD is the fight's, not the manual's.** The owner, 2026-10-21: *"this part of the
     // gui should not be there anymore instead in the settings"*. Two permanent lines of key
     // list and table provenance sat under every fight and every corridor; the keys live in
     // the pause menu's Settings section (`MENU_CONTROLS`) and the provenance in the pack
     // panel, where a player looks when they want them. The HUD keeps only what is happening.
-    el.innerHTML = rows.join('<br>');
+    el.innerHTML = rows.join('');
     // The guard line is written on events, so a guard raised mid-fight shows up as soon
     // as anything else changes; this is the cheap nudge that makes it show up when the
     // player raises it and nothing else is happening.
@@ -11151,9 +11930,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     }
     if (sbGold) sbGold.textContent = String(Math.max(0, Math.round(Number(player.gold) || 0)));
     if (sbLevel) sbLevel.textContent = `level ${Math.round(Number(player.level) || 1)}`;
+    if (sbName) sbName.textContent = String(player.name ?? player.character?.name ?? 'Adventurer');
     if (sbHotbarHint) {
-      const keys = (player.keys ?? []).length;
-      sbHotbarHint.textContent = keys ? `${keys} key${keys === 1 ? '' : 's'}` : '';
+      const carriedKeys = player.keys ?? [];
+      sbHotbarHint.textContent = carriedKeys.length
+        ? `${carriedKeys.length} key${carriedKeys.length === 1 ? '' : 's'}` : '';
+      // The bar has room for a count, not three labels; the title carries the ring's own
+      // names so a player can tell the sealed door's key from a lock's before opening either.
+      sbHotbarHint.title = carriedKeys.length
+        ? carriedKeys.map((key) => key.label ?? `a key (lock ${key.lock ?? '?'})`).join('\n')
+        : '';
     }
   }
 
@@ -11165,10 +11951,20 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // A cell is filled from the pack's `Pin`/`Unpin` button or the spellbook's, and emptied by a
   // right-click (or a long press) on the cell itself. It starts empty.
 
-  /** What `describeEntry` needs to tell a live pin from a dead one. */
+  /**
+   * What `describeEntry` needs to tell a live pin from a dead one.
+   *
+   * **The character's own list, not the spell file's.** `knownSpells(character)` resolves every
+   * name through `SPELLS.DAT`, which is *not read* until something asks for it — and a fast
+   * travel boots a fresh scene in this page, so the new strip was drawn from an empty library and
+   * every pinned spell read "not in your book" until `C` read the file: the owner's *"you
+   * shouldnt need to open the book every time you fast travel to use a spell that you have in
+   * the hotbar"*. The names on the sheet are the authority for what the player knows; the file
+   * is what the cast itself awaits (`castSpell`'s `ensureSpellLibrary`).
+   */
   function hotbarWorld() {
     return {
-      knownSpells: knownSpells(player).map((spell) => spell.name),
+      knownSpells: knownSpellsOf(player),
       hasItem: (id) => countInBag(bagOf(), id) > 0,
       itemName: (id) => itemById(id)?.name ?? id,
     };
@@ -11180,18 +11976,25 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   function renderHotbar() {
     if (!hotbarEl) return;
     const rows = hotbarRows(player, hotbarWorld());
-    const signature = rows.map((row) => `${row.key}|${row.label}|${row.kind}|${row.available ? 1 : 0}`).join('~');
+    // **The cell wears the thing's kind, not its initial.** A letter said only that *something*
+    // began with it; the pack already names a kind with one of `S2.IMG`'s drawn command marks
+    // (`iconRoleFor`), so a pinned sword, potion or spell wears the same glyph in the strip as
+    // in the bag — the owner, 2026-10-25: *"we also need icons in inventory and spells for
+    // equipment weapons armors spells potions"*.
+    const roleOf = (row) => (row.kind === 'spell' ? 'spell'
+      : row.entry ? iconRoleFor(itemById(row.entry.id)?.kind ?? 'misc') : 'misc');
+    const signature = rows.map((row) => `${row.key}|${row.label}|${row.kind}|${roleOf(row)}|${row.available ? 1 : 0}`).join('~');
     if (signature === hotbarShown) return;
     hotbarShown = signature;
     hotbarEl.innerHTML = rows.map((row) => {
       const empty = row.kind === 'empty';
-      // **An empty cell is a slot, not a command.** It prints a dim plus and its digit; a
-      // pinned one carries the thing's initial in gold (Arena ships no item icon set this port
-      // can read) and its name under it.
       const pinned = empty ? '' : ' pinned';
-      const dead = row.available ? '' : ' unavailable';
+      // **An empty slot is not a dead one.** `describeEntry` answers `available: false` for a
+      // cell with nothing in it, and the strip painted every one of the ten at 40% opacity — the
+      // whole hotbar looked switched off. Only a *pin the game cannot honour* is dimmed.
+      const dead = empty || row.available ? '' : ' unavailable';
       const glyph = empty ? '<span class="hb-plus">+</span>'
-        : `<span class="hb-glyph">${escapeHtml((row.label || '?').slice(0, 1).toUpperCase())}</span>`;
+        : `<i class="item-icon" data-icon="${escapeHtml(roleOf(row))}" aria-hidden="true"></i>`;
       return `<button type="button" class="hb-cell${pinned}${dead}${empty ? ' empty' : ''}" data-hotbar="${row.index}" title="${escapeHtml(row.hint)}">`
         + `<span class="hb-key">${row.key}</span>`
         + glyph
@@ -11309,13 +12112,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // is only the room's own notes; the corner plate closes it to a single button and opens it
   // again.
   const hudToggle = document.getElementById('hud-toggle');
-  hudToggle?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const folded = Boolean(hud?.classList.toggle('folded'));
+  /** Fold the page away, or open it — one state, whichever door asked. */
+  function setHudFolded(folded) {
+    hud?.classList.toggle('folded', Boolean(folded));
+    if (!hudToggle) return Boolean(folded);
     hudToggle.textContent = folded ? '+' : '−';
     hudToggle.title = folded ? 'Show the messages' : 'Hide the messages';
     hudToggle.setAttribute('aria-expanded', String(!folded));
+    return Boolean(folded);
+  }
+  hudToggle?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setHudFolded(!hud?.classList.contains('folded'));
   });
   // **The install's own paintings, read once.** `loadArenaGui` publishes `P1.IMG`, `S2.IMG`,
   // `PARCH.IMG` and the rest as CSS variables; until it answers (or if this install has none)
@@ -11446,7 +12255,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // crossed, raised platforms are stepped onto, entity flats are decorations. A flood that
     // stopped at a door would leave most of a dungeon "unreachable" and could put the objective
     // behind one.
-    const walkable = (cell) => Boolean(cell) && (cell.kind !== 'wall' || Boolean(cell.floor?.chasm));
+    // **And the margin the grid leaves around a level is not walkable at all**
+    // (`mifLevel.isVoidCell`). A `.MIF` declares one grid for the whole file, and a level may use
+    // less of it — the Fortress of Ice's second storey writes nothing outside its north-west
+    // 64×58 of a 96×80 grid, and that margin decodes as open air with a floor of texture 0. The
+    // walk used to cross it, so the "deepest reachable cell" was a cell of that empty margin:
+    // the owner's *"the map to the piece in Labyrinthian in the Fortress of Ice second floor is
+    // in an non accessible place"*. The margin is not a room, so nothing is placed in it and no
+    // walk reaches through it.
+    const walkable = (cell) => Boolean(cell) && !isVoidCell(cell)
+      && (cell.kind !== 'wall' || Boolean(cell.floor?.chasm));
     // **A level with no start point of its own is a grid this project assembled**, not a file
     // that carries a header: a city and a country window are both built from other files and
     // have no arrival of their own (`buildWildernessWindow` answers a level with no `spawn` at
@@ -11485,7 +12303,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // answer is the ordering; `cells` stays the reachable count the HUD and the suites read.
     const standable = ({ x, z }) => {
       const cell = at(x, z);
-      return Boolean(cell) && !cell.solid && !cell.floor?.chasm;
+      return Boolean(cell) && !cell.solid && !cell.floor?.chasm && !isVoidCell(cell);
     };
     // Deepest first, and by cell index within a depth so the answer is stable: the
     // same level must always put the piece in the same room.
@@ -11571,11 +12389,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (active && active.targetKind === 'wild' && !active.completed) {
       const local = wildTargetCell(active);
       const event = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
-        hunt: 'killed', slay: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
+        hunt: 'killed', slay: 'killed', rescue: 'rescue', deliver: 'deliver', harvest: 'harvest' }[active.kind] ?? null;
       if (local && event) {
         const person = ['rescue', 'deliver', 'investigate'].includes(active.kind);
         const combat = active.kind === 'hunt' || active.kind === 'slay';
-        return { owner: 'side', event, what: active.subject, wild: true, marker: !combat,
+        // **A harvest's marks are its bales.** The camp has five of them standing on the ground
+        // (`harvestCampSpots`), so the objective is the cell without a marker sprite of its own —
+        // a sixth picture on the same ground would be one thing too many to tell apart.
+        const harvest = active.kind === 'harvest';
+        return { owner: 'side', event, what: active.subject, wild: true, marker: !combat && !harvest,
           cell: { x: local.row, z: local.col }, markerArt: person ? PERSON_MARKER_ART : OBJECTIVE_MARKER_ART };
       }
     }
@@ -11644,6 +12466,88 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       }
     }
     return { x: row, z: col, depth: 0 };
+  }
+
+  /**
+   * **A harvest camp's ground: the bales still owed, and the corn standing round them.**
+   *
+   * The owner's new job (2026-10-22) is to *"go pick up 5 hay bales of corn plants in the
+   * closest already generated camp in the wilds (the bales and corn sprites need to respawn as
+   * soon as the player leaves so if another quest points to that camp is ok)"*. A country job's
+   * camp is a cell (`game/radiantQuests.js`'s `targetCell`); this is the ground it is dressed
+   * with, drawn from the install's own crop art.
+   *
+   * **Nothing here is persisted.** The bales and the corn are spots of the level, made when the
+   * window is built and gone when it is left or slid on, so walking away and back finds the camp
+   * stocked again — and a *different* harvest at the same cell has its own five ids
+   * (`harvestProgress`), so "another quest points to that camp" is never a camp picked clean.
+   * What is kept is the job's own progress: a camp the player left after three bales holds the
+   * two that are still owed, not a second five.
+   *
+   * @param {import('./interior.js').ArenaLevel} level  the window just built
+   * @param {{row: number, col: number}} camp  the camp's cell, in this window
+   * @param {object} active  `radiant.active`
+   * @returns {{bales: object[], corn: object[]}}
+   */
+  function harvestCampSpots(level, camp, active) {
+    const progress = harvestProgress(active);
+    if (!level?.cells || !camp || !progress) return { bales: [], corn: [] };
+    const owed = progress.ids.filter((id) => !progress.taken.includes(id));
+    /** @type {{row: number, col: number}[]} */
+    const floor = [];
+    // Rings outward from the camp, one ring at a time and row-major inside it, so the camp looks
+    // the same on every visit: bales nearest the fire, corn in a frame round them.
+    for (let r = 1; r <= 4 && floor.length < owed.length + HARVEST_CORN; r++) {
+      for (let dr = -r; dr <= r; dr++) for (let dc = -r; dc <= r; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== r) continue;
+        const row = camp.row + dr;
+        const col = camp.col + dc;
+        if (row < 1 || col < 1 || row >= level.depth - 1 || col >= level.width - 1) continue;
+        const cell = level.cells[row * level.width + col];
+        // **Open ground only.** A cell already carrying a tree or a bush is a picture the camp
+        // would stand inside, and a raised block is a top the bale is not drawn on (`loadLoot`
+        // bases at the level's floor), so both are skipped along with masonry and water.
+        if (!cell || cell.solid || cell.kind === 'entity' || cell.kind === 'raised'
+          || cell.floor?.chasm) continue;
+        floor.push({ row, col });
+      }
+    }
+    const bales = floor.slice(0, owed.length).map((cell, i) => ({
+      row: cell.row, col: cell.col, kind: 'hay', art: HARVEST_ART, name: 'a hay bale',
+      drawn: true, taken: false, harvest: { questId: active.id, id: owed[i] },
+    }));
+    const corn = floor.slice(owed.length, owed.length + HARVEST_CORN).map((cell, i) => ({
+      row: cell.row, col: cell.col, kind: 'corn', art: HARVEST_CORN_ART[i % HARVEST_CORN_ART.length],
+      name: 'a stand of corn', drawn: true, taken: false, prop: true,
+    }));
+    return { bales, corn };
+  }
+
+  /**
+   * **Dress a harvest camp the level was not built for.**
+   *
+   * A job taken *while standing in the country* — from a person in a farmhouse, or the world
+   * map's board over the page — arrives after the window was built, so its camp has no bales on
+   * this level. This adds them without rebuilding the page, exactly as `ensureRadiantCamp` adds a
+   * quarry to a window that slid into it; it is idempotent, so a window that already carries the
+   * job's bales is left alone.
+   *
+   * @returns {Promise<number>} how many bales were added
+   */
+  async function ensureHarvestCamp() {
+    const active = radiant?.active;
+    if (!active || active.kind !== 'harvest' || active.completed || !current?.level) return 0;
+    if ((current.loot ?? []).some((spot) => spot.harvest?.questId === active.id)) return 0;
+    const local = wildTargetCell(active);
+    if (!local) return 0;
+    const camp = harvestCampSpots(current.level, local, active);
+    const spots = [...camp.bales, ...camp.corn];
+    if (!spots.length) return 0;
+    current.loot.push(...spots);
+    current.lootBatches.push(...await loadLoot(spots, current.level));
+    dbg.harvestCamp = { quest: active.id, cell: local, bales: camp.bales.length, corn: camp.corn.length };
+    updateObjectiveHud();
+    return camp.bales.length;
   }
 
   /**
@@ -11848,6 +12752,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
 
   /** The eight arrows the marker's bearing is read as, clockwise from the look. */
   const QUEST_ARROWS = Object.freeze(['\u2191', '\u2197', '\u2192', '\u2198', '\u2193', '\u2199', '\u2190', '\u2196']);
+
+  /**
+   * The octant arrow for a direction **relative to the look** (`updateQuestMarker`'s own maths).
+   *
+   * Pulled out because two lines now read it — the job's own spot and the purse that waits when
+   * it is done — and a second copy is how the two arrows would start disagreeing.
+   *
+   * @param {number} dx  metres along the level's x (its rows)
+   * @param {number} dz  metres along the level's z (its columns)
+   * @returns {string} one of `QUEST_ARROWS`, or '' when the direction is not a number
+   */
+  function questArrow(dx, dz) {
+    if (!Number.isFinite(dx) || !Number.isFinite(dz)) return '';
+    const turn = Math.atan2(dx, dz) - (cam?.yaw ?? 0);
+    const relative = ((turn % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    return QUEST_ARROWS[Math.round(relative / (Math.PI / 4)) % 8];
+  }
   /** The last marker written, so a frame that changed nothing costs no DOM write. */
   let questMarkerText = '';
 
@@ -11868,6 +12789,58 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * Written only when the rounded distance or the bearing changes, so a still player writes
    * nothing and a walk writes a handful of times a second at most.
    */
+  /**
+   * **Where the purse waits** — the line a finished job needs and never had.
+   *
+   * The owner, 2026-10-22: *"the gui should point to the radiant quest npc who gave you the quest
+   * when you have completed it and you need to come back to him"*. A completed job's line already
+   * named the giver (`radiantQuests.js`'s `radiantObjective`), but a name is not a direction: the
+   * band showed no arrow and no distance at the one moment the job asks the player to walk back.
+   *
+   * Three cases, most precise first:
+   *   * **in the giver's own town** — the arrow and the paces to **the person's own cell**, which
+   *     `personOffer` keeps on the job (`giverCell`), so the walk ends at the one who asked;
+   *   * **out in the world** — the arrow and the paces to the town's own world cell (a job taken
+   *     from the world map's board has no person behind it, and the town is the only answer);
+   *   * **anywhere a cell cannot be measured** (a dungeon, a shop) — the name alone, which is what
+   *     the panel said before, never an invented bearing.
+   *
+   * @param {object} job  `radiant.active`
+   * @returns {string}
+   */
+  function handInLead(job) {
+    const who = job?.giverPerson ? `${job.giverPerson} in ${job.giver}` : job?.giver;
+    if (!who) return '';
+    const feet = feetOf();
+    const sameTown = Boolean(current?.city)
+      && String(place?.name ?? '').toLowerCase() === String(job.giver ?? '').toLowerCase();
+    const cell = job.giverCell ?? null;
+    if (sameTown && cell && Number.isFinite(Number(cell.row)) && Number.isFinite(Number(cell.col))) {
+      const dx = (Number(cell.row) + 0.5) * CELL_SIZE - feet[0];
+      const dz = (Number(cell.col) + 0.5) * CELL_SIZE - feet[2];
+      const paces = Math.round(Math.hypot(dx, dz));
+      return `${questArrow(dx, dz)} the purse \u00b7 ${who} \u00b7 ${paces <= 1 ? 'here' : `${paces} paces`}`;
+    }
+    // Already in the giver's town, with no cell to point at (a job off the world map's board
+    // has no person behind it): the town itself is where the purse is, and the objective line
+    // already says so.
+    if (sameTown) return '';
+    // Out in the world: the settlement's own cell (`tamrielGrid.js`'s `cellOriginOfPixel`).
+    const town = world?.byName?.(job.giver, job.giverProvinceID ?? null) ?? null;
+    const pixel = town?.tamriel ?? town?.global ?? null;
+    const here = worldCellNow();
+    if (here && pixel) {
+      const corner = cellOriginOfPixel(pixel);
+      const dx = (corner.row - here.row) * CELL_SIZE;
+      const dz = (corner.col - here.col) * CELL_SIZE;
+      const paces = Math.round(Math.hypot(dx, dz) / CELL_SIZE);
+      return `${questArrow(dx, dz)} the purse \u00b7 ${who} \u00b7 ${paces} paces`;
+    }
+    // Underground or indoors there is no bearing to give: `radiantObjective` already names the
+    // one who pays, and an invented arrow would be worse than none.
+    return '';
+  }
+
   function updateQuestMarker() {
     if (!hudQuest) return;
     let text = '';
@@ -11914,7 +12887,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         sideLead = paces <= 2 ? `${arrow} the spot is under your feet` : `${arrow} the spot \u00b7 ${paces} paces`;
       }
     }
-    const side = [sideLead, radiantObjective(radiant)].filter(Boolean).join('\n');
+    // **A finished job points back at the one who gave it.**
+    const purseLead = job?.completed ? handInLead(job) : '';
+    const side = [sideLead, purseLead, radiantObjective(radiant)].filter(Boolean).join('\n');
     if (side) text = text ? `${text}\n${side}` : side;
     if (text === questMarkerText) return;
     questMarkerText = text;
@@ -11929,9 +12904,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!hud || !current) return;
     const lines = [];
     const cell = worldCellNow();
-    if (cell) {
+    // **Which cell of Tamriel, not its coordinates.** In the country (and in a town on the
+    // world's own grid) the name of the place the player is standing in is what a HUD owes
+    // them; `world 12,34 · cell 45,67` was the map's own index and is on the map. Inside a
+    // dungeon the place card above already names the file, so the line would say it twice.
+    if (cell && (current.wild || current.city)) {
       const here = youAreHere(world, cell.row, cell.col, { settlement: current.city ? place : null });
-      lines.push(`${here.label} · ${here.provinceName ?? 'open sea'} · ${here.climate} · world ${here.pixel.x},${here.pixel.y} · cell ${cell.row},${cell.col}`);
+      lines.push(`${here.label} · ${here.provinceName ?? 'open sea'} · ${here.climate}`);
     }
     // **The objective is not in this panel** (see `updateQuestMarker`): it follows the walk on
     // a band of its own, so the reach panel keeps only what is under the player's feet.
@@ -11963,10 +12942,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (corpse) lines.push(`${corpse.monster.name}'s body — ${corpseRows(corpse.loot).map((row) => `${row.name} ×${row.qty}`).join(', ') || 'empty'}. E searches it.`);
     const ground = lootNear();
     if (ground) lines.push(`On the floor here: ${ground.name}. Press E to take it.`);
-    else {
-      const left = (current.loot ?? []).filter((spot) => !spot.taken);
-      if (left.length) lines.push(`${left.length} of the map's own things still lie in this level.`);
-    }
     const carriedKeys = (player?.keys ?? []).length;
     if (carriedKeys) lines.push(`${carriedKeys} key${carriedKeys === 1 ? '' : 's'} in the pack.`);
     // The gate: the way out of a city and the way into one. Up while the player stands
@@ -12007,7 +12982,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // Each line is plain text in the install's own words, so it is escaped into the band's
     // markup rather than trusted (`textContent` was safe by construction; the panel is HTML
     // now that the two GUIs are one).
-    hudHere.innerHTML = lines.map((line) => escapeHtml(line)).join('<br>');
+    hudHere.innerHTML = lines.map((line) => `<div class="hh-row">${escapeHtml(line)}</div>`).join('');
   }
 
   /**
@@ -12057,7 +13032,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const body = corpseNear();
     if (body) return searchCorpse(body);
     const objective = current.objective ?? refreshObjective();
-    if (objective && !objective.done && atObjective(objective).distance <= 3) return takeObjective(objective);
+    // **Only a mark with a picture is taken by `E`.** A harvest's objective is the camp itself and
+    // its five bales are ordinary ground spots (`takeHarvest`); reaching the cell must not fire
+    // the job's event with no bale in hand.
+    if (objective && !objective.done && objective.marker !== false
+      && atObjective(objective).distance <= 3) return takeObjective(objective);
     // ── the stairway ───────────────────────────────────────────────────────────
     // The walls the level's own `*LEVELUP`/`*LEVELDOWN` art marks: up to the floor above
     // (or, from the top, out of the place), down to the floor below. Checked before the
@@ -12139,6 +13118,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         if (assembled.ok) {
           quest = assembled.state;
           showNotice('The Staff of Chaos is whole.', 4000);
+          // **The assembly has its own film.** `STAFF.FLC` is the whole Staff on its altar;
+          // `CHAOSVSN.FLC` follows it as Ria's vision of what Tharn did to it. Both are the
+          // install's, both are skippable, and neither is a panel.
+          void maybeStoryMovie('staffAssembled', quest);
         }
       }
       // **The Jewel does not end the quest — it starts the last fight.** The owner,
@@ -12224,8 +13207,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       + '<form><input id="riddle-answer" autocomplete="off" spellcheck="false" maxlength="80" placeholder="speak your answer">'
       + '<button type="submit">Answer</button></form>'
       + '<p class="src" id="riddle-said"></p>'
-      + '<p class="hint">Type what the sign asks \u00b7 Escape leaves it unanswered</p>';
+      + '<p class="hint">Type what the sign asks · <button type="button" id="riddle-leave">Leave it</button></p>';
     el.classList.add('on');
+    el.querySelector('#riddle-leave').onclick = () => closeRiddle();
     const input = el.querySelector('#riddle-answer');
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') { event.preventDefault(); closeRiddle(); }
@@ -12329,12 +13313,27 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
    * ends, silently and honestly: `showMovie` answers `played: false` and this returns.
    */
   async function showEndingMovie() {
-    // **Tharn falls, then Arena closes the story.** Two movies in order, each waiting for the
-    // one before: a player who skips the first lands on the second, and the ending page waits
-    // for both. `ENDING_MOVIES` is the one list (`game/storyBeats.js`).
+    // **Tharn falls, then Arena closes the story.** The whole chain plays in order, each
+    // movie waiting for the one before: a player who skips one lands on the next, and the
+    // ending page waits for all of them. `endingMoviesFor` is the one list.
+    // **The whole closing chain, for the release this install has.** Tharn's fall
+    // (`NUJAGDTH.FLC` on the CD release, `JAGARDTH.FLC` otherwise), the Emperor
+    // (`NUKING.FLC` on the CD release, `KING.FLC` otherwise), the Staff released
+    // (`END01.FLC`), the door between worlds (`END02.FLC`) and the closing animation
+    // (`AFLC2.FLC`). `endingMoviesFor` leaves out a movie the folder does not carry.
+    const available = new Set();
+    for (const name of ['NUJAGDTH.FLC', 'JAGARDTH.FLC', 'KING.FLC', 'NUKING.FLC', 'END01.FLC', 'END02.FLC', 'AFLC2.FLC']) {
+      try { if (await data.has(name)) available.add(name); } catch { /* no archive: the chain falls back */ }
+    }
+    const chain = endingMoviesFor(available);
+    const shown = [];
     let played = null;
-    for (const name of ENDING_MOVIES) played = await playStoryMovie(name);
-    return played;
+    for (const name of chain) {
+      const result = await playStoryMovie(name);
+      shown.push({ file: name, played: Boolean(result?.played), skipped: Boolean(result?.skipped) });
+      if (result) played = result;
+    }
+    return played ? { ...played, chain: shown } : { played: false, chain: shown, file: null };
   }
 
   /**
@@ -12350,7 +13349,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // `newGame.js`, then the vision at the escape, the scroll at each clue, the Staff on the
   // first piece and the chaos vision on the assembly, the Emperor at the palace, Tharn's shield
   // at the key, his breaking hold at the Jewel, and his fall followed by Arena's closing movie.
-  // The catalogue's alternates (`END02`, `AFLC2`, `WALK`) remain the `?cutscene=` door's.
+  // The catalogue's cut and alternate films (`NUJAGDTH`, `WALK`, `WARHAFT`) remain the scene
+  // gallery's, and `KING`/`NUKING` are chosen by what the install carries.
 
   /** The player as the script fills it: `%pcf` is the first name. */
   function storyPlayer() {
@@ -12373,9 +13373,15 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const who = storyPlayer();
     const text = storyText(key, who);
     if (!text) return null;
+    const captions = dreamCaptions([text], { pcf: who.firstName, pcn: who.name });
+    // A key with no voice clips — this install has no `1403_*` files although `TEMPLATE.DAT`
+    // carries the line — is timed by its captions rather than left to flash past on a
+    // 3.6-second movie. `narrationMs` answers null for such a key; the fallback is a page
+    // rule (about 2.6 seconds a caption) and is named as one.
+    const measured = narrationMs(key);
     return playStoryMovie(storyMovie(key), {
-      captions: dreamCaptions([text], { pcf: who.firstName, pcn: who.name }),
-      narrationMs: narrationMs(key),
+      captions,
+      narrationMs: measured ?? Math.max(5000, captions.length * 2600),
       speech: narrationFiles(key),
       textKey: key,
       speaker: storySpeaker(key),
@@ -12403,7 +13409,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const key = dueDream(quest, player);
     if (!key) return null;
     markStorySeen('dreamsSeen', key);
-    return playStoryScene(key);
+    const played = await playStoryScene(key);
+    // **Ria's vision of the shattered Staff** follows her 1500 speech. The level-2 dream says
+    // the Staff was broken into eight pieces and scattered; `CHAOSVSN.FLC` is the install's
+    // own picture of the Staff adrift in the sky. It is a vision, not a second speech.
+    if (key === QUEST_OPENING) await playStoryMovie(STAFF_VISION_MOVIE);
+    return played;
   }
 
   /**
@@ -12564,9 +13575,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       `The Staff of Chaos, whole, in ${quest.pieces}/8 pieces recovered`,
       days ? `${days} days from the Imperial Dungeons to the throne room` : 'The road was short, and the deed is done',
     ];
+    const chainFiles = (played?.chain ?? []).filter((m) => m.played).map((m) => m.file);
+    const chainText = chainFiles.length ? chainFiles.join(' → ') : played?.file;
     const movieLine = played?.played
-      ? `Arena\'s closing movie (${played.file}) played above, from the install\'s own art${played.skipped ? ', skipped' : `, ${played.frames} frames of it`}`
-      : `Arena\'s closing movie (END01.FLC) is not in this install${played?.reason ? ` — ${played.reason}` : ''}`;
+      ? `Arena\'s closing chain (${chainText}) played above, from the install\'s own art${played.skipped ? ', skipped' : `, ${played.frames} frames of it`}`
+      : `Arena\'s closing chain (END01.FLC) is not in this install${played?.reason ? ` — ${played.reason}` : ''}`;
     el.innerHTML = '<h2>The Eternal Champion</h2>'
       + lines.map((line) => `<p class="quote">${wrapText(line, 62).join('<br>')}</p>`).join('')
       + '<div class="record">' + record.map((line) => `<p>${line}</p>`).join('') + '</div>'
@@ -12582,6 +13595,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const arrival = arrivalText();
     const el = document.getElementById('arrival');
     if (!el || !arrival) return null;
+    // A previous Staff-dungeon splash leaves its centred layout on this element; an ordinary
+    // arrival is the wide card at the top, so the class comes off before the new text goes in.
+    el.classList.remove('quest-splash');
     el.innerHTML = `<h2>${arrival.title}</h2>`
       + wrapText(arrival.text, 58).map((line) => `<p>${line}</p>`).join('')
       + `<p class="src">${arrival.source}</p>`;
@@ -12589,7 +13605,120 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     return arrival;
   }
 
+  /**
+   * **Arena's arrival page for a Staff dungeon.** The province's own hand-drawn map, the
+   * dungeon's paragraph from `DUNGEON.TXT`, and whether it is the clue or the piece that waits
+   * here. It replaces the ordinary arrival card; the first key still dismisses it.
+   *
+   * @param {{title: string, text: string, artRecord: string, atClue: boolean}} splash
+   * @returns {Promise<object|null>}
+   */
+  async function showQuestSplash(splash) {
+    const el = document.getElementById('arrival');
+    if (!el || !splash) return null;
+    el.classList.add('on', 'quest-splash');
+    el.innerHTML = `<h2>${escapeHtml(splash.title)}</h2>`
+      + `<div class="qs-art"><canvas id="quest-splash-art" width="320" height="200"></canvas></div>`
+      + wrapSplashText(splash.text).map((line) => `<p>${escapeHtml(line)}</p>`).join('')
+      + `<p class="src">${splash.atClue ? 'The way to the piece is here.' : 'A piece of the Staff of Chaos is here.'}</p>`;
+    try {
+      const image = await data.img(splash.artRecord);
+      const canvas = el.querySelector('#quest-splash-art');
+      if (canvas && image) {
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const { toRgba } = await import('../arena/palette.js');
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.putImageData(new ImageData(toRgba(image.indices, image.palette, {
+          width: image.width, height: image.height,
+        }), image.width, image.height), 0, 0);
+      }
+    } catch (err) {
+      console.warn(`[arrival] no ${splash.artRecord}: ${err?.message ?? err}`);
+    }
+    dbg.questSplash = { title: splash.title, art: splash.artRecord, atClue: splash.atClue };
+    return splash;
+  }
+
+  // ── the logbook (`game/logbook.js`) ───────────────────────────────────────
+  //
+  // Daggerfall's page, in this port's parchment: the objective, the quest's own journal, the
+  // places seen, and the player's notes. Kept out of the pack deliberately — a note is not an
+  // item — and saved with the character so it survives the page loads every place is.
+  let logbookOpen = false;
+  let logbook = loadLogbook();
+
+  /** The world's hour, as the logbook stamps a note. */
+  function worldHour() {
+    const raw = Number(life?.hour ?? life?.clock?.hour ?? 0);
+    return Number.isFinite(raw) ? Math.max(0, Math.min(23, Math.floor(raw))) : 0;
+  }
+
+  /** The page's model, from the live state. */
+  function logbookModel() {
+    return {
+      quest, chain, radiant, player,
+      place: place?.name ?? mapName,
+      day: Number(radiant.day ?? 0),
+      hour: worldHour(),
+      objective: currentObjective(quest, chain),
+      job: radiantObjective(radiant),
+      notes: logbook.notes,
+    };
+  }
+
+  /** Show, hide or refresh the logbook. */
+  function toggleLogbook(open = !logbookOpen) {
+    let el = document.getElementById('logbook');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'logbook';
+      document.body.appendChild(el);
+    }
+    logbookOpen = Boolean(open);
+    if (!logbookOpen) {
+      el.classList.remove('on');
+      dbg.logbook = { open: false, notes: logbook.notes.length };
+      return false;
+    }
+    const refresh = () => {
+      renderLogbook(el, logbookModel(), {
+        onAdd: (text) => {
+          const result = addNote(logbook, text, {
+            day: Number(radiant.day ?? 0), hour: worldHour(),
+            place: place?.name ?? mapName, questStep: quest.step, at: Date.now(),
+          });
+          if (!result.ok) { showNotice(result.reason, 1800); return result; }
+          logbook = result.logbook;
+          saveLogbook(logbook);
+          refresh();
+          return result;
+        },
+        onRemove: (id) => {
+          const result = removeNote(logbook, id);
+          if (!result.ok) return;
+          logbook = result.logbook;
+          saveLogbook(logbook);
+          refresh();
+        },
+      });
+    };
+    refresh();
+    el.classList.add('on');
+    dbg.logbook = { open: true, notes: logbook.notes.length };
+    return true;
+  }
+
   const arrival = showArrival();
+  // **The quest dungeon's own splash**, after the ordinary arrival card: Arena's paragraph
+  // from `DUNGEON.TXT` and the province's hand-drawn map, when this page is the dungeon the
+  // current stage sends the player to (the clue until its map is held, then the piece).
+  const splash = questSplashFor({
+    stage: chain.stages[quest.step] ?? null, quest, entries: dungeonEntries,
+    placeName: place?.name ?? null,
+  });
+  if (splash) void showQuestSplash(splash);
   refreshObjective();
   // **Ria's explanation, once per save** (`TEMPLATE.DAT` 1400). It is the main quest's start
   // cinematic — the cell's own words, and the reason the Staff matters at all — so it is played
@@ -12749,6 +13878,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       ...automapHeading(),
       marker,
       summary: automapSummary(automapMap),
+      view: { ...automapView },
       drawn: dbg.automapDrawn ?? null,
     };
   }
@@ -12767,7 +13897,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (!canvasEl || !automapMap || !current?.motor?.pos) return null;
     const heading = automapHeading();
     const marker = automapMarker(automapMap, current.motor.pos, cam.yaw);
-    const drawn = drawAutomap(canvasEl, { map: automapMap, marker });
+    const drawn = drawAutomap(canvasEl, { map: automapMap, marker, ...automapView });
     dbg.automapDrawn = drawn;
     dbg.automapMarker = marker;
     const title = document.getElementById('automap-title');
@@ -12810,6 +13940,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       pressed.clear();
       automapPaused = !life.paused;
       if (automapPaused) life.paused = true;
+      // Every opening is the whole level: a magnifier left over from the last sheet belongs to
+      // that sheet, and a player who opens a map wants to see where they are first.
+      automapView = { zoom: 1, panX: 0, panY: 0 };
       renderAutomapLegend();
       paintAutomap();
     } else {
@@ -12872,6 +14005,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // …and the menu is a layer too, with exactly one key of its own: while it is up the
     // world gets nothing but the Escape that closes it, so a swing or a step cannot be
     // queued up behind a panel the player is reading.
+    if (logbookOpen && e.code !== 'Escape' && e.code !== 'KeyJ') return;
     if (life.menuOpen && e.code !== 'Escape') return;
     // …and the automap is a third layer, with three keys of its own: `Tab` puts it away, `Escape`
     // backs out, and `M` hands over to the world map (the owner's correction: **Tamriel must be
@@ -12912,8 +14046,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (e.code === 'KeyV') setView(view === 'third' ? 'first' : 'third');
     // `I` the pack and `C` the spellbook are two pages of **one** panel (`toggleInventory`),
     // and the key of the page already on screen puts the panel away — which is what a player
-    // expects of the key that opened it.
-    if (e.code === 'KeyP' && !e.repeat) openPortrait();
+    // expects of the key that opened it. `P` no longer opens a portrait page: the original
+    // paper doll is drawn beside the pack, where `I` already takes the player.
     if (e.code === 'KeyI') openBag();
     if (e.code === 'KeyC') void openSpellbook();
     // ── the level-up (`game/progression.js`) ──────────────────────────────────
@@ -12945,7 +14079,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     if (e.code === 'KeyZ') void castSpell();
     // `T` talks, and a second `T` asks the same person again rather than restarting.
     if (e.code === 'KeyT') talk();
+    // **J is the logbook** — the Daggerfall page (`logbookPanel.js`). It is a page, not a
+    // panel that pauses: the world keeps breathing while a player writes a note, and Escape
+    // puts it away before Escape is allowed to become the menu.
+    if (e.code === 'KeyJ' && !e.repeat) { toggleLogbook(); return; }
     if (e.code === 'Escape') {
+      if (logbookOpen) { toggleLogbook(false); return; }
       // Escape backs out of whatever is up, and the menu is what it does when nothing is:
       // a player who wants out of a conversation should not be handed a menu on the way.
       const up = ['arrival', 'ending', 'talk', 'inventory', 'levelup', 'automap']
@@ -12972,11 +14111,26 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
   // ── THE PHONE IN HAND ───────────────────────────────────────────────────────
   //
   // `engine/ui/touchControls.js` attaches only where the device reports a finger, and then
-  // presses the game's own keys: the stick walks (and runs at a full push), a drag turns the
-  // head through the same `lookFilter` the mouse uses, and the buttons are `F`, `E`, `T`, `Z`,
-  // `B`, `Space`, `I`, `C`, `M`, `Tab` and `Escape`. A tap on the world is the same `E` the
-  // key is — aimed, because there is no cursor to aim with. **Nothing in the game is altered
-  // for a phone**: the same page, the same keys, the same save.
+  // presses the game's own keys. Its catalogue is **this ladder, one button per key** — `F`,
+  // `E`, `T`, `Z`, `B`, `Space`, `Q`, `R`, `V`, `BracketLeft`/`BracketRight`, `I`, `C`, `M`,
+  // `Tab`, `P`, `L` and `Escape` — and the player drags, scales or hides any of them, because
+  // a phone in a hand is not a desk (the gear's arrange mode, saved under
+  // `perfectarena.touch.layout.v1`). The stick walks (and runs at a full push) and a drag turns
+  // the head through the same `lookFilter` the mouse uses. A tap on the world is the same `E`
+  // the key is — aimed, because there is no cursor to aim with. **Nothing in the game is
+  // altered for a phone**: the same page, the same keys, the same save.
+  //
+  // `blocked` is the one thing a phone needs that a keyboard does not: a DOM window draws over
+  // this layer, so while one owns the screen the layer's buttons go quiet rather than sit under
+  // it looking pressable. Every window that can be opened on a phone carries its own way out
+  // (`data-panel="close"`, the talk panel's Leave, the riddle's Leave it, the level-up's
+  // buttons), because the keys that closed them on a desk are behind the window here.
+  // **A phone starts with the messages put away.** The band says what file the level came out of,
+  // its seed, its quads and its materials — a page for a developer, not a screen for a thumb: on a
+  // phone it was a full-width plate over the world that also swallowed every look drag that began
+  // on it. The `+` in its corner brings it back for the player who wants it (the owner, 2026-10-22:
+  // *"the part of the gui that says 'CITY2.MIF city seed … 128x128 cells … quads … materials' should
+  // not at all be there while playing on phone"*).
   touchLayer = attachTouchControls(canvas, {
     // **A phone's first touch is the sound's own key.** iOS only lets an audio context start
     // inside a gesture; the layer spends the gesture here instead of leaving the fight silent.
@@ -12990,8 +14144,36 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       void interact();
     },
     paused: () => Boolean(moviePlaying || life.mapOpen || life.menuOpen),
+    blocked: () => Boolean(
+      moviePlaying || life.mapOpen || life.menuOpen || automapOpen || riddleAsking
+      || panelIsOpen('inventory') || panelIsOpen('talk') || panelIsOpen('levelup') || panelIsOpen('ending'),
+    ),
   });
+  if (touchLayer) setHudFolded(true);
   life.abort.signal.addEventListener('abort', () => { touchLayer?.dispose(); touchLayer = null; });
+  // **A hidden interface is never a trap.** The photograph switch (`game/hudSettings.js`) takes
+  // the touch layer away with the rest of the HUD, and a phone has no `Esc` to bring the menu
+  // back — so a press **held** on the world for 700 ms opens it. Held, not tapped: a tap is
+  // still the game's own `E` the instant the interface is back, and a drag is still a look.
+  let quietHold = null;
+  const endQuietHold = () => {
+    if (quietHold?.timer) clearTimeout(quietHold.timer);
+    quietHold = null;
+  };
+  addEventListener('pointerdown', (e) => {
+    if (!touchLayer || !guiHidden()) return;
+    endQuietHold();
+    quietHold = {
+      x: e.clientX, y: e.clientY,
+      timer: setTimeout(() => { quietHold = null; toggleMenu(true); }, 700),
+    };
+  }, { signal });
+  addEventListener('pointerup', endQuietHold, { signal });
+  addEventListener('pointercancel', endQuietHold, { signal });
+  addEventListener('pointermove', (e) => {
+    if (!quietHold) return;
+    if (Math.hypot(e.clientX - quietHold.x, e.clientY - quietHold.y) > 12) endQuietHold();
+  }, { signal });
   /**
    * Change level, and bring its own population with it.
    *
@@ -13001,6 +14183,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     const next = Math.max(0, Math.min(levelCount - 1, current.index + delta));
     if (next === current.index) return current;
     await loadLevel(next);
+    // **A stair takes the key ring with it.** OpenTESArena clears the player's keys when a new
+    // dungeon level is entered (`MapLogic::handleStartDungeonLevelUpVoxelEnter`): a key found
+    // on this floor opens a door on this floor, and is not a master key carried through the
+    // whole dungeon. The notice is deliberately quiet — the ring in the status bar simply
+    // empties, as it does in the original.
+    if ((player.keys ?? []).length) {
+      dbg.keysCleared = (dbg.keysCleared ?? 0) + player.keys.length;
+      dbg.lastKeysCleared = player.keys.map((key) => key.label ?? `lock ${key.lock ?? '?'}`);
+      player = { ...player, keys: [] };
+      savePlayer();
+    }
     await populate(current);
     refreshObjective();
     // A stair is a level, and the job's thing may be on this one; its picture is placed from the
@@ -13102,6 +14295,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           const cell = level?.cells?.[current.objective.cellX * level.width + current.objective.cellZ];
           return cell ? !cell.solid && !cell.floor?.chasm : null;
         })(),
+        // **And that it is on the level at all** — not in the empty margin the `.MIF` grid
+        // carries around a storey that uses less of it (`mifLevel.isVoidCell`).
+        onMap: (() => {
+          const level = current.level;
+          const cell = level?.cells?.[current.objective.cellX * level.width + current.objective.cellZ];
+          return cell ? !isVoidCell(cell) : null;
+        })(),
       }
       : null),
     /** Take it, exactly as `E` does. */
@@ -13114,6 +14314,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     pressHotbar: (index) => { activateHotbar(Number(index)); return true; },
     /** Which of the install's own paintings the interface is wearing. */
     gui: () => dbg.gui ?? null,
+    /** The two HUD switches (`game/hudSettings.js`): the compass and the photograph's view. */
+    hud: () => ({ compass: compassEnabled(), hidden: guiHidden() }),
     /**
      * **The dungeon's own locks and keys**, as the level built them: every door leaf with its
      * lock, whether it is a riddle or the quest's seal, every key lying in the level and what
@@ -13129,7 +14331,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         row: spot.row, col: spot.col, lock: spot.lock ?? 0, taken: Boolean(spot.taken),
         door: spot.door ?? null, label: spot.label ?? null,
       })),
-      carried: (player.keys ?? []).map((key) => ({ lock: key.lock ?? 0, label: key.label ?? null })),
+      carried: (player.keys ?? []).map((key) => ({
+        lock: key.lock ?? 0, keyId: key.keyId ?? keyIdForLock(key.lock ?? 0), label: key.label ?? null,
+      })),
     }),
     /** Stand on a cell of the level, for a run that must not walk a dungeon to test a door. */
     standAt: (row, col) => {
@@ -13163,6 +14367,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       if (!person) return null;
       person.spellClock = 0;
       return { hostile: Boolean(person.hostile), fighter: Boolean(person.fighter), name: person.name ?? null };
+    },
+    /** The logbook: whether it is open, the notes it holds, and what is owed. */
+    logbook: () => ({
+      open: logbookOpen,
+      notes: logbook.notes.map((note) => ({ ...note })),
+      objective: currentObjective(quest, chain),
+      saved: (() => { try { return Boolean(localStorage.getItem('perfectarena.logbook')); } catch { return false; } })(),
+    }),
+    /** Write a note through the page's own path, for a scripted run. */
+    addLogbookNote: (text) => {
+      const result = addNote(logbook, String(text ?? ''), {
+        day: Number(radiant.day ?? 0), hour: worldHour(),
+        place: place?.name ?? mapName, questStep: quest.step, at: Date.now(),
+      });
+      if (result.ok) { logbook = result.logbook; saveLogbook(logbook); }
+      return { ok: result.ok, reason: result.reason ?? null, notes: logbook.notes.length };
     },
     /** The main quest, as this scene sees it. */
     quest: () => ({
@@ -13617,7 +14837,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     /** The side work as it stands, including whether a job may be accepted. */
     jobs: () => ({
       active: radiant.active
-        ? { id: radiant.active.id, kind: radiant.active.kind, title: radiant.active.title, target: radiant.active.target, giver: radiant.active.giver, reward: radiant.active.reward, days: radiant.active.days, combat: slayProgress(radiant.active), completed: Boolean(radiant.active.completed), giverId: radiant.active.giverId ?? null, giverPerson: radiant.active.giverPerson ?? null }
+        ? { id: radiant.active.id, kind: radiant.active.kind, title: radiant.active.title, target: radiant.active.target, giver: radiant.active.giver, reward: radiant.active.reward, days: radiant.active.days, combat: slayProgress(radiant.active), completed: Boolean(radiant.active.completed), giverId: radiant.active.giverId ?? null, giverPerson: radiant.active.giverPerson ?? null,
+          // The cell the one who asked was placed on, so a finished job's arrow and paces can be
+          // read back off the seam (`handInLead`).
+          giverCell: radiant.active.giverCell ?? null }
         : null,
       objective: radiantObjective(radiant),
       entry: radiant.log.at(-1) ?? null,
@@ -13640,6 +14863,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       radiant = result.state;
       saveRadiantState(radiant);
       updateObjectiveHud();
+      void ensureHarvestCamp();
       return {
         ok: true,
         title: offer.title,
@@ -13654,6 +14878,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       const active = radiant.active;
       if (!active) return { ok: false, reason: 'nothing in hand' };
       if (active.kind === 'slay' || active.kind === 'hunt') return { ok: false, reason: 'defeat the contracted creatures in their lair' };
+      if (active.kind === 'harvest') return { ok: false, reason: 'carry the camp’s bales in one at a time' };
       const event = { artifact: 'found', fetch: 'found', gather: 'found', investigate: 'found',
         slay: 'killed', hunt: 'killed', rescue: 'rescue', deliver: 'deliver' }[active.kind] ?? null;
       if (!event) return { ok: false, reason: `no finish for ${active.kind}` };
@@ -13712,7 +14937,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // The bolt count, and where every bolt in flight is — the ranged half of the fight is
       // visible on the page as a spark and here as its record.
       casts: dbg.casts ?? 0,
-      bolts: bolts.map((bolt) => ({ x: bolt.x, y: bolt.y, z: bolt.z, caster: bolt.caster ?? null, element: bolt.element ?? null })),
+      bolts: bolts.map((bolt) => ({ x: bolt.x, y: bolt.y, z: bolt.z, caster: bolt.caster ?? null,
+        element: bolt.element ?? null, art: bolt.art ?? null, age: bolt.age ?? 0 })),
       effects: { space: 'world', depthTested: true, particles: combatFx.particles.length, vertices: combatFx.count, bursts: combatFx.bursts, hitStop },
       defence: { rollT: defence.rollT, parryT: defence.parryT, direction: defence.rollDirection, live: liveDefence(), riposte: defence.riposte, stamina: defence.stamina.stamina ?? null, max: defence.stamina.max ?? null,
         // The player's own heavy, as the step reads it: whether the hold has armed the blow and
@@ -13780,7 +15006,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       casts: dbg.casts ?? 0,
       lastBolt: dbg.lastBolt ?? null,
       boltEnds: { wall: dbg.boltWall ?? 0, out: dbg.boltOut ?? 0, body: dbg.boltHit ?? 0 },
-      bolts: bolts.map((b) => ({ x: b.x, y: b.y, z: b.z, damage: b.damage, life: b.life })),
+      // **The bolt's own picture** (`game/ranged.js`): the install's projectile sheet it is drawn
+      // with, and its flight clock — the two things that say a caster's bolt is art and not a spark.
+      bolts: bolts.map((b) => ({ x: b.x, y: b.y, z: b.z, damage: b.damage, life: b.life,
+        element: b.element ?? null, art: b.art ?? null, age: b.age ?? 0, arrow: Boolean(b.arrow) })),
       lastDefence: dbg.lastDefence ?? null,
       parries: dbg.parries ?? 0,
       dodges: dbg.dodges ?? 0,
@@ -13859,6 +15088,7 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     stepWeapon: (seconds) => {
       weaponRig.step(Math.max(0, Number(seconds) || 0));
       drawWeaponView();
+      drawSpellView();
       return weaponViewReport();
     },
     /** The guard, exactly as `B` and the right button hold it. */
@@ -13933,11 +15163,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      */
     automap: () => automapReport(),
     toggleAutomap: (on) => toggleAutomap(on),
-    /** The panel, as it is on screen: which page, and what is on it. */
+    /**
+     * The panel, as it is on screen: which page, and what is on it.
+     *
+     * `mode` is written **after** the last page's own record because that record was written
+     * by a render of a different page (a search page leaves the pack's `mode: 'bag'` in `dbg`,
+     * and the body search page's own record does not overwrite it). The page on screen is
+     * `panelMode`, so that is what the answer says.
+     */
     panel: () => ({
+      ...(dbg.panel ?? {}),
       open: Boolean(document.getElementById('inventory')?.classList.contains('on')),
       mode: panelMode,
-      ...(dbg.panel ?? {}),
     }),
     /**
      * The spellbook, and the file behind it.
@@ -14416,11 +15653,17 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // **The same figure the crowd's race law draws** (`figureForMonster`): the Lizard Man
       // for an Argonian, the repainted snow wolf for a Khajiit, the combat set for everyone else.
       const figure = figureForMonster(monster, monsters.length);
-      const file = figure.sprite ? `${figure.sprite}1.CFA` : null;
+      const roster = figure.roster ?? null;
+      const file = roster ? rosterFile(roster, 'WLK', 1) : figure.sprite ? `${figure.sprite}1.CFA` : null;
       const skin = figure.skin;
-      if (!file || !await loadSpriteSet(file, 1, skin)) return null;
-      const base = file.slice(0, -5);
-      for (let action = 2; action <= 6; action++) await loadSpriteSet(`${base}${action}.CFA`, 1, skin);
+      if (!file) return null;
+      const missing = await loadFigureArt(file, roster, 1, skin);
+      if (missing.includes(file)) return null;
+      // **The bow sheet is loaded beside the body** — `loadSpawnArt` loads it for a level's own
+      // encounters, and this seam has to do the same or a debug-spawned archer swings instead of
+      // loosing (`liveBatches` draws the bow sheet only when it is uploaded).
+      const bowFile = monster.human?.bowFile ?? null;
+      if (bowFile) await loadSpriteSet(bowFile, 1, skin);
       const feet = feetOf();
       const fx = Math.sin(cam.yaw);
       const fz = Math.cos(cam.yaw);
@@ -14443,6 +15686,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         skin,
         sprite: figure.sprite,
         file,
+        // **A bowman draws its shot** (`humans.js`'s `bowFile`) from the same figure its body is.
+        roster,
+        bowFile,
         place: at && cell && !cell.solid && !cell.floor?.chasm ? at : { row: 0, col: 0 },
         world,
         nextAttack: monster.nextAttack,
@@ -14454,7 +15700,8 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return {
         name: monster.name, classId: monster.human.classId, raceId: monster.human.raceId,
         level: monster.level, health: monster.health, maxHealth: monster.maxHealth,
-        xp: monster.xpBase, guard: monster.armourFlat, skin, file, sheet: raceSheetKey(skin, file),
+        xp: monster.xpBase, guard: monster.armourFlat, skin, file,
+        sheet: raceSheetKey(skin, file), roster,
       };
     },
     /**
@@ -14508,6 +15755,13 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       spawn.nextAttack = 100;
       spawn.monster = { ...spawn.monster, ...(opts.health ? { health: opts.health, maxHealth: opts.health } : {}) };
       if (opts.nextAttack !== undefined) spawn.nextAttack = Math.max(0, Number(opts.nextAttack) || 0);
+      // **A caster's first bolt is on `castClock`, not the melee `nextAttack`.** A fixture
+      // that asks for a cast in 0.15s must move the clock that actually fires it; otherwise
+      // the wraith waits out the cadence it began before the fixture and the suite ends up
+      // watching a bolt somebody else threw.
+      // …unless the fixture explicitly disarms the roster caster: a human foe's rare spell is
+      // on `spellClock`, and moving `castClock` to 100 here would silence the test that reads it.
+      if (spawn.caster && opts.caster !== false && opts.nextAttack !== undefined) spawn.castClock = spawn.nextAttack;
       // A fixture may also set a creature's *footing*: the poise meter's own arithmetic is
       // a unit test, and this seam exists so a browser can prove the *consequence* of a
       // break (a cancelled wind-up, a staggered body) against whatever wound lands.
@@ -14523,9 +15777,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // (`SPELL_CHANCE`), so a test that has to see the bolt arms the caster here instead
       // of spawning persons until one happens to roll a mage. `spellClock` puts the first
       // cast `n` seconds away, which is how the "rare" cadence is held to its law.
-      if (opts.caster !== undefined) spawn.caster = Boolean(opts.caster);
+      if (opts.caster !== undefined) {
+        spawn.caster = Boolean(opts.caster);
+        // Keep the fixture's word against `stepMonsters`' roster recompute.
+        spawn.casterFixture = true;
+      } else spawn.casterFixture = false;
       if (opts.spellClock !== undefined) spawn.spellClock = Math.max(0, Number(opts.spellClock) || 0);
-      if (opts.begin) beginAttack(spawn, Math.hypot(feetOf()[0] - spawn.world.x, feetOf()[2] - spawn.world.z));
+      if (opts.begin) {
+        // The fixture's own word on the shape: `charge: true` is the lane, `charge: false`
+        // the arc, and leaving it out lets the fight's random lunge rule decide.
+        const shape = opts.charge === true ? 'dash' : opts.charge === false ? 'arc' : null;
+        beginAttack(spawn, Math.hypot(feetOf()[0] - spawn.world.x, feetOf()[2] - spawn.world.z), { shape });
+      }
       return window.__debug.combat();
     },
     damageEnemy: (index, amount) => {
@@ -14772,9 +16035,16 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // magic bursts, and the arrows/bolts in flight.
       combatFx: { particles: combatFx.particles.length, bursts: combatFx.bursts, magicBursts: combatFx.magicBursts,
         blood: combatFx.bloodSprays, arrows: combatFx.arrows.length, bolts: combatFx.bolts.length,
-        // **The install's own sprites on screen** (`SPPARTS.RCI` sparks, `BLOODEXP.CFA` sprays):
-        // the count the billboard pass drew this frame, which is what a player actually sees.
-        sparks: dbg.sparkSprites ?? 0, sprays: dbg.bloodSprites ?? 0 },
+        // **The install's own sprites on screen** (`FX_*` flights, `EXP_*` bursts, `BLOODEXP.CFA`
+        // sprays): the count the billboard pass drew this frame, which is what a player sees.
+        spellSprites: dbg.spellSprites ?? 0, sprays: dbg.bloodSprites ?? 0,
+        // **What is flying and what has burst**, by sheet — the records the billboard pass read,
+        // so a check can hold a spell to the install's own art rather than to a colour.
+        flights: combatFx.flights.map((f) => ({ sheet: f.sheet, age: f.age, life: f.life, x: f.x, y: f.y, z: f.z })),
+        explosions: combatFx.explosions.map((e) => ({ sheet: e.sheet, age: e.age, life: e.life, x: e.x, y: e.y, z: e.z })),
+        // **And the screen sheet a cast put up**: which one, which frame and where — the picture
+        // the original paints across its view while the spell is thrown (`drawSpellView`).
+        splash: dbg.spellSplash ?? null },
       /** The last sound cue, and whether it was Arena's own `.VOC` or the fallback synth. */
       sfx: sfxState(),
       // **The palace's court** (`game/staticFolk.js`): the art each still figure is drawn from,
@@ -15025,7 +16295,14 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         kind: spot.kind, itemIndex: spot.itemIndex, name: spot.name,
         row: spot.row, col: spot.col, drawn: Boolean(spot.drawn), taken: Boolean(spot.taken),
         lock: spot.lock ?? null,
+        // A harvest camp's ground: which bale belongs to which job (so a suite can carry the
+        // five), and which spots are the corn a player walks past.
+        harvest: spot.harvest ?? null, prop: Boolean(spot.prop), art: spot.art ?? null,
       })),
+      // **A harvest camp, as this window built it** — the job it was dressed for, its cell and
+      // the count of bales and corn left standing. Rebuilt (not restored) on every visit.
+      harvestCamp: dbg.harvestCamp ?? null,
+      lastHarvest: dbg.lastHarvest ?? null,
       pack: {
         gold: player.gold ?? 0,
         keys: (player.keys ?? []).map((key) => key.lock),
@@ -15092,22 +16369,6 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
      */
     loadLevelAndSettle: async (i, seconds = 0.6) => { await loadLevel(i); step(seconds); },
     teleport: (x, y, z) => { current.motor.spawn(x, y, z); },
-    /**
-     * One cell of the level that is loaded — what it is, whether a body can stand on it, and
-     * whether the country marked it as a settlement's gateway. The seam a probe needs to say
-     * *why* an arrival cell was refused instead of guessing at it.
-     */
-    cellAt: (row, col) => {
-      const level = current?.level;
-      if (!level || row < 0 || col < 0 || row >= level.depth || col >= level.width) return null;
-      const cell = level.cells[row * level.width + col];
-      if (!cell) return null;
-      return {
-        kind: cell.kind, solid: Boolean(cell.solid), gateway: Boolean(cell.gateway),
-        chasm: cell.floor?.chasm ?? null, flat: cell.floor?.flatIndex ?? -1,
-        floorTexture: cell.floor?.texture ?? -1,
-      };
-    },
     /** Teleport to a cell of the current level, on its floor. */
     teleportCell: (row, col) => { current.motor.spawn(row * CELL_SIZE + CELL_SIZE / 2, current.level.floorY * CELL_SIZE, col * CELL_SIZE + CELL_SIZE / 2); },
     /**
@@ -15202,6 +16463,12 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       return {
         kind: c.kind, solid: c.solid, chasm: c.floor.chasm, ceiling: c.ceiling,
         floorTexture: c.floor.texture, sideTexture: c.sideTexture,
+        // **Whether the country marked this as a settlement's gateway.** `solid` stays the
+        // file's own byte — a gate is drawn exactly as the `.MIF` says — so a probe asking
+        // why an arrival cell was refused, or whether a door in the wall is a way through,
+        // needs this flag beside it. The first `cellAt` in this object carried it and a later
+        // one shadowed it, so every reader of the seam saw `gateway: undefined`.
+        gateway: Boolean(c.gateway), flat: c.floor.flatIndex ?? -1,
         // Which way this cell's stair goes, if it is one — the level's own `*LEVELUP` art
         // (`mifLevel.js`'s `stairKindOf`). A generated level's way out is a stamped one, so a
         // test that wants to walk at the exit has to be able to find it.
@@ -15410,8 +16677,11 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // **There is no heavy, so there is no charge tell.** The charge clock, its notice and its
     // HUD report were removed with the mechanic itself; the debug seam still answers
     // `charge: {armed: false, progress: 0}` so older probes read a well-formed value.
-    // The camera's wound decays in about half a second.
+    // The camera's wound decays in about half a second; the lens's own wound runs on
+    // Daggerfall's 0.7-a-second clock and is painted even when nothing else changed.
     screenShake = Math.max(0, screenShake - dt * 2.2);
+    damageFlash.tick(dt);
+    paintDamageFlash(damageFlashEl, damageFlash);
     if (dbg.seconds > defence.riposteUntil) { defence.riposte = 0; defence.riposteTarget = null; }
     // **Hit-stop dilates the world, not the fight's arithmetic.** While it holds, the
     // creatures and the folk move in slow motion — the arrest is felt — and the player
@@ -15727,7 +16997,23 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     // the slide is the first moment the level can field it. `populate` only runs again above when
     // the new window kept nobody at all, so a job's own creatures have to be asked for by name
     // here (`ensureRadiantCamp`).
-    if (wildRequest && radiant?.active && !radiant.active.completed) await ensureRadiantCamp();
+    if (wildRequest && radiant?.active && !radiant.active.completed) {
+      await ensureRadiantCamp();
+      // A harvest's ground came with the new window (`loadLevel`), and this is the belt to that
+      // brace: a job's camp is the same camp whatever put the window there.
+      await ensureHarvestCamp();
+    }
+    // **The job's own mark, in the window that now holds it.** The camp above is the *quarry*;
+    // a rescue's captive (and every other country objective) is a figure placed from
+    // `objectiveCellFor`, and a slide builds a new level with no objective and no marker on it.
+    // The window the player walked into therefore fielded the captive nowhere at all — the
+    // owner's *"sprites of people you need to rescue in the wilderness dont properly spawn or
+    // persist and result invisible"*. `loadLevel` only places a marker when the page *boots* on
+    // a window that already holds the cell; a slide has to ask again.
+    refreshObjective();
+    if (current.objective && !objectiveTaken) {
+      try { await placeObjectiveMarker(); } catch (err) { console.warn('[objective] no marker on the slid window', err?.message ?? err); }
+    }
     // **The gate is not re-read in the same breath.** The new window may hold a settlement's
     // opening under the player's feet, and the crossing rule reads this frame's stride: a slide
     // is not a step at the door.
@@ -16313,15 +17599,30 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           bowFrame = Math.min(2, Math.floor(share * 3));
         }
       }
-      if (actor.monster?.sprite && bowFrame == null) {
+      // **A bowman's body is the plate fighter of the armoured roster** (`figureForMonster`), the
+      // figure its own bow sheet draws: five walk angles in five files (`0#PLTWLK.CFA`) and a
+      // forward-facing swing (`01PLTATT.CFA`). **A fallen one falls**: the roster ships no death
+      // sheet, so the watch's three-frame death stands in (`humans.js`'s `HUMAN_DEATH_SHEET`,
+      // in the archer's own skin) instead of the walk sheet's last frame — a standing man posed
+      // as a corpse, which is the owner's *"archers death animation is not working"*.
+      if (actor.roster && bowFrame == null) {
+        const view = viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2]);
+        const candidate = raceSheetKey(actor.skin, actor.death
+          ? HUMAN_DEATH_SHEET
+          : actor.attack ? rosterFile(actor.roster, 'ATT') : rosterFile(actor.roster, 'WLK', view));
+        if (spriteSets.has(candidate)) file = candidate;
+      } else if (actor.monster?.sprite && bowFrame == null) {
         const action = actor.death ? 6 : actor.attack ? 1 : viewFacing(actor.facing ?? 0, actor.world.x, actor.world.z, eye[0], eye[2]);
         // A human foe's sheet is the same file under **their own race's palette** (`actor.skin`),
         // so the watch is a Dunmer in Morrowind and a Nord in Skyrim without a second sprite.
         const candidate = raceSheetKey(actor.skin, `${actor.sprite ?? actor.monster.sprite}${action}.CFA`);
         if (spriteSets.has(candidate)) file = candidate;
       }
-      const set = spriteSets.get(file);
-      if (!set) continue;
+      const base = spriteSets.get(file);
+      if (!base) continue;
+      // **An elite wears its golden rim.** The same sheet, uploaded once as a solid gold
+      // silhouette and drawn 15 % larger behind the body; a corpse keeps the ordinary sheet.
+      const set = actor.monster?.elite && !actor.death ? goldSetFor(base) : base;
       // A talking figure runs its talk sheet's frames on a steady clock — a talk is not a
       // stride, so it must not be driven by metres walked (`actorFrame`'s own law) — and a
       // fallen one runs its death sheet once, then holds the last pose until it is cleared.
@@ -16335,7 +17636,10 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
         // cycle, so an Argonian or a Khajiit fell in a walking pose — the reported "no proper
         // die animation".
         : actor.death
-          ? Math.min(frames - 1, Math.floor((actor.death.elapsed / FOLK_DIE_SECONDS) * frames))
+          // **A creature dies at Arena's own 12 frames a second** (`ENEMY_DEATH_FRAME_SECONDS`),
+          // not on the one-second clock the town's fallen use: a six-frame die sheet is half a
+          // second, and every frame of it is seen instead of the first one held.
+          ? Math.min(frames - 1, Math.floor(actor.death.elapsed / ENEMY_DEATH_FRAME_SECONDS))
         : actor.talkingArt
           ? Math.floor(dbg.seconds * TALK_FRAMES_PER_SECOND) % frames
           // **A sheet with Arena's layout strides on its first six frames** (walk 0–5, look
@@ -16348,15 +17652,19 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
           : actorFrame(actor, frames, {
             attack: actor.attack,
             walkFrames: actor.layout === 'view' ? LAYOUT_WALK_FRAMES : null,
+            // **A roster sheet is one animation per file** (`peopleKinds.js`'s `layout: 'action'`),
+            // not Arena's twelve-frame enemy layout: its swing has three frames and its walk six,
+            // so the enemy reading (frames 8–11 of an attack) would find no attack frame at all.
+            enemy: actor.roster ? false : Boolean(actor.monster),
           });
       // **Which side of them the eye is on, decided with a deadband and remembered.** A
       // creature walking straight at the player sits on a knife edge (`mirrorFor`), and the
       // bare sine flipped the billboard left and right frame after frame — the owner's
       // "ENEMIES FLIP LEFT AND RIGHT FOR NO REASON WHEN THEY MOVE" (2026-10-16).
       const mirrored = !actor.attack && !actor.death && mirrorFor(actor, eye[0], eye[2]);
-      actor.renderFrame = `${file}#${frame}`;
+      actor.renderFrame = `${set.file}#${frame}`;
       actor.renderMirrored = mirrored;
-      const key = `${file}#${frame}:${mirrored ? 1 : 0}`;
+      const key = `${set.file}#${frame}:${mirrored ? 1 : 0}`;
       let group = groups.get(key);
       if (!group) groups.set(key, group = { set, frame, mirrored, actors: [] });
       group.actors.push(actor);
@@ -16378,15 +17686,22 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     for (const [key, group] of groups) {
       const { set, frame, mirrored, actors } = group;
       const cache = set.frameBatches ??= new Map();
+      // **A gold silhouette sits behind its body**, a few centimetres farther from the eye,
+      // so the ordinary sprite always wins the overlap and only the rim is gold. The offset
+      // is proportional to the distance, which keeps the depth gap at every range.
+      const centres = actors.map((actor) => (set.gold
+        ? [actor.world.x + (actor.world.x - eye[0]) * 0.03, actor.world.y,
+          actor.world.z + (actor.world.z - eye[2]) * 0.03]
+        : [actor.world.x, actor.world.y, actor.world.z]));
       let batch = cache.get(key);
       if (!batch || batch._quads < actors.length) {
         if (batch) renderer.destroyBillboardBatch(batch);
         batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, `${set.file}#${frame}`,
           { w: mirrored ? -set.size.w : set.size.w, h: set.size.h },
-          actors.map((actor) => [actor.world.x, actor.world.y, actor.world.z]), { dynamic: true });
+          centres, { dynamic: true });
         cache.set(key, batch);
       }
-      renderer.moveBillboardBatch(batch, actors.map((actor) => [actor.world.x, actor.world.y, actor.world.z]));
+      renderer.moveBillboardBatch(batch, centres);
       batch.indexCount = actors.length * 6;
       set.live += actors.length;
       set.crowd += actors.length;
@@ -16394,25 +17709,73 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       set.batch.record = `${set.file}#${frame}`;
       drawnFrames.push(batch.record);
       out.push(batch);
-      figures += actors.length;
+      // The silhouette is a second drawing of the same figure, not a second figure.
+      if (!set.gold) figures += actors.length;
     }
-    // ── the install's own sparks and blood ────────────────────────────────
+    // ── the install's own spell animations and blood ─────────────────────
     //
-    // **`SPPARTS.RCI` and `BLOODEXP.CFA`, drawn as Arena draws them.** The effects pool keeps
-    // the records (position, age, the spray's clock); these two batches are the pictures. A
-    // spark is the 9×9 field the install ships; a wound is the five-frame explosion, its frame
-    // read off the spray's own age. Both are ordinary billboards, so they depth-test against
-    // the world exactly like a figure does.
-    if (sparkBatch) {
-      const sparks = combatFx.particles.filter((p) => p.art === 'spark');
-      if (sparks.length) {
-        renderer.moveBillboardBatch(sparkBatch, sparks.map((p) => [p.x, p.y, p.z]));
-        sparkBatch.indexCount = sparks.length * 6;
-        sparkBatch.record = 'SPPARTS.RCI';
-        out.push(sparkBatch);
-        dbg.sparkSprites = sparks.length;
-      } else dbg.sparkSprites = 0;
+    // **The `FX_*` projectiles, the `EXP_*` bursts and `BLOODEXP.CFA`, drawn as Arena draws
+    // them.** The effects pool keeps the records (position, age, the spell's own clock); these
+    // batches are the pictures. A projectile loops its frames at `age × SPELL_ART_FPS` (twelve a
+    // second, `VfxIdleSecondsPerFrame`), a burst plays its own frames once and is gone, and a
+    // wound is the five-frame blood explosion with its frame read off the spray's age. All are
+    // ordinary billboards, so they depth-test against the world exactly like a figure does.
+    //
+    // **The billboard is placed by its centre**, which is how Arena's own explosion is built:
+    // `getSpellExplosionEntityInitInfo` spawns it half its height *below* the wound. The sprite
+    // is also a tall-pixel drawing (`SPELL_TALL_PIXEL`), so its height is stretched, not its width.
+    /** @type {Map<string, {key: string, set: object, frame: number, height: number, points: number[][]}>} */
+    const spellGroups = new Map();
+    /** Queue one frame of one effect sheet, centred on a world point. */
+    const queueSpellFrame = (sheet, x, y, z, frame) => {
+      const set = spellSets.get(sheet);
+      const frames = set?.cfa?.frames?.length ?? 0;
+      if (!frames || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+      const at = Math.max(0, Math.min(frames - 1, frame));
+      const key = `${sheet}#${at}`;
+      const group = spellGroups.get(key) ?? {
+        key, set, frame: at, height: set.size.h * SPELL_TALL_PIXEL, points: [],
+      };
+      group.points.push([x, y - group.height / 2, z]);
+      spellGroups.set(key, group);
+    };
+    // **The bolts are the projectiles.** `game/ranged.js` names the sheet from the bolt's element
+    // (`bolt.art`), and the frames are its own flight clock — a caster's bolt loops its animation
+    // all the way in, exactly as the original's projectile entity does.
+    for (const bolt of bolts) {
+      if (bolt.arrow || !bolt.art) continue;
+      const frames = spellSets.get(bolt.art)?.cfa?.frames?.length ?? 0;
+      if (!frames) continue;
+      queueSpellFrame(bolt.art, bolt.x, bolt.y, bolt.z, Math.floor((bolt.age ?? 0) * SPELL_ART_FPS) % frames);
     }
+    // **The player's own casts fly too**, once from the hands to the wound (`combatFx.flights`).
+    for (const flight of combatFx.flights) {
+      const frames = spellSets.get(flight.sheet)?.cfa?.frames?.length ?? 0;
+      if (!frames) continue;
+      queueSpellFrame(flight.sheet, flight.x, flight.y, flight.z,
+        Math.floor(flight.age * SPELL_ART_FPS) % frames);
+    }
+    // …and stop as their own burst, wherever they landed.
+    for (const burst of combatFx.explosions) {
+      queueSpellFrame(burst.sheet, burst.x, burst.y, burst.z, Math.floor(burst.age * SPELL_ART_FPS));
+    }
+    let spellSprites = 0;
+    for (const [key, { set, points, height }] of spellGroups) {
+      const cache = set.frameBatches ??= new Map();
+      let batch = cache.get(key);
+      if (!batch || batch._quads < points.length) {
+        if (batch) renderer.destroyBillboardBatch(batch);
+        batch = renderer.createBillboardBatch(CREATURE_ARCHIVE, key,
+          { w: set.size.w, h: height }, points, { dynamic: true });
+        cache.set(key, batch);
+      }
+      renderer.moveBillboardBatch(batch, points);
+      batch.indexCount = points.length * 6;
+      batch.record = key;
+      out.push(batch);
+      spellSprites += points.length;
+    }
+    dbg.spellSprites = spellSprites;
     if (bloodSet?.cfa?.frames?.length) {
       const frames = bloodSet.cfa.frames.length;
       const byFrame = new Map();
@@ -16455,19 +17818,51 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // stride, which is what tells the chosen five-view body which of its angles the eye is
       // on. Standing still keeps the last heading, so turning the camera walks round the body
       // and shows the other four shipped sides (and their three mirrors).
-      if (walking && lastFeet) playerFacing = Math.atan2(feet[0] - lastFeet[0], feet[2] - lastFeet[2]);
+      // **The body turns, it does not snap.** Its heading followed every frame's own displacement,
+      // so a step that slid along a wall — or a camera turned mid-stride — swung it through a
+      // right angle and the sheet changed with it, which is the owner's *"your character
+      // flickers too much"*. It turns towards the stride now, over a tenth of a second, so the
+      // eye reads a body walking rather than a picture being swapped.
+      const nowSeconds = dbg.seconds;
+      const facingDt = Math.min(0.1, Math.max(0, nowSeconds - playerFacingAt));
+      playerFacingAt = nowSeconds;
+      if (walking && lastFeet) {
+        const target = Math.atan2(feet[0] - lastFeet[0], feet[2] - lastFeet[2]);
+        let turn = target - playerFacing;
+        while (turn > Math.PI) turn -= Math.PI * 2;
+        while (turn < -Math.PI) turn += Math.PI * 2;
+        playerFacing += turn * Math.min(1, facingDt * 10);
+      }
       lastFeet = feet;
       // The camera stands behind the player, so the eye to ask about is the camera's own
       // position, not the player's feet. A body with five angles turns as the view turns; a
       // single-sheet body (an older save's class armour) simply keeps its one back view.
       const cameraX = dbg.thirdCamera?.eye?.[0] ?? feet[0] - Math.sin(cam.yaw) * 2.5;
       const cameraZ = dbg.thirdCamera?.eye?.[2] ?? feet[2] - Math.cos(cam.yaw) * 2.5;
+      // **The body does not flicker at a boundary.** The owner, 2026-10-22: *"when you move your
+      // visual in third person and are walking forward your character flickers too much. if you
+      // dont move your visual it stays still"*. `viewFacing` rounds to one of five views and the
+      // mirror is the sign of a sine, so a camera that sweeps across a boundary — which is what
+      // walking forward while turning does, every frame — flipped the body between two sheets (and
+      // its own mirrored copy) on alternate frames. Both choices now carry a **dead band**: a new
+      // angle has to be more than `FACING_HYSTERESIS` past the boundary, and the mirror has to be
+      // more than `MIRROR_HYSTERESIS` off centre, before the body turns.
+      //
+      // **The view reads the angle, the mirror reads the side.** `facingOffset` is signed (negative
+      // to the body's left); the five views only want its magnitude, but the mirror is the sign of
+      // a sine, and a magnitude is never negative. Passing the absolute angle to both — which this
+      // did — pinned the body to one half of itself, so walking the eye round it showed the left
+      // profile wearing the right profile's art (the owner, 2026-10-22: *"third person walking
+      // around in 360 is bugged"*).
+      const facingSide = facingOffset(playerFacing, feet[0], feet[2], cameraX, cameraZ);
       const facingView = playerSets.size
-        ? viewFacing(playerFacing, feet[0], feet[2], cameraX, cameraZ)
+        ? viewFacingWithin(Math.abs(facingSide), playerFacingView, FACING_HYSTERESIS)
         : BACK_VIEW;
+      playerFacingView = facingView;
       const facingMirror = playerSets.size
-        ? Math.sin(Math.atan2(cameraX - feet[0], cameraZ - feet[2]) - playerFacing) < 0
+        ? mirrorWithin(facingSide, playerMirrored, MIRROR_HYSTERESIS)
         : false;
+      playerMirrored = facingMirror;
       // **A blow has a picture here too.** The third person used to keep the standing frame
       // through the whole swing, so pressing `F` while watching yourself did nothing on
       // screen: "attacking animation is bugged in third person". A strike sheet is the blow
@@ -16492,16 +17887,18 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
       // playing all twelve walked the body through its head-turn and its sword-swing, which is
       // exactly the defect `peopleKinds.js` records for the town's guard (D-42).
       const walkFrames = set?.layout === 'view' ? LAYOUT_WALK_FRAMES : frames;
-      set.phase = walking
-        ? ((set.phase ?? 0) + walked * frames / WALK_CYCLE_METRES) % frames
-        : 0;
+      // One stride for the body, whatever sheet is on the screen: `playerStride` is metres walked
+      // and is spent as a fraction of the cycle per frame, so changing angle mid-step keeps the
+      // pose (D-94).
+      playerStride = walking ? (playerStride + walked) % WALK_CYCLE_METRES : 0;
+      const phase = (playerStride / WALK_CYCLE_METRES) * frames;
       let step;
       if (swinging && attackSet) {
         step = attackFrames
           ? attackFrames[Math.min(attackFrames.length - 1, Math.floor(progress * attackFrames.length))]
           : Math.min(frames - 1, Math.max(0, Math.floor(progress * frames)));
       } else {
-        step = walking ? Math.floor(set.phase) % Math.max(1, walkFrames) : 0;
+        step = walking ? Math.floor(phase) % Math.max(1, walkFrames) : 0;
       }
       batch.record = `${set.file}#${step}`;
       set.live = 1;
@@ -16698,6 +18095,9 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     renderer.resolveFrame();
     // The weapon last, over the resolved world (it is a 2D layer, not a world pass).
     drawWeaponView();
+    // **And the spell over it**, on the same 2D layer: a cast's streak is the install's own
+    // screen-sized animation, and Arena drew it over the view rather than in the world.
+    drawSpellView();
   }
 
   /**
@@ -16765,6 +18165,48 @@ export async function bootInterior(canvas, renderer, params, status, source = nu
     weaponOnScreen = { frame: index, x: place.x, y: place.y, w: place.w, h: place.h, right: place.right, bottom: place.bottom, scale: place.scale, baseline };
     dbg.weaponDrawn = weaponOnScreen;
     return weaponOnScreen;
+  }
+
+  /**
+   * **The cast, as the screen shows it: the element's own big sheet.**
+   *
+   * The owner, 2026-10-22, twice: *"SPELL PARTICLE SPRITES BOTH USED BY THE PLAYER AND ENEMIES ARE
+   * NOT WORKING AS INTENDED"*, then *"still dont work exactly as intended"*. Both earlier passes
+   * drew the spell's *world* art over the view (first `SPPARTS.RCI`, then `MAGIC.CFA`/`FIRE.CFA`
+   * as if they were bursts). The executable settles it: beside the game's own casting line sits a
+   * list of five screen sheets in the spell file's element order — `fire.cfa`, `ice.cfa`,
+   * `acid.cfa`, `shock.cfa`, `magic.cfa` — and those are what Arena paints across its 320 × 200
+   * view when a spell is thrown (`combatFx.spellSplash`).
+   *
+   * So this is the scene's half of it: the newest `combatFx.splashes` record's frame, on the
+   * weapon's own 2D layer, at the original's own screen scale, centred. `SPELL_ART_FPS` is the
+   * original's twelve frames a second, so the sheet runs for `frames / 12` seconds and is gone
+   * when its frames run out.
+   *
+   * @returns {{sheet: string, frame: number, x: number, y: number, w: number, h: number}|null}
+   */
+  function drawSpellView() {
+    dbg.spellSplash = null;
+    const el = document.getElementById('weapon');
+    const splash = combatFx.splashes[combatFx.splashes.length - 1] ?? null;
+    if (!el || !splash) return null;
+    const frames = spellFrames.get(splash.sheet);
+    if (!frames?.length) return null;
+    const shown = Math.floor(splash.age * SPELL_ART_FPS);
+    if (shown < 0 || shown >= frames.length) return null;
+    const w = el.width, h = el.height;
+    if (!w || !h) return null;
+    const art = frames[shown];
+    const scale = screenScale();
+    const x = (w - art.width * scale) / 2;
+    const y = (h - art.height * scale) / 2;
+    const ctx = el.getContext('2d');
+    // Pixel art: the original's own pixels, never a smoothed guess (as the weapon is).
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(art, x, y, art.width * scale, art.height * scale);
+    dbg.spellSplash = { sheet: splash.sheet, frame: shown,
+      x: Math.round(x), y: Math.round(y), w: Math.round(art.width * scale), h: Math.round(art.height * scale) };
+    return dbg.spellSplash;
   }
 
   /**

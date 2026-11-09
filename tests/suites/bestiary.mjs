@@ -194,9 +194,42 @@ export function makeBestiarySuite({ check, realErrors, shots, getPort }) {
     check('a human\'s armour is a guard on the player\'s blow — plate is 9',
       humanBlow?.hit === true && humanBlow?.guard === 9, JSON.stringify(humanBlow ?? null));
     await page.evalJs(`window.__debug.damageEnemy(${humanIndex}, 99999)`);
+    // **The portrait is not the body's page.** The owner, 2026-10-25: *"when you try and loot a
+    // human enemy after you opened your portrait instead of opening his loot interacting with
+    // him opens the portrait and i need to first open inventory or book and then interact to
+    // actually loot him"*. The panel keeps the page it last showed, so the search has to claim
+    // the panel back (`searchCorpse`). The paper doll now rides in the pack itself, so `I`
+    // opens it, `I` closes it, and `E` on the body is the next page.
+    await page.pressKey('KeyI', true); await page.pressKey('KeyI', false);
+    await new Promise((r) => setTimeout(r, 350));
+    const faced = await page.evalJs(`({
+      open: document.getElementById('inventory').classList.contains('on'),
+      portrait: Boolean(document.querySelector('#inventory .bag-portrait #character-portrait')),
+      mode: window.__debug.panel().mode,
+      leftOfPack: (() => {
+        const p = document.querySelector('#inventory .bag-portrait')?.getBoundingClientRect();
+        const b = document.querySelector('#inventory .bag-list')?.getBoundingClientRect();
+        return Boolean(p && b && p.right <= b.left + 1);
+      })(),
+    })`);
+    check('the portrait rides in the pack, to the left of what you carry',
+      faced.open === true && faced.portrait === true && faced.mode === 'bag' && faced.leftOfPack === true,
+      JSON.stringify(faced));
+    await page.pressKey('KeyI', true); await page.pressKey('KeyI', false);
+    await new Promise((r) => setTimeout(r, 300));
     // The loot is on the body until a player searches it (`E`), and the purse and pieces
     // reach the pack only through the panel's own Take all — the reported flow, not a seam.
     await page.evalJs('window.__debug.interact()');
+    const afterPortrait = await page.evalJs(`({
+      open: document.getElementById('inventory').classList.contains('on'),
+      portrait: Boolean(document.getElementById('character-portrait')),
+      corpseButtons: document.querySelectorAll('[data-corpse]').length,
+      title: document.querySelector('#inventory h2')?.textContent ?? null,
+    })`);
+    check('and after the portrait, `E` on the body opens the body’s own page, never the face again',
+      afterPortrait.open === true && afterPortrait.portrait === false && afterPortrait.corpseButtons >= 1
+        && /search/i.test(afterPortrait.title ?? ''),
+      JSON.stringify(afterPortrait));
     // The fixture has killed a lot; a pending level-up panel shares the pack's corner and
     // sits above it. Dismiss that panel the way `Escape` does (its points are postponed,
     // not lost) so the corpse's own button is the thing under the pointer.
@@ -245,6 +278,40 @@ export function makeBestiarySuite({ check, realErrors, shots, getPort }) {
           && String(later?.frame).startsWith(sheet) && later.frame !== first.frame,
         `${first?.frame} → ${later?.frame} · dying ${first?.dying}/${later?.dying}`);
     }
+
+    // ── a bowman is the plate fighter, not the watch (2026-10-22) ─────────────
+    // The owner: *"all ARCHER enemies need to use the sprite PLT FIGHTER AND NOT GUARD OF THE
+    // WATCH given the shooting sprite they are using uses the PLT FIGHTER"*, and *"human archer
+    // enemies should never be argonians or khajeets"*. The seam answers the figure's own file and
+    // roster, and the page's own sprite list proves the walk **and the bow** were uploaded — a bow
+    // sheet that is never loaded is an archer who swings instead of looses.
+    const archer = JSON.parse(await page.evalJs('(async () => JSON.stringify(await window.__debug.spawnHuman({ classId: "archer", raceId: "argonian", level: 5 })))()'));
+    check('an archer is drawn as the plate fighter, and is never an Argonian or a Khajiit',
+      /^0[1-5]PLTWLK\.CFA$/.test(String(archer?.file)) && archer?.roster?.family === 'PLT'
+        && archer?.roster?.sex === '0' && archer?.raceId !== 'argonian' && archer?.raceId !== 'khajiit'
+        && await page.evalJs('window.__debug.combat().spriteFiles.some((f) => f.startsWith("01PLTWLK.CFA"))') === true
+        && await page.evalJs('window.__debug.combat().spriteFiles.some((f) => f.startsWith("01PLTBOW.CFA"))') === true,
+      JSON.stringify(archer && { file: archer.file, race: archer.raceId, roster: archer.roster }));
+    // **And it falls.** The owner, 2026-10-22: *"archers death animation is not working"*. The
+    // roster's five walk angles, its swing and its bow ship no sixth file, so a fallen bowman used
+    // to play its **walk** frames to the last one and stay standing. The watch's three-frame
+    // `GUARD06.CFA` is the only human death the install has, and it is what the page must draw —
+    // in the archer's own skin — and it must *advance* through its frames.
+    const archerIndex = await page.evalJs('window.__debug.combat().monsters.length - 1');
+    await page.evalJs(`window.__debug.prepareCombat(${archerIndex}, { charge: false, begin: false, nextAttack: 100 })`);
+    await page.evalJs(`window.__debug.damageEnemy(${archerIndex}, 99999)`);
+    await page.waitFor(`String(window.__debug.combat().monsters[${archerIndex}]?.frame).startsWith("GUARD06.CFA")`,
+      { label: 'the archer death sheet', timeoutMs: 4000 });
+    const archerDown = await page.evalJs(`window.__debug.combat().monsters[${archerIndex}]`);
+    await page.evalJs('window.__debug.advance(0.6)');
+    await page.waitFor(`window.__debug.combat().monsters[${archerIndex}]?.frame !== ${JSON.stringify(archerDown?.frame)}`,
+      { label: 'the archer death frame advances', timeoutMs: 4000 });
+    const archerLater = await page.evalJs(`window.__debug.combat().monsters[${archerIndex}]`);
+    check('a fallen archer falls on a death sheet, and its frames advance',
+      archerDown?.dying === true && String(archerDown?.frame).startsWith('GUARD06.CFA')
+        && String(archerLater?.frame).startsWith('GUARD06.CFA')
+        && archerLater.frame !== archerDown.frame,
+      `${archerDown?.frame} → ${archerLater?.frame} · dying ${archerDown?.dying}/${archerLater?.dying}`);
 
     // ── a human foe may throw a spell, very rarely ────────────────────────────
     // The owner, 2026-10-19: *"all human enemies should sometimes be able to once every
@@ -300,6 +367,60 @@ export function makeBestiarySuite({ check, realErrors, shots, getPort }) {
     const hud = await page.evalJs('document.getElementById("hud").textContent');
     check('the fight band carries the lasting magic — unseen, and the ward when it is up',
       /unseen/.test(hud ?? ''), String(hud).slice(-220));
+
+    // ── a cast's three pictures are the install's own (2026-10-22) ────────────
+    // The owner: *"SPELL PARTICLE SPRITES BOTH USED BY THE PLAYER AND ENEMIES ARE NOT WORKING AS
+    // INTENDED"*, then *"still dont work exactly as intended"*. The executable's own effect table
+    // names the 27 effect animations — twelve `EXP_…` bursts, twelve `FX_…` projectiles, then
+    // `BLOODEXP`/`SPARKLE`/`DUST` for physical hits — and a list beside the game's casting line
+    // names the screen sheets in the spell file's element order (`fire`, `ice`, `acid`, `shock`,
+    // `magic`). So a cast is **three** pictures, and the page must show all three: the element's
+    // sheet across the view, its `FX_` projectile crossing the room, its `EXP_` burst where it
+    // lands.
+    const castOk = await page.evalJs(`(async () => {
+      try {
+        await window.__debug.learn('Fire Dart');
+        await window.__debug.spawnMonster('rat');
+        const cast = await window.__debug.cast('Fire Dart');
+        const fx = window.__debug.state().combatFx;
+        return JSON.stringify({ ok: cast?.ok, spell: cast?.spell, fx: cast?.fx,
+          splash: fx?.splash ?? null, flights: fx?.flights ?? [] });
+      } catch (e) { return JSON.stringify({ error: String((e && e.message) || e) }); }
+    })()`);
+    const castRead = JSON.parse(castOk);
+    // **The screen sheet is up the instant the spell is cast**: a Fire Dart's element is fire, and
+    // fire's sheet is `FIRE.CFA`, on the original's own 320 × 200 scale over the view. The
+    // position and frame are read from the paint that follows the cast, exactly as a player's eye
+    // would get them — `state()` reports the drawn rectangle, not the record behind it.
+    let splash = null;
+    for (let read = 0; read < 20 && !splash; read++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      splash = await page.evalJs('window.__debug.state().combatFx.splash');
+    }
+    check('the cast puts the element\'s own sheet across the view',
+      castRead?.ok === true && splash?.sheet === 'FIRE.CFA'
+        && Number.isFinite(splash?.frame) && splash.w > 0 && splash.h > 0,
+      `${castOk} · ${JSON.stringify(splash)}`);
+    // **And it leaves the hands as the install's fire projectile**, not as a coloured spark.
+    check('and the spell leaves the hands as the install\'s own fire projectile',
+      castRead?.ok === true && castRead?.flights?.length === 1
+        && castRead.flights[0].sheet === 'FX_FB.CFA', `${castOk}`);
+    // It arrives as its own burst — `EXP_FB.CFA` — on the creature it was aimed at.
+    await page.evalJs('window.__debug.advance(0.6)');
+    const bursts = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.state().combatFx.explosions)'));
+    check('and lands as the install\'s fire burst',
+      Array.isArray(bursts) && bursts.some((burst) => burst.sheet === 'EXP_FB.CFA'),
+      JSON.stringify(bursts));
+    let spellSprites = 0;
+    for (let read = 0; read < 20 && !spellSprites; read++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      spellSprites = await page.evalJs('window.__debug.state().combatFx.spellSprites ?? 0');
+    }
+    check('and the burst is a world sprite, drawn on a real frame',
+      castRead?.ok === true && spellSprites > 0, `${castOk} · ${spellSprites} spell sprite(s)`);
+    check('and no cast is drawn from the SPPARTS field any more',
+      await page.evalJs('!window.__debug.animation().figures.some((f) => String(f).startsWith("SPPARTS"))') === true,
+      JSON.stringify(await page.evalJs('window.__debug.animation().figures')));
 
     await page.screenshot(path.join(shots, 'bestiary.png'));
     check('the bestiary page produced no console errors', realErrors(page.consoleErrors()).length === 0,

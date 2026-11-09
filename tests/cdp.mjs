@@ -35,12 +35,16 @@ export function findBrowser() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Launch a browser and open a CDP session on a fresh page. */
-export async function launch({ width = 960, height = 600, browser = null, port = 9333 } = {}) {
+export async function launch({ width = 960, height = 600, browser = null, port = 9333, headless = true, userDataDir = null } = {}) {
   const exe = browser || findBrowser();
   if (!exe) throw new Error('no Chromium-family browser found; set CHROME_PATH');
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pa-cdp-'));
+  // A caller may pass a persistent profile (e.g. a signed-in publishing session).
+  // A temporary profile is removed on close; a supplied one is left alone.
+  const profile = userDataDir
+    ? (fs.mkdirSync(userDataDir, { recursive: true }), userDataDir)
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'pa-cdp-'));
   const args = [
-    '--headless=new',
+    ...(headless ? ['--headless=new'] : []),
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--disable-extensions',
@@ -70,7 +74,7 @@ export async function launch({ width = 960, height = 600, browser = null, port =
   const page = await attach(target.webSocketDebuggerUrl, { width, height });
   page.closeBrowser = () => {
     try { proc.kill(); } catch { /* gone */ }
-    try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* best effort */ }
+    if (!userDataDir) try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* best effort */ }
   };
   return page;
 }

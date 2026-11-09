@@ -53,6 +53,39 @@ export function makeGearSuite({ check, realErrors, shots, getPort }) {
     const stillHeld = await page.evalJs('window.__debug.bag().some((row) => row.id === "dagger")');
     check('…and it is still the player\'s to sell', stillHeld === true);
 
+    // ── the piles of loot give gear ──────────────────────────────────────────
+    // The owner, 2026-10-25: *"the piles of loot … dont give a random weapon/piece of armor
+    // instead they say thats the weapon that ria left me the first time and then never work
+    // anymore"*. Two things were wrong: the find was computed from a symbol the scene never
+    // imported (`WEAPONS` is not in this file, so every pile threw under its own notice), and
+    // the notice was one fixed sentence rather than the thing found. A pile now draws a **weapon
+    // or a piece of armour** from the catalogue by its own cell (`equipmentFind`), puts it in the
+    // pack and hands it to `equipThing` — the pack's own Equip door — which says what it is.
+    const piles = (await page.evalJs('window.__debug.state().loot'))
+      .filter((spot) => !spot.taken && spot.kind === 'equipment');
+    check('a dungeon leaves equipment piles on its floor to take', piles.length >= 2, `${piles.length} piles`);
+    const taken = [];
+    for (const pile of piles.slice(0, 2)) {
+      await page.evalJs(`window.__debug.teleportCell(${pile.row}, ${pile.col})`);
+      await new Promise((r) => setTimeout(r, 250));
+      const took = await page.evalJs('window.__debug.interact()');
+      await new Promise((r) => setTimeout(r, 450));
+      const last = await page.evalJs('window.__debug.state().lastLoot');
+      const bag = await page.evalJs('window.__debug.bag()');
+      const row = (bag ?? []).find((entry) => entry.id === last?.find) ?? null;
+      taken.push({ took, find: last?.find ?? null, kind: row?.kind ?? null, name: row?.name ?? null,
+        notice: await page.evalJs('window.__debug.state().notice') });
+    }
+    check('taking a pile of loot yields a weapon or a piece of armour, into the pack',
+      taken.length === 2 && taken.every((row) => row.took === true && row.find
+        && ['weapon', 'armour', 'shield'].includes(row.kind)),
+      JSON.stringify(taken));
+    check('…and the notice names the thing that was found, not one fixed sentence',
+      taken.every((row) => row.name && String(row.notice ?? '').includes(row.name)),
+      JSON.stringify(taken.map((row) => row.notice)));
+    check('…and the two piles are not the same find',
+      taken[0]?.find !== taken[1]?.find, `${taken[0]?.find} / ${taken[1]?.find}`);
+
     // ── the armour, which is worn *by area* (D-68) ───────────────────────────
     // UESP's rating is per material and per protected area (`game/armour.js`), so the check is
     // not "a suit adds up": a cuirass must protect the chest and nothing else, and a tower

@@ -286,9 +286,14 @@ export function makeGeneratedSuite({ check, realErrors, shots, getPort }) {
         await page.pressKey('KeyE');
         await page.pressKey('KeyE', false);
         await settle(700);
-        const left = JSON.parse(await page.evalJs('JSON.stringify({ mapOpen: window.__debug.state().mapOpen, notice: window.__debug.state().notice ?? "" })') ?? 'null');
+        // **"Under the sky" is the country, not the world-map overlay.** A dungeon's way out is
+        // `dungeonCountryBoot` — the country the ruin stands in, which is what the original does
+        // and what the owner asked for (`leaveThePlace`'s own header) — and the world map is only
+        // the answer for a place with no country to compute. The check asked for `mapOpen` alone,
+        // which is the older behaviour, so it read a correct country page as a failure.
+        const left = JSON.parse(await page.evalJs('JSON.stringify({ mapOpen: window.__debug.state().mapOpen, wild: Boolean(window.__debug.state().wild), map: window.__debug.state().map, notice: window.__debug.state().notice ?? "" })') ?? 'null');
         check(`${dungeon}'s stair is the way out: E on it puts the player back under the sky`,
-          left?.mapOpen === true, JSON.stringify(left));
+          left?.mapOpen === true || left?.wild === true, JSON.stringify(left));
       }
       await page.screenshot(path.join(shots, `generated-${slug(dungeon)}.png`));
     }

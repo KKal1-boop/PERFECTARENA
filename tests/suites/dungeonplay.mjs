@@ -264,6 +264,13 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
     //     the player grows while it is out of sight);
     //   * the **flow field** has a route to cells the player cannot see, which is the pathfinding
     //     the sliding step did not have.
+    // **The window is the cast's own clock, not a guess.** Since the caster throws *through its
+    // attack sheet* (the 2026-10-19 rule: "enemies that cast spells still need to use their
+    // attack animation to cast them"), a ghost's bolt leaves 1.6 s after the fight starts — the
+    // cast clock's 0.9 s, then the animation's own windup — and the 1.5 s the old pin allowed had
+    // stopped at "still casting", failing a caster that was working. Measured on the page: the
+    // arm comes over at 0.9 s, the bolt leaves at 1.6 s, and no ring is ever drawn. Four seconds
+    // is the whole of that with room, and the laws are unchanged (a bolt, no melee circle).
     const caster = await page.evalJs(`(async () => {
       const d = window.__debug;
       await d.spawnMonster('ghost');
@@ -271,9 +278,13 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
       d.prepareCombat(index, { nextAttack: 0 });
       const castsAtStart = d.combat().casts;
       let ringed = false;
-      for (let i = 0; i < 30; i++) {
+      let castingAt = null, castAt = null;
+      for (let i = 0; i < 80; i++) {
         d.advance(0.05);
         const spawn = d.combat().monsters[index];
+        const now = d.combat();
+        if (castingAt === null && now.monsters[index]?.casting) castingAt = (i + 1) * 0.05;
+        if (castAt === null && (now.casts ?? 0) > castsAtStart) castAt = (i + 1) * 0.05;
         if (spawn && spawn.attacking) ringed = true;
       }
       const after = d.combat();
@@ -281,6 +292,7 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
         name: after.monsters[index]?.name ?? null,
         caster: after.monsters[index]?.caster ?? false,
         casts: (after.casts ?? 0) - castsAtStart,
+        castingAt, castAt,
         ringed,
         ringOnIt: after.attacks.some((a) => a.serial === after.monsters[index]?.serial),
         health: d.player().health,
@@ -395,10 +407,42 @@ export function makeDungeonPlaySuite({ check, realErrors, shots, getPort }) {
     check('the dungeon has an up stair — the way out, from the level\'s own art',
       stairs.up > 0 && Boolean(outCell), JSON.stringify({ up: stairs.up, down: stairs.down, cell: outCell }));
     if (!outCell) throw new Error('No up stair to leave Stonekeep by');
+    // **A pinned spell survives the world changing place.** The owner, 2026-10-25: *"you
+    // shouldnt need to open the book every time you fast travel to use a spell that you have in
+    // the hotbar"*. The strip's "can this be pressed" read the spell **file**, which a fresh
+    // scene has not opened yet — leaving by a stair rebuilds the scene exactly as a fast travel
+    // does — so every pinned cell turned into "not in your book" until `C` was pressed. Pin one
+    // here, leave by the stair, and press it in the country.
+    const pinned = await page.evalJs(`(async () => {
+      const d = window.__debug;
+      const book = await d.spellbook();
+      if (!book.known.length) await d.learn('Light Heal');
+      d.openSpellbook();
+      for (let i = 0; i < 40 && !document.querySelector('[data-pin-spell]'); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const button = document.querySelector('[data-pin-spell]');
+      button?.click();
+      d.toggleInventory(false);
+      return d.hotbar().filter((row) => row.kind === 'spell');
+    })()`);
+    check('a spell is pinned to the hotbar before the world changes place',
+      (pinned ?? []).length === 1 && pinned[0].available === true, JSON.stringify(pinned));
     await page.evalJs(`window.__debug.teleportCell(${outCell.row},${outCell.col})`);
     await key('KeyE');
     await page.waitFor('window.__debug?.state && window.__debug.state().wild && window.__debug.state().painted > 3',
       { timeoutMs: 120000, label: 'the country outside the dungeon' });
+    const bar = await page.evalJs('window.__debug.hotbar().filter((row) => row.kind === "spell")');
+    check('…and it is still ready in the new place, without opening the spellbook there',
+      bar.length === 1 && bar[0].available === true && bar[0].entry?.name === pinned[0]?.entry?.name,
+      JSON.stringify(bar));
+    if (bar.length) {
+      await page.evalJs('window.__debug.pressHotbar(0)');
+      await new Promise((r) => setTimeout(r, 900));
+      const cast = await page.evalJs('window.__debug.state().notice');
+      check('pressing the cell casts the spell — not “not in your book”',
+        String(cast ?? '').includes(bar[0].entry?.name ?? '\u0000') && !/not in your book/i.test(cast ?? ''), String(cast));
+    }
     const country = await page.evalJs('({ wild: window.__debug.state().wild, mapOpen: window.__debug.state().mapOpen, location: window.__debug.state().location, scenery: window.__debug.state().scenery, dungeonMouth: window.__debug.state().dungeonMouth })');
     check('leaving a dungeon by its own stairs puts the player in the open country, with the map down',
       country.wild !== null && country.mapOpen === false && country.location?.kind !== 'dungeon',

@@ -63,6 +63,7 @@ export async function showMovie(name, opts = {}) {
   const caption = document.createElement('div');
   caption.id = 'cutscene-caption';
   host.appendChild(caption);
+  const skipPrompt = createSkipPrompt(host);
   const scratch = document.createElement('canvas');
 
   /**
@@ -106,6 +107,7 @@ export async function showMovie(name, opts = {}) {
     state.loading = false;
     state.skipped = skipped;
     for (const off of teardown) off();
+    skipPrompt.disarm();
     host.classList.remove('on');
     host.innerHTML = '';
     // **The voice goes with the picture**: a skipped scene stops speaking at once, and the
@@ -135,10 +137,12 @@ export async function showMovie(name, opts = {}) {
     // with `]` unable to descend. Stopping the event here keeps the press for the movie.
     event?.preventDefault?.();
     event?.stopImmediatePropagation?.();
+    if (!skipPrompt.arm()) return;
     finish(true);
   };
   const onPointer = (event) => {
     event?.stopImmediatePropagation?.();
+    if (!skipPrompt.arm()) return;
     finish(true);
   };
   window.addEventListener('keydown', onKey);
@@ -293,6 +297,7 @@ export async function showStill(file, opts = {}) {
   const sheet = document.createElement('canvas');
   sheet.id = 'cutscene-sheet';
   host.appendChild(sheet);
+  const skipPrompt = createSkipPrompt(host);
 
   let done = false;
   let timer = 0;
@@ -312,21 +317,24 @@ export async function showStill(file, opts = {}) {
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('pointerdown', onPointer);
     window.removeEventListener('resize', resize);
+    skipPrompt.disarm();
     host.classList.remove('on');
     host.innerHTML = '';
     status(skipped ? `still ${file} skipped` : `still ${file} finished`);
     resolveExit({ played: shown && !skipped, skipped, frames: shown ? 1 : 0, file, reason: null });
   };
-  // The same skip law as the movie player: a fresh press or a click ends the picture, an
-  // auto-repeat does not, and the listeners are up before the file arrives.
+  // The same skip law as the movie player: a fresh press or click arms the note, the next
+  // one ends the picture, auto-repeat does not, and the listeners are up before the file arrives.
   const onKey = (event) => {
     if (event?.repeat) return;
     event?.preventDefault?.();
     event?.stopImmediatePropagation?.();
+    if (!skipPrompt.arm()) return;
     finish(true, false);
   };
   const onPointer = (event) => {
     event?.stopImmediatePropagation?.();
+    if (!skipPrompt.arm()) return;
     finish(true, false);
   };
   window.addEventListener('keydown', onKey);
@@ -359,6 +367,39 @@ export async function showStill(file, opts = {}) {
   resize();
   timer = setTimeout(() => finish(false, true), seconds * 1000);
   return await exit;
+}
+
+/**
+ * The first fresh input arms a skip and shows where the second one is; the second input
+ * finishes. A cutscene must not vanish on the same keypress that was meant to start it.
+ *
+ * @param {HTMLElement} host the `#cutscene` layer
+ */
+function createSkipPrompt(host) {
+  const hint = document.createElement('div');
+  hint.id = 'cutscene-skip-hint';
+  hint.textContent = 'click again to skip';
+  hint.setAttribute('role', 'status');
+  hint.hidden = true;
+  host.appendChild(hint);
+  let armed = false;
+  let timer = 0;
+  return {
+    /** @returns {boolean} true when this is the confirming input */
+    arm() {
+      if (armed) return true;
+      armed = true;
+      hint.hidden = false;
+      clearTimeout(timer);
+      timer = setTimeout(() => { armed = false; hint.hidden = true; }, 2800);
+      return false;
+    },
+    disarm() {
+      armed = false;
+      clearTimeout(timer);
+      hint.hidden = true;
+    },
+  };
 }
 
 /**
@@ -405,7 +446,11 @@ export async function bootCutscene(_canvas, _renderer, params, status, source = 
     /** The movie's own state — what a scripted run watches. */
     cutscene: () => ({ ...latest }),
     /** Skip, exactly as any key does. */
-    skipCutscene: () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return true; },
+    skipCutscene: () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      return true;
+    },
   });
   const result = await showMovie(wanted, {
     source,

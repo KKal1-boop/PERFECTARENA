@@ -6,8 +6,10 @@
 // impossible to open the entire tamriel map the game had cause you put it on M"*. The automap
 // must never take the world map's key, so the suite asserts **both** halves from the same room:
 //
-//   1. `M` in a dungeon opens **Tamriel**, exactly as it did before the automap existed.
-//   2. `Tab` opens **the level's automap** — and the sheet itself offers the hand-over.
+//   1. the one place `M` is shut — the Imperial Dungeons, where the owner's 2026-10-22 rule says a
+//      fast travel out of the cell would skip the game's own first quest — says why, out loud;
+//   2. `Tab` opens **the level's automap**, prison or not, and the sheet itself offers the
+//      hand-over to Tamriel wherever Tamriel exists (checked in Stonekeep, which is a dungeon).
 //
 // The unit tests (`tests/unit/automap.test.mjs`) hold the reference's palette, voxel law, eight
 // 3×3 arrows and marker arithmetic. This suite holds the player's half:
@@ -44,26 +46,29 @@ export function makeAutomapSuite({ check, realErrors, getPort }) {
       { timeoutMs: 30000, label: 'the world map closed' },
     ).then(() => true).catch(() => false);
 
-    // ── 1. `M` is Tamriel, even in a dungeon ──────────────────────────────────
+    // ── 1. the one place `M` is shut, and the one key that still works ────────
+    // The owner, 2026-10-22: *"whenever you are in the Imperial Prison dungeon you shouldn't be
+    // able to open the Tamriel map so you can't leave unless you exit manually"*. The escape is
+    // the game's first quest, so the continent's map is closed here — said out loud rather than
+    // being a key that silently does nothing. (That `M` is Tamriel in every other dungeon is
+    // check 5's, in Stonekeep, so neither half can hide behind the other.)
     await page.goto(`http://localhost:${getPort()}/?interior=START.MIF&${q}`);
     await ready();
     await page.evalJs('window.__debug.look(0, 0)');
     const shut = await report();
     await key('KeyM');
-    const tamriel = await worldMapOn();
-    const whileMap = await report();
-    check('`M` in a dungeon still opens the entire map of Tamriel — the automap does not own the key',
-      tamriel === true && whileMap.open === false && shut.open === false,
-      `world map ${tamriel}, automap ${whileMap.open}, world-map key kept`);
+    const prisonMap = await worldMapOn();
+    const prisonNotice = await page.evalJs('window.__debug.state().notice');
+    check('in the Imperial Dungeons the map of Tamriel is shut, and says why — the escape is the first quest',
+      prisonMap === false && shut.open === false && /Imperial Dungeons/.test(prisonNotice ?? ''),
+      `world map ${prisonMap}, notice “${prisonNotice}”`);
 
-    // Put Tamriel away with its own key, then ask for the level.
-    await key('KeyM');
-    const closedMap = await worldMapOff();
+    // `Tab` is the level's own sheet, prison or not.
     await key('Tab');
     const open = await report();
-    check('…and `Tab` is the level’s own automap, so both maps are always reachable',
-      closedMap === true && open.open === true && open.eligible === true && open.map === 'START.MIF',
-      `world map closed ${closedMap}, Tab → automap ${open.open} on ${open.map}`);
+    check('…and `Tab` is the level’s own automap, so a player in the prison is not lost either',
+      open.open === true && open.eligible === true && open.map === 'START.MIF',
+      `Tab → automap ${open.open} on ${open.map}`);
 
     // ── 2. the sheet is the level's own ───────────────────────────────────────
     check('the panel is the map of the level the player is standing in, named and numbered',
@@ -121,7 +126,25 @@ export function makeAutomapSuite({ check, realErrors, getPort }) {
       open.marker?.direction === 'east' && turned.marker?.direction === 'south',
       `${open.marker?.direction} at yaw 0 → ${turned.marker?.direction} at yaw π/2`);
 
-    // ── 5. the sheet offers Tamriel, so neither map is ever a dead end ───────
+    // Prove Escape is the automap's own exit and the world resumes.
+    await key('Tab');                       // close the turned sheet
+    await key('Tab');                       // …and open it again
+    const reopened = await report();
+    await key('Escape');
+    const closed = await report();
+    const after = await state();
+    check('Escape puts the map away, and the world resumes where it was paused',
+      reopened.open === true && closed.open === false && after.paused === false
+        && Math.abs(after.feet[0] - feet[0]) < 0.001 && Math.abs(after.feet[2] - feet[2]) < 0.001,
+      `open ${reopened.open} → ${closed.open}, paused ${after.paused}, feet kept ${after.feet[0] === feet[0]}`);
+
+    // ── 5. the sheet offers Tamriel where Tamriel exists ────────────────────
+    // A dungeon that is not the prison: `M` is the continent there, and the sheet's own button is
+    // the hand-over. This is also the half of check 1's law that keeps the world map's key.
+    await page.goto(`http://localhost:${getPort()}/?dungeon=Stonekeep&${q}`);
+    await ready();
+    await key('Tab');
+    const stonekeep = await report();
     const buttonThere = await page.evalJs(`(() => {
       const b = document.querySelector('[data-automap="worldmap"]');
       if (!b) return false;
@@ -131,21 +154,18 @@ export function makeAutomapSuite({ check, realErrors, getPort }) {
     const handedOver = await worldMapOn();
     const afterHand = await report();
     check('the automap’s own button hands the player to the world map, and puts the sheet away',
-      buttonThere === true && handedOver === true && afterHand.open === false,
-      `button ${buttonThere}, world map ${handedOver}, automap ${afterHand.open}`);
-
-    // Close the world map, then prove Escape is the automap's own exit and the world resumes.
+      stonekeep.open === true && stonekeep.map !== 'START.MIF'
+        && buttonThere === true && handedOver === true && afterHand.open === false,
+      `${stonekeep.map}: sheet ${stonekeep.open}, button ${buttonThere}, world map ${handedOver}, automap ${afterHand.open}`);
+    // …and `M` in that dungeon is Tamriel too, which is the key the automap never took.
     await key('KeyM');
     await worldMapOff();
-    await key('Tab');
-    const reopened = await report();
-    await key('Escape');
-    const closed = await report();
-    const after = await state();
-    check('Escape puts the map away, and the world resumes where it was paused',
-      reopened.open === true && closed.open === false && after.paused === false
-        && Math.abs(after.feet[0] - feet[0]) < 0.001 && Math.abs(after.feet[2] - feet[2]) < 0.001,
-      `open ${reopened.open} → ${closed.open}, paused ${after.paused}, feet kept ${after.feet[0] === feet[0]}`);
+    await key('KeyM');
+    const reOpened = await worldMapOn();
+    check('`M` in an ordinary dungeon is the whole of Tamriel — the level sheet never took the key',
+      reOpened === true, `world map ${reOpened}`);
+    await key('KeyM');
+    await worldMapOff();
 
     // ── 6. a building has one too ─────────────────────────────────────────────
     await page.goto(`http://localhost:${getPort()}/?interior=TAVERN6.MIF&${q}`);

@@ -25,6 +25,18 @@ import { humanLevel, humanLoot, humanShare, rollHuman } from './humans.js';
 import { MONSTERS, monsterById, rosterFor } from './monsters.js';
 
 /**
+ * **The powerful version of an ordinary creature** — Daggerfall's high-level variants, which
+ * own a golden outline, a doubled body and a purse worth taking.
+ *
+ * `A.EXE`'s own elite roll is not in this checkout (D11), so the threshold and the chance are
+ * this project's stated numbers: from level 8, one in six ordinary creatures is an elite. The
+ * *shape* is the reference's: a normal enemy made dangerous, not a new species — it keeps the
+ * kind's sprite and name, and its circle attack and loot are what mark it.
+ */
+export const ELITE_LEVEL = 8;
+export const ELITE_CHANCE = 18;
+
+/**
  * How much of a level's own bestiary is in play, from the danger of the place and how deep
  * into it the player is.
  *
@@ -226,8 +238,31 @@ export function spawnEncounter(opts) {
       const kind = roster[random.nextBelow(roster.length)];
       monster = rollMonster(kind, random, { level: Math.max(1, danger + random.nextBelow(3) - 1) });
     }
+    // ── the elite ────────────────────────────────────────────────────────────
+    // A high-level ordinary creature may be the powerful version of its kind: double the body,
+    // half again the blow, its own circle attack (and, for a caster, bolts between circles), and
+    // a purse of the class gear a person carries. It is flagged on the monster so the scene can
+    // paint the golden outline and the target card can name it; the *kind* is unchanged.
+    let elite = false;
+    if (!isHuman && monster.level >= ELITE_LEVEL && random.nextBelow(100) < ELITE_CHANCE) {
+      elite = true;
+      const maxHealth = Math.max(1, Math.round(monster.maxHealth * 2));
+      monster = {
+        ...monster,
+        elite: true,
+        maxHealth,
+        health: maxHealth,
+        damage: monster.damage.map((value) => Math.max(1, Math.round(value * 1.5))),
+        damageMin: Math.max(1, Math.round(monster.damageMin * 1.5)),
+        damageMax: Math.max(1, Math.round(monster.damageMax * 1.5)),
+        xpRate: (monster.xpRate ?? 0) * 1.5,
+      };
+      loot = humanLoot({ level: monster.level, human: { classId: 'warrior' } }, random);
+    }
     spawned.push({
-      ...(loot ? { loot, human: true } : {}),
+      ...(loot ? { loot } : {}),
+      ...(isHuman ? { human: true } : {}),
+      ...(elite ? { elite: true } : {}),
       monster,
       place: {
         row: place.row,

@@ -37,8 +37,9 @@ import { loadWorldMap, TERRAIN_GLYPH } from '../game/worldMap.js';
 import {
   BLINK_PERIOD_MS, ICON_MAX_SCALE, MARKER_COLORS, MARKER_ICONS, MARKER_KINDS, MARKER_RECORDS,
   MAP_SCREEN_RECORD, PLATE_BACKGROUND_INDEX, PLATE_COLORS, PLATE_TEXT_INDEX, RECORD_LAYOUT,
-  blinkingAt, frameToRgba, indicesToRgba, legendRows, loadMapScreen, markerKind, markerRecord,
-  plateIndexFor, provinceMapRecord, provincePointOf,
+  blinkingAt, frameToRgba, indicesToRgba, legendRows,
+  loadMapScreen, markerKind, markerRecord, paletteColor, plateIndexFor, provinceMapRecord,
+  provincePointOf,
 } from '../game/mapScreen.js';
 import { buildQuestChain, nearestSettlement, stageMif } from '../game/questData.js';
 import { cellOriginOfPixel, pixelOfCell, provincePixelOf, youAreHere, WORLD_GRID_VERSION } from '../game/tamrielGrid.js';
@@ -59,6 +60,7 @@ import {
 import { peopleKnown, regardTally, standingWord } from '../game/regard.js';
 import { classById } from '../game/character.js';
 import { escapeHtml } from '../engine/ui/escape.js';
+import { loadArenaGui } from '../game/arenaGui.js';
 import { beginNewGame } from './newGame.js';
 import { advanceWorldTime, worldClock } from '../game/worldState.js';
 
@@ -184,6 +186,11 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   let sheetConfirm = false;
 
   const data = new ArenaData(source, { onWarn: (m) => console.warn(`[arena] ${m}`) });
+  // **The map is a page too**: its cards, journal and board are the scroll, and the search panel
+  // is the stone plate. Without the kit those panels fall back to unstyled boxes — which is what
+  // the owner saw when he said the map's red text was unreadable (it was the *page* ink on a
+  // stone panel, because the stone's own colour had never been published here).
+  void loadArenaGui(data);
   status('reading the world');
   const world = await loadWorldMap(data);
   const chain = buildQuestChain(world);
@@ -377,9 +384,13 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   const journal = document.createElement('div');
   journal.id = 'map-journal';
   host.appendChild(journal);
-  const sheet = document.createElement('div');
-  sheet.id = 'map-sheet';
-  host.appendChild(sheet);
+  // **There is no character sheet on the map.** The owner, 2026-10-25: *"in the map of tamriel
+  // remove the box that speaks abouth your character is unneded repetition"* — and it was: the
+  // vitals carry health and the purse, the menu carries the character's page, and the bar across
+  // the top of the map already names the objective and the Staff. The map is a map. What is kept
+  // is the **new-game door**, moved into the search panel where a control belongs; the summary
+  // itself lives on as `sheetSummary()`, the one place the world page can still answer what this
+  // character has won (the debug seam reads it, and the quest's last tests with it).
   const legend = document.createElement('div');
   legend.id = 'map-legend';
   legend.innerHTML = `<b>Tamriel</b> — the world of Arena<br>`
@@ -416,15 +427,23 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
 
   const tools = document.createElement('div');
   tools.id = 'map-tools';
-  tools.innerHTML = `<label>Map <select id="map-region" aria-label="Map province">
+  // **The way off the map, on the screen's own panel.** The owner, 2026-10-25: *"you should be
+  // able to exit the map of tamriel on android without needing to fast travel (with a button in
+  // the search gui)"*. `M` and `Esc` are a desk's way out and a phone has neither, so the search
+  // panel opens with one; it exists only in the overlay, because a map that is its own page has
+  // nowhere to go back to (`opts.overlay` — `M` in `scenes/interior.js`).
+  tools.innerHTML = `${overlay ? '<button type="button" id="map-exit" class="map-exit">✕ Close the map</button>' : ''}`
+    + `<label>Map <select id="map-region" aria-label="Map province">
     <option value="">All Tamriel</option>${world.provinces.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}</select></label>
     <div class="map-nav"><button id="map-prev" aria-label="Previous province">◀</button><button id="map-continent">Tamriel</button><button id="map-next" aria-label="Next province">▶</button></div>
+    <div class="map-zoom"><button id="map-zoom-out" aria-label="Zoom out">−</button><button id="map-zoom-in" aria-label="Zoom in">＋</button></div>
     <label><input type="checkbox" id="map-terrain"> Terrain / biome</label>
     <label><input type="checkbox" id="map-borders"> Province borders</label>
     <label>Find a place <input id="map-search" type="search" placeholder="City, village or dungeon…" aria-label="Search places"></label>
     <select id="map-kind" aria-label="Place type"><option value="">All places</option>${MARKER_KINDS.map((k) => `<option value="${k}">${k}</option>`).join('')}</select>
     <div id="map-results" role="list" aria-label="Matching places"></div>
     <div id="map-readout" aria-live="polite"></div>
+    <div id="map-newgame-slot"></div>
     <small>Terrain colours: forest · mountain · desert · sea.<br>Biome classes, not measured elevation. Borders use the original map masks.</small>`;
   host.appendChild(tools);
   const regionSelect = tools.querySelector('#map-region');
@@ -432,12 +451,33 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   const kindSelect = tools.querySelector('#map-kind');
   const resultList = tools.querySelector('#map-results');
   const readout = tools.querySelector('#map-readout');
+  // `close` is a declaration in this scope, so it is already here — the button and the `M` key
+  // put the map away through the same door, which is what keeps the game behind it standing.
+  tools.querySelector('#map-exit')?.addEventListener('click', () => close());
+  // The map's new-game door: the warning, then the flow — delegated, so a redrawn footer keeps
+  // one listener. `renderNewGame` fills the slot `newGameFooter()` describes.
+  const newGameSlot = tools.querySelector('#map-newgame-slot');
+  function renderNewGame() { if (newGameSlot) newGameSlot.innerHTML = newGameFooter(); }
+  newGameSlot?.addEventListener('click', (e) => {
+    const id = e.target?.id;
+    if (id === 'map-newgame') { sheetConfirm = true; renderNewGame(); }
+    else if (id === 'map-newgame-no') { sheetConfirm = false; renderNewGame(); }
+    else if (id === 'map-newgame-yes' && !leaving) {
+      leaving = true;
+      void beginNewGame({ canvas, renderer, status, source, params });
+    }
+  }, { signal });
   let terrainVisible = false, bordersVisible = false;
   const inspectionCache = new Map();
   regionSelect.onchange = () => regionSelect.value === '' ? backToTamriel() : openProvince(world.provinces[Number(regionSelect.value)]);
   tools.querySelector('#map-continent').onclick = () => backToTamriel();
   tools.querySelector('#map-prev').onclick = () => openProvince(world.provinces[((shownProvince?.id ?? 0) + 8) % 9]);
   tools.querySelector('#map-next').onclick = () => openProvince(world.provinces[((shownProvince?.id ?? -1) + 1) % 9]);
+  // **A wheel is not a finger.** The map zooms on `wheel` for a mouse; a phone has no wheel and
+  // no pinch here (a pinch belongs to the page), so the same zoom is two buttons beside the
+  // province arrows — the map is pannable with one finger already.
+  tools.querySelector('#map-zoom-in').onclick = () => zoomBy(1.25);
+  tools.querySelector('#map-zoom-out').onclick = () => zoomBy(1 / 1.25);
   tools.querySelector('#map-terrain').onchange = (e) => { terrainVisible = e.target.checked; draw(); };
   tools.querySelector('#map-borders').onchange = (e) => { bordersVisible = e.target.checked; draw(); };
   searchInput.oninput = kindSelect.onchange = () => { updateSearch(); draw(); };
@@ -568,6 +608,19 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     const margin = 40;
     viewport.offsetX = Math.min(viewport.width - margin, Math.max(margin - w, viewport.offsetX));
     viewport.offsetY = Math.min(viewport.height - margin, Math.max(margin - h, viewport.offsetY));
+  }
+
+  /** Zoom about the middle of the sheet, which is where a thumb's zoom is aimed. */
+  function zoomBy(factor) {
+    const centre = { x: viewport.width / 2, y: viewport.height / 2 };
+    const before = toWorld(centre);
+    viewport.scale = Math.max(1, Math.min(6, viewport.scale * factor));
+    const s = viewport.fit * viewport.scale;
+    viewport.offsetX = centre.x - before.x * s;
+    viewport.offsetY = centre.y - before.y * s;
+    clamp();
+    draw();
+    return viewport.scale;
   }
 
   /** World pixel → CSS pixel. */
@@ -765,6 +818,12 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
         drawLabel(location.name, p.x, p.y + h / 2 + 11);
       }
     }
+    // **The Staff has no mark on this map.** The owner, 2026-11-04: *"in the specific regions
+    // map indicators happeared on top of the dungeons that contain the staff pieces and i dont
+    // like that like a palm on top of murkwood in blackmarsh"*. The record is not even read here
+    // now: a map is a map of places, and the quest's business belongs in the journal and the
+    // objective line, never stamped over the province art.
+
     // The player's own mark: the record's icon on the continent (the province's own maps hold their
     // places already), and the **little dot** for a cell out in the country, on whichever of the two
     // levels is showing. `CITYDATA` puts no palace on a province map, so the palace is drawn on the
@@ -1632,85 +1691,55 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
   }
 
   /**
-   * The player's own sheet, on the world screen.
+   * What this character has won, as one line of text.
    *
-   * Everything on it is Arena's or the player's: the class ability is the line from
-   * the class table, health and spell points are what creation rolled and derived,
-   * and the purse is what the jobs have paid. When there is no character it says so
-   * rather than showing a blank panel, because "no one yet" is a state the shipping
-   * path can genuinely be in.
+   * Everything here is Arena's or the player's: the class ability is the line from the class
+   * table, health and spell points are what creation rolled and derived, and the purse is what
+   * the jobs have paid. **It is no longer a panel** — the map's own box repeated the vitals and
+   * the menu, so the only reader left is the debug seam (and the quest's last tests, which ask
+   * whether the *world page* knows the character's standing, not where it is printed).
+   *
+   * @returns {string}
    */
-  function renderSheet() {
-    if (!character) {
-      sheet.innerHTML = '<b>No one yet</b><br><span class="sub">No character has been made on this machine.</span>';
-      sheet.classList.add('on');
-      return;
-    }
+  function sheetSummary() {
+    if (!character) return 'No one yet — no character has been made on this machine.';
     const klass = classById(character.classId);
     const spells = character.spellPoints == null
       ? ''
-      : `<br><span class="sp">${character.spellPoints}/${character.maxSpellPoints} spell points</span>`;
-    // The finale's two key items get their own line once they exist, because "8 of 8
-    // pieces" and "have you been to the palace yet" are different questions and the
-    // second one is the only one that matters after the last piece.
+      : ` · ${character.spellPoints}/${character.maxSpellPoints} spell points`;
     const finale = quest.ended
-      ? '<br><span class="gold">Eternal Champion</span>'
+      ? ' · Eternal Champion'
       : [quest.mithrilKey ? 'the mithril key' : null, quest.hasKeyItem ? 'the Jewel of Fire' : null]
-        .filter(Boolean)
-        .map((item) => `<span class="gold">${item}</span>`)
-        .join(' · ');
-    // A character reached without creation (`?dungeon=` in the dev door, or a run that
-    // never made one) can be missing the descriptive fields, and `escapeHtml(undefined)`
-    // printed the literal word "undefined" on the sheet. Every field is optional here.
+        .filter(Boolean).map((item) => ` · ${item}`).join('');
+    // A character reached without creation (`?dungeon=` in the dev door, or a run that never made
+    // one) can be missing the descriptive fields, so every one of them is optional here.
     const describe = [character.gender, character.race, character.className]
       .filter((part) => typeof part === 'string' && part).join(' ');
-    sheet.innerHTML = `<b>${escapeHtml(character.name ?? 'Adventurer')}</b><br>`
-      + `<span class="sub">${escapeHtml(describe || 'Adventurer')} · level ${character.level ?? 1}</span><br>`
-      + `<span class="hp">${character.health}/${character.maxHealth} health</span>${spells}<br>`
-      + `<span class="gold">${character.gold} gold</span> · <span class="sub">Staff pieces ${quest.pieces}/8</span>`
-      + (finale ? `<br>${finale}` : '')
-      + (klass ? `<br><span class="sub">${escapeHtml(klass.ability)}</span>` : '')
-      + sheetNewGame();
-    sheet.classList.add('on');
+    return `${character.name ?? 'Adventurer'} — ${describe || 'Adventurer'}, level ${character.level ?? 1}`
+      + ` · ${character.health}/${character.maxHealth} health${spells}`
+      + ` · ${character.gold} gold · Staff pieces ${quest.pieces}/8${finale}`
+      + (klass ? ` · ${klass.ability}` : '');
   }
 
   /**
-   * The new-game footer of the sheet.
+   * The new-game door, in the map's own search panel.
    *
-   * The sheet is the player's own page — who they are, what they carry — so it is where
-   * "start again" belongs, and it is the second door to the one flow (`scenes/newGame.js`)
-   * that `Escape` opens inside a level. Two clicks, because this is the only button in the
-   * game that throws a saved character away.
-   *
-   * Offered on the map's **own page only**. As an overlay (`M`, inside a level) this scene
+   * It is the second door to the one flow (`scenes/newGame.js`) that `Escape` opens inside a
+   * level. Two clicks, because this is the only button in the game that throws a saved character
+   * away. Offered on the map's **own page only**: as an overlay (`M`, inside a level) this scene
    * is a layer over a running game, and `newGame` disposes the scene that is standing — so a
-   * click here would take the world out from under a player still standing in it. The game
-   * behind the overlay has its own door to the same flow.
-   */
-  function sheetNewGame() {
-    if (overlay) return '';
-    if (!sheetConfirm) return '<br><button id="map-newgame" class="ghost">Begin a new game…</button>';
-    return '<br><span class="warn">Start over? The character, the quest, the purse and everyone '
-      + 'who has met you are all forgotten. This cannot be undone.</span><br>'
-      + '<button id="map-newgame-yes" class="ghost danger">Yes, begin a new game</button>'
-      + '<button id="map-newgame-no" class="ghost">No, keep playing</button>';
-  }
-
-  /**
-   * The sheet's buttons: the warning, and then the flow.
+   * click here would take the world out from under a player still standing in it.
    *
-   * Delegated, and registered with this scene's `AbortSignal` like every other listener
-   * here, so a scene that is replaced takes its handlers with it.
+   * @returns {string} the markup for the panel's footer
    */
-  sheet.addEventListener('click', (e) => {
-    const id = e.target?.id;
-    if (id === 'map-newgame') { sheetConfirm = true; renderSheet(); }
-    else if (id === 'map-newgame-no') { sheetConfirm = false; renderSheet(); }
-    else if (id === 'map-newgame-yes' && !leaving) {
-      leaving = true;
-      void beginNewGame({ canvas, renderer, status, source, params });
-    }
-  }, { signal });
+  function newGameFooter() {
+    if (overlay) return '';
+    if (!sheetConfirm) return '<button type="button" id="map-newgame" class="map-newgame">Begin a new game…</button>';
+    return '<p class="map-warn">Start over? The character, the quest, the purse and everyone '
+      + 'who has met you are all forgotten. This cannot be undone.</p>'
+      + '<button type="button" id="map-newgame-yes" class="map-newgame danger">Yes, begin a new game</button>'
+      + '<button type="button" id="map-newgame-no" class="map-newgame">No, keep playing</button>';
+  }
 
   /**
    * Put gold in the player's purse, and save it.
@@ -1725,7 +1754,6 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     if (!character || !amount) return;
     character = { ...character, gold: Math.max(0, (character.gold ?? 0) + amount) };
     saveCharacter(character);
-    renderSheet();
     message = `${reason} — ${character.gold} gold in all.`;
     messageUntil = performance.now() + 2500;
   }
@@ -1936,7 +1964,7 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
 
   resize();
   updateSearch(); updateReadout();
-  renderSheet();
+  renderNewGame();
   updateBar();
   refreshBoard();
   updateBoard();
@@ -2020,8 +2048,8 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
     quest: () => questLog(quest, chain),
     /** The character the world is played by, or null if creation has not run. */
     character: () => (character ? JSON.parse(JSON.stringify(character)) : null),
-    /** The sheet exactly as it is on screen, for a test that reads the panel. */
-    sheetText: () => sheet.textContent,
+    /** What the world page knows this character has won (it is no longer a panel). */
+    sheetText: () => sheetSummary(),
     /** Put gold in the purse, as a reward does. */
     grantGold: (amount) => { creditGold(amount, 'Granted'); return character ? character.gold : null; },
     // ── the side work ────────────────────────────────────────────────────────
@@ -2368,8 +2396,12 @@ export async function bootWorldMap(canvas, renderer, params, status, source = nu
      */
     wildJob: () => {
       const marker = wildJobMarker();
+      // **The URL the marker's own click builds** — the overlay seam reports it (`travelUrl`),
+      // and so must this one: a suite (and a reader) that asks the map where the job would go
+      // got `undefined` and could not tell an anchor from a wild cell.
       return marker ? { name: marker.name, label: marker.label, walk: marker.walk,
-        cell: marker.cell, province: marker.province, anchorId: marker.anchorId } : null;
+        cell: marker.cell, province: marker.province, anchorId: marker.anchorId,
+        url: travelUrl(marker) } : null;
     },
     selectWildJob: () => {
       const marker = wildJobMarker();

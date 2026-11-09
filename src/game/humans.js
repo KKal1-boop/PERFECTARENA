@@ -28,13 +28,17 @@
 //     and a level-10 Nord Warrior is not.
 //   * **Damage** (RECONSTRUCTED): the class's own weapon base (`combat.js`'s `WEAPONS`, the same
 //     table the player swings) plus a level term, floored at 1.
-//   * **Art**: the install ships exactly one human *combat* set — `GUARD01.CFA`…`GUARD06.CFA`,
-//     five directions of walk with the attack frames inside, and a separate death sheet — in
-//     the same six-file shape as a monster's art. That is the set a human enemy is drawn with.
-//     The armoured crowd roster (`01CHN…`, `01PLT…`, `01MAG…`) has walk and attack frames but
-//     **no death sheet**, so it cannot carry a fight. The class and race are therefore in the
-//     name, the statistics, the abilities and the loot, and not in the silhouette — which is
-//     also what the page says ("they only appear as pale skinned humans").
+//   * **Art**: the install ships one human *combat* set — `GUARD01.CFA`…`GUARD06.CFA`, five
+//     directions of walk with the attack frames inside, and a separate death sheet — in the same
+//     six-file shape as a monster's art, and the armoured crowd roster (`01CHN…`, `01PLT…`,
+//     `01MAG…`), which walks five angles and swings facing forward but ships **no death sheet**.
+//     The two are used for what each really carries: a swordsman wears the watch's set, and a
+//     **bowman wears the plate fighter of the roster** — the figure its own bow sheet draws —
+//     and falls on the watch's death sheet (`HUMAN_DEATH_SHEET`), which is the only human death
+//     art the install has (the owner, 2026-10-22: *"archers death animation is not working"* —
+//     a roster body playing its walk frames as a death stays standing). The class and the race
+//     are in the name, the statistics, the abilities and the loot, and the silhouette is the art
+//     the install actually drew ("they only appear as pale skinned humans").
 //
 // Nothing here rolls a fight: `encounters.js` places the foe, `combat.js` swings with it, and
 // the scene reads `human` off the rolled monster for the loot and the notice line.
@@ -49,6 +53,17 @@ import { CLASSES, RACES } from './character.js';
  * monster path draws it with no second code path.
  */
 export const HUMAN_SPRITE = 'GUARD0';
+
+/**
+ * **The only human death sheet the archive ships.**
+ *
+ * `GUARD06.CFA`, three frames of a man falling (measured, `docs/PORT_BLOCKS.md` §4k: `GUARD06`
+ * and `BABE06` are the install's two three-frame deaths). The armoured roster's five angles, its
+ * swing and its bow ship no sixth file, so a fallen bowman is drawn from this one, in the
+ * archer's own skin — the alternative the port had was worse than an approximation: its walk
+ * sheet's last pose, which is a standing man.
+ */
+export const HUMAN_DEATH_SHEET = `${HUMAN_SPRITE}6.CFA`;
 
 /**
  * **The body a human foe is really drawn from.**
@@ -77,6 +92,56 @@ export const HUMAN_FAMILY = Object.freeze({
 export const BOW_FAMILIES = Object.freeze(['UNA', 'LTR', 'CHN', 'PLT']);
 
 /**
+ * **The archer's body: the plate fighter of the armoured roster.**
+ *
+ * The owner, 2026-10-22: *"all ARCHER enemies need to use the sprite PLT FIGHTER AND NOT GUARD OF
+ * THE WATCH given the shooting sprite they are using uses the PLT FIGHTER"*. The bow sheet an
+ * archer looses with is the roster's own plate figure (`01PLTBOW.CFA`), so the body that draws it
+ * has to be the same figure or the shot comes out of a guard's hands.
+ *
+ * `sex: '0'` is the archive's own limit: `11PLTWLK.CFA` and `11PLTATT.CFA` do not exist (measured
+ * 2026-10-19 in `game/playerAppearance.js`), so a woman of the plate roster has no art and an
+ * archer is drawn from the male sheet whatever the roll says her sex is.
+ *
+ * @type {Readonly<{sex: string, family: string}>}
+ */
+export const ARCHER_BODY = Object.freeze({ sex: '0', family: 'PLT' });
+
+/**
+ * The roster's own file name for one action and view.
+ *
+ * The armoured roster is `<sex><angle><family><action>.CFA` — `01PLTWLK` is the plate fighter
+ * seen from the front, `03PLTWLK` from his left — with **one angle per file** (six-frame sheets,
+ * `peopleKinds.js`'s `layout: 'action'`). The swing and the bow ship only facing forward, so those
+ * two actions always read the `01` file.
+ *
+ * @param {{sex?: string, family?: string}} body  `ARCHER_BODY`, or a family from `HUMAN_FAMILY`
+ * @param {'WLK'|'ATT'|'BOW'} action
+ * @param {number} [view]  1…5, the direction the eye is on
+ * @returns {string} e.g. `04PLTWLK.CFA`, `01PLTATT.CFA`, `01PLTBOW.CFA`
+ */
+export function rosterFile(body, action = 'WLK', view = 1) {
+  const sex = String(body?.sex ?? '0') === '1' ? '1' : '0';
+  const family = HUMAN_FAMILY[String(body?.family ?? '').toLowerCase()] ?? 'PLT';
+  const act = ['WLK', 'ATT', 'BOW'].includes(String(action).toUpperCase()) ? String(action).toUpperCase() : 'WLK';
+  const angle = Math.max(1, Math.min(5, Math.trunc(Number(view) || 1)));
+  return `${sex}${act === 'WLK' ? angle : 1}${family}${act}.CFA`;
+}
+
+/**
+ * **The two races a bowman is never.**
+ *
+ * The owner, 2026-10-22: *"human archer enemies should never be argonians or khajeets"*. Those
+ * two races are drawn as whole other figures (the Lizard Man's sheets, the repainted snow wolf —
+ * `raceSkin.js`'s `RACE_FIGURE`), neither of which has a bow sheet: the bow belongs to the
+ * armoured roster, and the roster only draws a human. So a human who carries a bow is rolled from
+ * the six races the install draws as people.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const BEAST_RACES = Object.freeze(new Set(['argonian', 'khajiit']));
+
+/**
  * The family a class's humans walk in, from the armour grade the class wears.
  * @param {string} classId
  * @returns {string} one of `HUMAN_FAMILY`'s values
@@ -101,19 +166,22 @@ export function isArcherClass(classId) {
 }
 
 /**
- * **The sheets a human foe wears**: the body every human shares, and the bow a bowman looses
- * with (null when the class does not carry one, or when this install has no such family).
+ * **The sheets a human foe wears**: the body the figure is drawn from, and the bow a bowman looses
+ * with (null when the class does not carry one).
+ *
+ * A bowman is the plate fighter of the armoured roster in body as well as in shot — `roster` is
+ * the figure's own `{sex, family}` so the scene can name its five walk sheets and its swing
+ * (`rosterFile`) — while everyone else keeps the watch's combat set, which is the one human set
+ * with all five directions *and* a death sheet.
  *
  * @param {{classId?: string, sex?: string}|null} human
- * @returns {{body: string, bow: string|null}}
+ * @returns {{body: string|null, bow: string|null, roster: {sex: string, family: string}|null}}
  */
 export function humanSheets(human) {
-  const family = familyForClass(String(human?.classId ?? 'warrior'));
-  const prefix = human?.sex === 'female' ? '11' : '01';
-  const bow = isArcherClass(human?.classId) && BOW_FAMILIES.includes(family)
-    ? `${prefix}${family}BOW.CFA`
-    : null;
-  return { body: HUMAN_SPRITE, bow };
+  if (isArcherClass(human?.classId)) {
+    return { body: null, bow: rosterFile(ARCHER_BODY, 'BOW'), roster: { ...ARCHER_BODY } };
+  }
+  return { body: HUMAN_SPRITE, bow: null, roster: null };
 }
 
 /** A class row by id, or null. @param {string} id */
@@ -239,7 +307,17 @@ export function humanLevel(opts = {}) {
 export function rollHuman(opts = {}) {
   const random = opts.random ?? { nextBelow: (n) => Math.floor(Math.random() * n) };
   const cls = classOf(opts.classId) ?? CLASSES[random.nextBelow(CLASSES.length)];
-  const race = raceOf(opts.raceId) ?? RACES[random.nextBelow(RACES.length)];
+  // **A bowman is never a beast.** An archer's body and bow are the plate fighter's roster art, so
+  // the race is drawn from the six the install draws as people — even when a caller names an
+  // Argonian or a Khajiit outright (`BEAST_RACES`).
+  const wanted = raceOf(opts.raceId);
+  let race;
+  if (isArcherClass(cls.id)) {
+    const allowed = RACES.filter((row) => !BEAST_RACES.has(row.id));
+    race = wanted && !BEAST_RACES.has(wanted.id) ? wanted : allowed[random.nextBelow(allowed.length)];
+  } else {
+    race = wanted ?? RACES[random.nextBelow(RACES.length)];
+  }
   const level = Math.max(1, Math.trunc(Number(opts.level) || 1));
   const bases = race.bases.male;
   const attributes = {
@@ -265,13 +343,16 @@ export function rollHuman(opts = {}) {
   return {
     id: `human-${cls.id}`,
     name: `${race.name} ${cls.name}`,
-    sprite: HUMAN_SPRITE,
+    sprite: sheets.body ?? HUMAN_SPRITE,
     kind: 'human',
     // **The skin and the shot.** `bow` makes the scene's fight treat this foe as a bowman
-    // (it keeps its distance and looses), and `bowFile` is the install's own sheet for the
-    // family the class wears (`<=01|11><LTR|CHN|PLT|UNA>BOW.CFA`).
+    // (it keeps its distance and looses), and `bowFile` is the install's own bow sheet
+    // (`01PLTBOW.CFA`). `roster` is the figure a bowman is *drawn* from — the plate fighter of
+    // the armoured roster, whose five walk sheets and forward swing the scene names with
+    // `rosterFile` — and null for everyone else, who wear the watch's combat set.
     bow: Boolean(sheets.bow),
     bowFile: sheets.bow,
+    roster: sheets.roster,
     family: familyForClass(cls.id),
     sex,
     level,
@@ -302,6 +383,7 @@ export function rollHuman(opts = {}) {
       family: familyForClass(cls.id),
       bow: Boolean(sheets.bow),
       bowFile: sheets.bow,
+      roster: sheets.roster,
     },
   };
 }

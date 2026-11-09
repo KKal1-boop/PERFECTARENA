@@ -192,12 +192,33 @@ export function decodeLevel(level, inf, opts) {
 
   const startPoints = (opts.startPoints ?? level.startPoints ?? [])
     .map((p) => ({ x: p.y / ARENA_UNITS, z: p.x / ARENA_UNITS }));
+
+  // **The level's own canvas, and the margin around it.** A `.MIF` declares one grid for the
+  // whole file in its header, and a level may use less of it than that: `42110737.MIF` is 96×80,
+  // and the Fortress of Ice's **second storey writes nothing at all** outside its north-west
+  // 64×58 — 3 968 cells of the grid, one in two, that carry no floor, no wall and no storey.
+  // They decode as open air with floor texture `0`, so the flood that picks a level's deepest
+  // chamber walked straight through them and put the map that names Labyrinthian's piece **in
+  // that margin** — the owner's *"the map to the piece in Labyrinthian in the Fortress of Ice
+  // second floor is in an non accessible place because the second floor of the dungeon is bigger
+  // than what it should be and has an non accessible part"*. Every cell outside the canvas is
+  // marked `void`, which the automap already had a word for, and which the objective walk, the
+  // arrival and the sheet all read through `isVoidCell`.
+  const canvas = levelCanvas(level, width, depth);
+  for (let row = 0; row < depth; row++) {
+    for (let col = 0; col < width; col++) {
+      const cell = cells[row * width + col];
+      cell.void = Boolean(canvas)
+        && (row < canvas.row0 || row > canvas.row1 || col < canvas.col0 || col > canvas.col1);
+    }
+  }
+
   const spawn = pickSpawn(cells, width, depth, startPoints, floorY);
 
   return {
     width, depth, ceilingScale, layerCount, floorY, ceilingY,
     outdoors: hasMap2 ? stats.ceilinged === 0 : Boolean(inf?.ceiling?.outdoorDungeon),
-    inf, cells, startPoints, spawn, stats,
+    inf, cells, startPoints, spawn, stats, canvas,
   };
 }
 
@@ -213,6 +234,8 @@ function makeCell(x, z) {
     entityFlatIndex: -1,
     ceiling: false, ceilingTexture: -1, upperLayers: 0, upperRaised: false,
     rawFlor: 0, rawMap1: 0, rawMap2: 0,
+    // Set by `decodeLevel` once it knows the level's canvas (`levelCanvas`).
+    void: false,
   };
 }
 
@@ -388,7 +411,32 @@ export function openSettlementGate(level) {
     gateArtCells.push({ row: cell.z, col: cell.x });
   }
   level.gateArtCells = gateArtCells;
-  return runs[0].map(({ row, col, axis }) => ({ row, col, axis }));
+
+  // **Every door the wall draws is a door.** The owner, 2026-10-22: *"in both pc and phone you
+  // should be able to use all door textures on the citywalls of villages and town to get in and
+  // out of said towns not just the main gate"*. A settlement's wall line is not one opening and
+  // a length of blank wall: it is painted with the gate's own **door pictures** as well —
+  // `T_DLGT.IMG` and `T_DRGT.IMG`, the two leaves of a gate, in pairs along the ring (measured
+  // off the skeletons: `CITY1` (0,58)-(0,59), `VILLAGE1` (0,6)-(0,7), (86,39)-(86,40),
+  // (0,77)-(0,78)). They were solid collision wearing a picture of a door, so a player could see
+  // four ways into a village and take only the one the arch happened to be in. A door picture on
+  // the outer line, standing over street, is a gate now: drawn exactly as before, walked through,
+  // and answered by `E` like the main one (the scene's `gateAtPlayer` reads this list).
+  const gateList = runs[0].map(({ row, col, axis }) => ({ row, col, axis }));
+  const doorArt = (cell) => ['side', 'cap'].some((face) => {
+    const name = cellTexture(cell, face, level.inf)?.filename ?? '';
+    return /^(?:T_)?D(?:L|R)GT\.IMG$/i.test(name) || /DOOR\.IMG$/i.test(name);
+  });
+  for (const spot of line) {
+    const cell = at(spot.row, spot.col);
+    if (!cell || cell.gateway) continue;
+    if (!doorArt(cell)) continue;
+    // The same law the arch is held to: a door that opens onto nothing is a painting.
+    if (!street(at(spot.row + spot.dr, spot.col + spot.dc))) continue;
+    cell.gateway = true;
+    gateList.push({ row: spot.row, col: spot.col, axis: spot.axis });
+  }
+  return gateList;
 }
 
 /**
@@ -783,13 +831,18 @@ function voxelIndexOf(inf, id) {
  * @returns {{x:number,y:number,z:number}|null}
  */
 function pickSpawn(cells, width, depth, startPoints, floorY) {
+  // **A body arrives on the level's own floor, never in the margin the grid leaves around it**
+  // (`isVoidCell`). Measured over the install's sixteen numbered dungeon maps, five levels of
+  // them would otherwise hold their "largest region" in that margin — `40516921.MIF` (Murkwood)
+  // level 1 is 14 566 margin cells against a much smaller maze — and a player handed one of them
+  // as the arrival stood in the empty hall beside the dungeon rather than in it.
   const usable = (row, col) => {
     if (row < 0 || col < 0 || row >= depth || col >= width) return false;
     const cell = cells[row * width + col];
-    return cell && !cell.solid && !cell.floor.chasm;
+    return cell && !cell.solid && !cell.floor.chasm && !isVoidCell(cell);
   };
   const crossable = (row, col) => row >= 0 && col >= 0 && row < depth && col < width
-    && cells[row * width + col]?.kind !== 'wall';
+    && cells[row * width + col]?.kind !== 'wall' && !isVoidCell(cells[row * width + col]);
 
   // ── the level's own regions ─────────────────────────────────────────────────
   // One flood per region, each cell visited once, so this is linear in the level's size: the
@@ -840,6 +893,61 @@ function pickSpawn(cells, width, depth, startPoints, floorY) {
 
   if (largest.size > 0) return { x: largest.row + 0.5, y: floorY, z: largest.col + 0.5 };
   return null;
+}
+
+/**
+ * **The rectangle of a level's grid that the file actually wrote into.**
+ *
+ * A `.MIF` header declares one grid for every level in the file, and a level may fill less of it:
+ * the Fortress of Ice's second storey writes nothing outside rows 0–57 × columns 0–63 of its 80×96
+ * grid. That margin is not part of the level — it has no floor of its own, no wall, no storey —
+ * and this is the smallest box that holds everything the level does carry.
+ *
+ * Read off the **raw layers** rather than the decoded cells, so it does not depend on how a voxel
+ * is classified, and `null` when the level carries nothing at all (which no shipped level does).
+ *
+ * @param {{flor?: ArrayLike<number>|null, map1?: ArrayLike<number>|null, map2?: ArrayLike<number>|null}} level
+ * @param {number} width @param {number} depth
+ * @returns {{row0:number, row1:number, col0:number, col1:number}|null}
+ */
+export function levelCanvas(level, width, depth) {
+  let row0 = depth, row1 = -1, col0 = width, col1 = -1;
+  for (let i = 0; i < width * depth; i++) {
+    const flor = level.flor ? level.flor[i] : 0;
+    const map1 = level.map1 ? level.map1[i] : 0;
+    const map2 = level.map2 ? level.map2[i] : 0;
+    if (!flor && !map1 && !map2) continue;
+    const row = Math.floor(i / width);
+    const col = i % width;
+    if (row < row0) row0 = row;
+    if (row > row1) row1 = row;
+    if (col < col0) col0 = col;
+    if (col > col1) col1 = col;
+  }
+  return row1 < row0 ? null : { row0, row1, col0, col1 };
+}
+
+/**
+ * **Is this cell outside the level's own canvas?**
+ *
+ * The margin `levelCanvas` describes is not a room, so nothing may be placed in it and no walk
+ * reaches through it: the objective's flood (`scenes/interior.js`'s `deepestCells`), the arrival
+ * (`pickSpawn`) and the automap's sheet all read this one fact. Measured over the install's 16
+ * numbered dungeon maps, **one** of their 39 levels has such a margin — the Fortress of Ice's
+ * second storey, 3 968 of its 7 680 cells — and it is the level whose map-to-the-piece the owner
+ * reported as unreachable.
+ *
+ * A cell built by hand — a test fixture, a block from `dungeonPlan` before it is decoded — has no
+ * `void` flag, and falls back to the automap's older reading of the same idea: no floor of its
+ * own and nothing solid standing over it.
+ *
+ * @param {LevelVoxel|null|undefined} cell
+ * @returns {boolean}
+ */
+export function isVoidCell(cell) {
+  if (!cell) return false;
+  if (typeof cell.void === 'boolean') return cell.void;
+  return !cell.rawFlor && !cell.solid;
 }
 
 /**

@@ -38,6 +38,11 @@ export function makeMusicSuite({ check, realErrors, getPort }) {
     // ── a village: VILLAGE greets, then clear weather keeps the street ──────────
     await enter('city=village&seed=7&clock=720');
     const village = await music();
+    // **A first visit is not a mute** (2026-11-04). The runner launches a fresh profile, so no
+    // level is stored: the absent key must fall to the player's default, which the owner asked to
+    // be full. Before the fix `Number(null)` read as 0 and this page opened silent.
+    check('a first-run page opens with the music at 100%, not silenced',
+      village.volume === 1, JSON.stringify({ volume: village.volume }));
     check('a village asks for its own jingle, VILLAGE',
       village.jingle === 'VILLAGE.XMI' || village.jingleRequested === 'VILLAGE.XMI',
       JSON.stringify({ jingle: village.jingle, requested: village.jingleRequested, place: village.place?.song }));
@@ -72,9 +77,11 @@ export function makeMusicSuite({ check, realErrors, getPort }) {
     // ── a dungeon: its own stone, and no jingle ────────────────────────────────
     await enter('interior=START.MIF&clock=720');
     const dungeon = await music();
+    // The catalogue spells the five dungeon tracks `.XMI` (`MUSIC_CATALOG.interior.dungeon`), and
+    // this check used to ask for `.XFM`/`.XF` — a name no dungeon song has, so it could never pass.
     check('a dungeon hears one of DUNGEON1…5 and is never greeted with a town jingle',
-      /^DUNGEON[1-5]\.XFM?$/.test(dungeon.place?.song ?? '') && dungeon.jingleRequested == null,
-      JSON.stringify({ place: dungeon.place?.song, jingle: dungeon.jingle }));
+      /^DUNGEON[1-5]\.XMI$/.test(dungeon.place?.song ?? '') && dungeon.jingleRequested == null,
+      JSON.stringify({ place: dungeon.place?.song, jingle: dungeon.jingle, requested: dungeon.jingleRequested }));
 
     // ── a tavern: TAVERN, and its percussion channel really plays ─────────────
     // The corrected XMIDI reader gives a note-on its own length and sends channel 10 to the
@@ -82,8 +89,11 @@ export function makeMusicSuite({ check, realErrors, getPort }) {
     // out of every snare. A tavern is the shortest song with a drum channel (158 hits).
     await enter('interior=TAVERN1.MIF&clock=720');
     const tavern = await music();
-    check('a tavern hears TAVERN, the install’s own 0:29 tune, with its drum channel loaded',
-      tavern.place?.song === 'TAVERN.XMI' && Number(tavern.notes) > 400,
+    // **A tavern's playlist is two songs**, not one: `MUSIC_CATALOG.interior.tavern` is
+    // `[TAVERN.XMI, SQUARE.XMI]` — `MusicDefinitions.txt`'s own pair — so the pick is one of the
+    // two (TAVERN is 0:29, SQUARE 0:34) and demanding TAVERN alone made this a coin toss.
+    check('a tavern hears one of its own two tunes, with its drum channel loaded',
+      ['TAVERN.XMI', 'SQUARE.XMI'].includes(tavern.place?.song) && Number(tavern.notes) > 400,
       JSON.stringify({ song: tavern.place?.song, notes: tavern.notes, seconds: tavern.seconds }));
 
     // ── fast travel, in place: the dungeon's song stops, the city's starts ─────

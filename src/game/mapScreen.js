@@ -82,6 +82,16 @@ export const MARKER_RECORDS = Object.freeze({
   blinking: 'MAPBLINK.CIF',
 });
 
+/**
+ * **The Staff dungeons' record, kept only as a fidelity note.** Arena ships `STAFDUNG.CIF`
+ * with one frame per outer province, and OpenTESArena draws it where the current Staff piece
+ * waits. This port deliberately does **not** read or draw it: the owner, 2026-11-04, asked for
+ * the palm-over-Murkwood mark to go, because a map is a map of places and the quest belongs in
+ * the journal. The record name survives so the fidelity test can still say which asset the
+ * original used; no code path loads it.
+ */
+export const STAFF_MARKER_RECORD = 'STAFDUNG.CIF';
+
 /** The colour index `MAPOUT.CIF` draws with — `PAL.COL[194]`. */
 export const MARKER_INDEX = 194;
 /** The colour index `MAPBLINK.CIF` draws with — `PAL.COL[223]`. */
@@ -469,6 +479,10 @@ async function readMapScreen(data) {
   } catch (err) {
     warnings.push(`${PLATE_RECORD}: ${err?.message ?? err}`);
   }
+
+  // **No Staff-dungeon icon is read.** `STAFDUNG.CIF` is named in the fidelity note above, but
+  // the province screen does not load it, warn about it, or draw it. The ordinary marker pass
+  // below still marks every dungeon as a place, which is all this map is for.
 
   // ── the nine hand-drawn province maps ────────────────────────────────────
   //

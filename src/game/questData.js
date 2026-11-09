@@ -37,8 +37,47 @@ import { STORY_LINES } from './storyLines.js';
  */
 // Pickup levels from UESP's individual walkthroughs; zero-based for the scene.
 // Stonekeep's second level is unused; Labyrinthian returns to level one after the keys.
+// The level each piece's dungeon keeps its piece on, and the level each clue's dungeon keeps
+// its map/tablet/gem on. UESP's individual walkthroughs are the source: Fang Lair's piece is on
+// its second level, Labyrinthian's keys are below but its piece is on the first, the Crystal
+// Tower's is on its fourth, Murkwood's on its second, and so on. Zero-based for the scene.
 export const STAFF_PICKUP_LEVELS = Object.freeze([1, 0, 1, 2, 3, 3, 1, 2]);
 export const CLUE_PICKUP_LEVELS = Object.freeze([0, 1, 1, 2, 1, 1, 1, 1]);
+
+/** The ordinal names of a zero-based dungeon level, for a page a player reads. */
+export const LEVEL_NAMES = Object.freeze([
+  'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth',
+]);
+
+/**
+ * A level's ordinal name (`0` → `first`), or a plain number past the table.
+ * @param {number} index
+ * @returns {string}
+ */
+export function levelLabel(index) {
+  const n = Math.max(0, Math.trunc(Number(index) || 0));
+  return LEVEL_NAMES[n] ? `${LEVEL_NAMES[n]} level` : `level ${n + 1}`;
+}
+
+/**
+ * The level of the dungeon that holds a stage's Staff piece.
+ * @param {object|null} stage
+ * @returns {number|null}
+ */
+export function stageLevel(stage) {
+  if (!stage || stage.kind !== 'piece') return null;
+  return Number.isInteger(stage.staffLevel) ? stage.staffLevel : (STAFF_PICKUP_LEVELS[stage.piece - 1] ?? null);
+}
+
+/**
+ * The level of the dungeon that holds a stage's clue (the map, tablet, gem or hammer).
+ * @param {object|null} stage
+ * @returns {number|null}
+ */
+export function clueLevel(stage) {
+  if (!stage || stage.kind !== 'piece') return null;
+  return Number.isInteger(stage.clueLevel) ? stage.clueLevel : (CLUE_PICKUP_LEVELS[stage.piece - 1] ?? null);
+}
 export const STAFF_DUNGEON_ORDER = Object.freeze([
   'Fang Lair', 'Labyrinthian', 'Elden Grove', 'Halls of Colossus',
   'Crystal Tower', 'Crypt of Hearts', 'Murkwood', 'Dagoth-Ur',
@@ -122,6 +161,12 @@ export function buildQuestChain(world) {
       mif: staff.mif,
       dungeonSeed: staff.dungeonSeed,
       global: staff.global,
+      // **Where in the dungeon**, in the walkthrough's own terms. The scene uses the
+      // zero-based number; a page or the logbook uses the ordinal label.
+      staffLevel: STAFF_PICKUP_LEVELS[i],
+      staffLevelLabel: levelLabel(STAFF_PICKUP_LEVELS[i]),
+      clueLevel: CLUE_PICKUP_LEVELS[i],
+      clueLevelLabel: levelLabel(CLUE_PICKUP_LEVELS[i]),
       clue: map
         ? { title: map.name, mif: map.mif, dungeonSeed: map.dungeonSeed, global: map.global }
         : null,
@@ -142,6 +187,9 @@ export function buildQuestChain(world) {
     province: 'Imperial Province',
     climate: 'temperate',
     global: { x: 172, y: 106 },
+    // The palace is four levels, and the Jewel is on the fourth (UESP, *The Imperial Palace*).
+    level: 3,
+    levelLabel: levelLabel(3),
   };
 
   return { stages: [start, ...pieces, finale], missing, warnings };

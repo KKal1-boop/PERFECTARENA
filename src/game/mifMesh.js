@@ -28,7 +28,7 @@
 // order when the geometric normal disagrees — so the winding cannot be wrong, and
 // `tests/unit/mifMesh.test.mjs` asserts it per triangle.
 
-import { cellTexture } from './mifLevel.js';
+import { cellTexture, isVoidCell } from './mifLevel.js';
 import { EDGE_FACES } from './mifLevel.js';
 
 /** World units per MIF cell. See the note above. */
@@ -379,9 +379,16 @@ export function buildLevelMesh(level, opts = {}) {
   };
 
   // ── floors and ceilings ────────────────────────────────────────────────────
+  // **The margin around a level is not drawn.** A `.MIF` gives one grid for every level in the
+  // file and a storey may fill less of it (`mifLevel.js`'s `levelCanvas`): the Fortress of Ice's
+  // second floor is a 64×58 maze in an 80×96 grid, and the other 3 968 cells were drawn as a
+  // floor and a ceiling around it — a hall the size of the level with no room in it, and no way
+  // in. The owner: *"the second floor of the dungeon is bigger than what it should be"*. Nothing
+  // is drawn there and nothing is collided there, so the level ends where its own walls do.
   for (let row = 0; row < depth; row++) {
     for (let col = 0; col < width; col++) {
       const cell = cells[row * width + col];
+      if (isVoidCell(cell)) continue;
       const x0 = row * S, x1 = (row + 1) * S;
       const z0 = col * S, z1 = (col + 1) * S;
 

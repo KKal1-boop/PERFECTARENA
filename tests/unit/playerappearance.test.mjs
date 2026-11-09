@@ -22,24 +22,46 @@ import {
 const byId = (id) => NPC_SPRITES.find((sprite) => sprite.id === id) ?? null;
 
 test('the catalogue holds the citizens, the armoured roster, the lizard and the orange wolf', () => {
-  assert.ok(NPC_SPRITES.length >= 21, `${NPC_SPRITES.length} bodies`);
+  assert.ok(NPC_SPRITES.length >= 20, `${NPC_SPRITES.length} bodies`);
   assert.equal(new Set(NPC_SPRITES.map((s) => s.id)).size, NPC_SPRITES.length, 'ids are unique');
   // **The plate fighter as a woman is not in this install.** `11PLTWLK.CFA` and `11PLTATT.CFA`
   // are absent from `GLOBAL.BSA` (only `01PLT…` ships), so she is not in the catalogue at all —
   // a blank card is not a body a player can choose.
   assert.equal(byId('armour-plt-female'), null, 'the missing female plate figure is not offered');
+  // **The bare-chested unarmoured woman is not offered either** (owner, 2026-11-04: *"if you
+  // chose a woman you can see her bare chest and she should use the covered sprite"*). The
+  // covered leather fighter is the same role and is in the catalogue.
+  assert.equal(byId('armour-una-female'), null, 'the bare unarmoured woman is not offered');
+  assert.ok(byId('armour-ltr-female'), 'the covered leather fighter (woman) is offered');
   assert.ok(byId('armour-plt-male'), 'the male plate fighter the install does ship is offered');
   for (const id of ['man-tunic', 'woman-dress', 'guard', 'armour-una-male', 'lizard-man', 'cat-folk']) {
     assert.ok(byId(id), `${id} is offered`);
   }
   assert.equal(byId('wolf-snow'), null, 'the only wolf offered is the orange one, never the white snow wolf');
-  // Every body has five angles (mirrored to the eight directions) and a strike.
+  // Every body has five angles (mirrored to the eight directions) and an attack animation.
   for (const sprite of NPC_SPRITES) {
     assert.ok(sprite.label && sprite.note && sprite.walk, `${sprite.id} is labelled`);
     for (let view = 1; view <= 5; view++) assert.match(sprite.walk(view), /\.CFA$/, `${sprite.id} view ${view}`);
-    assert.ok(appearanceAttack(sprite.id)?.file, `${sprite.id} has a strike sheet`);
+    assert.ok(appearanceAttack(sprite.id)?.file, `${sprite.id} has an attack animation`);
   }
   assert.deepEqual(APPEARANCE_VIEWS.map((v) => v.view), [1, 2, 3, 4, 5, 4, 3, 2]);
+});
+
+test('a citizen with no strike art attacks in its own clothes, never a borrowed stranger', () => {
+  // The owner, 2026-11-04: *"man in a tunic man in a shirt woman in blue woman in a bodice
+  // specifically change person during attack animation and shouldnt."* Those four families ship
+  // no strike, so the blow is the same walk sheet, under the same palette and hair entries.
+  for (const id of ['man-tunic', 'man-shirt', 'woman-coat', 'woman-bodice']) {
+    const blow = appearanceAttack(id);
+    assert.equal(blow.file, appearanceWalkFile(id, 1), `${id}: its own walk sheet`);
+    assert.equal(blow.sameSheet, true, `${id}: the sheet is its own`);
+    assert.equal(blow.strike, false, `${id}: it does not pretend to have drawn strike art`);
+    assert.deepEqual(blow.frames, [0, 1, 2, 1], `${id}: its own stride poses`);
+  }
+  // The armoured figures really do have their own forward-facing strike.
+  const armour = appearanceAttack('armour-mag-female');
+  assert.equal(armour.file, '11MAGATT.CFA');
+  assert.equal(armour.strike, true);
 });
 
 test('the lizard and the orange wolf are Arena\u2019s own sheets', () => {
@@ -51,6 +73,7 @@ test('the lizard and the orange wolf are Arena\u2019s own sheets', () => {
   for (const id of ['lizard-man', 'cat-folk', 'guard', 'woman-dress']) {
     const blow = appearanceAttack(id);
     assert.equal(blow.sameSheet, true, `${id} strikes from its own sheet`);
+    assert.equal(blow.strike, true, `${id} has Arena\u2019s own strike art`);
     assert.deepEqual(blow.frames, [8, 9, 10, 11]);
     assert.equal(blow.file, appearanceWalkFile(id, 1));
   }

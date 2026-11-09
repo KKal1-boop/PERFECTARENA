@@ -64,6 +64,29 @@ test('every button presses a real DOM key code, and the screens row has the pane
   }
 });
 
+test('the sneak is on the phone, and every key a thumb presses has a name', () => {
+  // The owner, 2026-10-22: *"there is no crouch button on phone"*. A desk crouches with
+  // `Ctrl`, and the layer is one button per key of the scene's ladder — so the sneak is one,
+  // on the screen rather than only in the tray, and it presses the same code the keyboard does.
+  const crouch = TOUCH_BUTTONS.find((button) => button.id === 'crouch');
+  assert.ok(crouch, 'a crouch button exists');
+  assert.equal(crouch.key, 'ControlLeft');
+  assert.equal(crouch.hidden, false, 'and it is on the screen at rest');
+  // The event's `key` is read by handlers that classify a press, so `Ctrl` must not arrive as
+  // the code string.
+  const seen = [];
+  globalThis.window = { dispatchEvent: (event) => { seen.push(event.key); return true; } };
+  const realEvent = globalThis.KeyboardEvent;
+  globalThis.KeyboardEvent = class { constructor(type, init) { this.type = type; this.code = init.code; this.key = init.key; } };
+  try {
+    pressKey('keydown', 'ControlLeft');
+    assert.equal(seen[0], 'Control');
+  } finally {
+    globalThis.KeyboardEvent = realEvent;
+    delete globalThis.window;
+  }
+});
+
 test('a press is a real keyboard event on the window', () => {
   const seen = [];
   const listener = (event) => seen.push([event.type, event.code, event.key]);

@@ -17,7 +17,7 @@ import {
   collectFlats, flatBaseY, flatGroundY, flatSize, isFolkArt, isTreeArt, personScale,
   MAX_PERSON_HEIGHT, MIN_PERSON_HEIGHT, SCENERY_SCALE, SPRITE_SCALE, STATIC_FLAT_SCALE, TREE_SCALE,
 } from '../../src/game/flats.js';
-import { DUNGEON_ITEMS } from '../../src/game/dungeonItems.js';
+import { DUNGEON_ITEMS, goldFor, pickupNote } from '../../src/game/dungeonItems.js';
 import { CELL_SIZE } from '../../src/game/mifMesh.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 
@@ -31,6 +31,19 @@ async function decode(name, index = 0) {
   const inf = await data.inf(level.info);
   return { level: decodeLevel(level, inf, { width: mif.width, depth: mif.height, mapType: 'interior' }), inf };
 }
+
+test('a gem on a pedestal is treasure, not a Staff piece', () => {
+  // The flat is `FIREGEM.DFA`, item 13 of the dungeon table. Arena's inventory has no gem
+  // category and its quest items are a separate list, so the pickup pays gold; the line has
+  // to say how much, or the player cannot tell it from the Staff's own objective.
+  assert.equal(DUNGEON_ITEMS[13].kind, 'gem');
+  assert.equal(DUNGEON_ITEMS[13].art, 'FIREGEM.DFA');
+  const gold = goldFor('gem', () => 0.5);
+  assert.ok(gold >= 40 && gold <= 100, `${gold} gold from the gem draw`);
+  const note = pickupNote({ kind: 'gem', name: 'a gem' }, gold);
+  assert.match(note, /seller/);
+  assert.match(note, new RegExp(`${gold} gold`));
+});
 
 test('a flat with no offset stands on the floor, base first', () => {
   // **The value is the billboard's BASE**, because that is what the renderer places: the
@@ -58,6 +71,58 @@ test('a flat with a negative offset hangs from the ceiling, top first', () => {
   assert.equal(flatBaseY(-100, { ...room, height: 9 }), 2.5);
   // …and a hanging flat's base is always at or above a standing one's.
   assert.ok(flatBaseY(-25, room) >= flatBaseY(0, room));
+});
+
+test('a flat standing on water stands on the water, whatever its record’s Y says', () => {
+  // The owner, 2026-10-22: *"the sprites AR-sprite-THRUSH01 and AR-sprite-THRUSH02 that get
+  // spawned in wilderness near water are floating midair"*. Those two are not birds — they are
+  // the install's **corn/reeds** (33×41 and 53×56 px) growing in the shallows, and their `.INF`
+  // records carry `Y:20`, which the room-height law turned into half a metre of air.
+  const room = { height: 0.9, floorY: 2.5, ceilingY: 5 };
+  assert.equal(flatBaseY(20, { ...room, onWater: true }), 2.5, 'the water line is its ground');
+  // The same offset on dry ground is still a lift — `TREE02`'s 50 in a palace garden.
+  assert.ok(flatBaseY(20, room) > 2.5);
+  // A hanging flat is a hanging flat, water or no water: the ceiling rule wins.
+  assert.equal(flatBaseY(-50, { ...room, onWater: true }), 5 - 0.9);
+});
+
+test('the country’s corn and boats all stand on wet cells — the records with a positive Y', async () => {
+  // **Measured, not assumed.** Across every wilderness block this install ships, the only flats
+  // with a positive `Y` are the four aquatic records below, and every one of them is placed on a
+  // wet chasm — which is what makes `onWater` the right answer for them and a plain lift wrong.
+  const { blockIdsFromListing, rmdName } = await import('../../src/arena/rmdFile.js');
+  const inf = await data.inf('TWN.INF');
+  const ids = blockIdsFromListing((await data.bsa()).names());
+  assert.ok(ids.length >= 60, `the install ships the country's blocks (${ids.length})`);
+  // The `.INF`'s own records say it too: four positive `Y`s, and all four are water things.
+  const liftedRecords = inf.flats.filter((record) => record.yOffset > 0)
+    .map((record) => inf.flatTextures[record.textureIndex]).sort();
+  assert.deepEqual(liftedRecords,
+    ['BOATQURT.IMG', 'BOATSIDE.IMG', 'THRUSH01.IMG', 'THRUSH02.IMG'],
+    'TWN.INF lifts exactly the boats and the corn');
+  const names = new Set();
+  let lifted = 0;
+  let onWater = 0;
+  for (const id of ids) {
+    const rmd = await data.rmd(rmdName(id));
+    const level = decodeLevel({
+      name: rmdName(id), info: '', numf: 0, flor: rmd.flor, map1: rmd.map1, map2: rmd.map2,
+      flat: null, inns: null, loot: null, stor: null, targ: [], lock: [], trig: [],
+      startPoints: [], warnings: [],
+    }, inf, { width: 64, depth: 64, mapType: 'wilderness' });
+    const collected = collectFlats(level, inf);
+    for (const flat of collected.flats.filter((f) => (f.yOffset ?? 0) > 0)) {
+      lifted++;
+      names.add(flat.name);
+      if (flat.chasm) onWater++;
+    }
+  }
+  assert.ok(lifted > 300, `${lifted} flats carry a positive Y`);
+  // `BOATSIDE` is the one of the four the country's blocks never place; `BOATQURT` and the two
+  // corn records are the ones a player stands beside.
+  assert.deepEqual([...names].sort(), ['BOATQURT.IMG', 'THRUSH01.IMG', 'THRUSH02.IMG'],
+    'the lifted flats the country really places are the boats and the corn');
+  assert.equal(onWater, lifted, 'and every one of them stands on water');
 });
 
 test('the Imperial Dungeons hang their roots and chains from the ceiling', async () => {

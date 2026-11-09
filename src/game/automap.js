@@ -51,6 +51,7 @@
 // and still does.
 
 import { CELL_SIZE } from './mifMesh.js';
+import { isVoidCell } from './mifLevel.js';
 
 /**
  * Arena's automap palette (`AutomapUiMVC.h`). Ground is the parchment sheet itself, so `floor`
@@ -123,8 +124,10 @@ export function automapKindOf(cell) {
   if (cell.kind === 'transparent') return cell.solid ? 'wall' : 'floor';
   // A diagonal wall is drawn as floor by the reference (`wallType == Diagonal` → `ColorFloor`).
   if (cell.kind === 'diagonal') return 'floor';
-  // A cell with no floor at all and nothing over it is not part of the map.
-  if (!cell.rawFlor && !cell.solid) return 'void';
+  // A cell with no floor at all and nothing over it is not part of the map — the margin a
+  // level's grid leaves around itself (`mifLevel.js`'s `isVoidCell`, which is this rule's one
+  // home: the objective walk and the marker placement read it too).
+  if (isVoidCell(cell)) return 'void';
   return 'floor';
 }
 
@@ -135,8 +138,13 @@ export function automapKindOf(cell) {
  * the only reader a caller needs. `counts` is the legend's own numbers (the pad and the report
  * both read it), and `walkable` counts every cell a body can stand in or swim through.
  *
- * @param {{width:number, depth:number, cells:object[]}|null} level
- * @returns {{width:number, depth:number, kinds:string[], counts:Record<string, number>, walkable:number}}
+ * **The canvas rides with it** (`levelCanvas`): the sheet is drawn over the part of the grid the
+ * level really fills, so a storey that uses less of the file's grid than the header declares is
+ * drawn at its own size instead of floating in a page of empty parchment.
+ *
+ * @param {{width:number, depth:number, cells:object[], canvas?:object|null}|null} level
+ * @returns {{width:number, depth:number, kinds:string[], counts:Record<string, number>, walkable:number,
+ *   canvas:{row0:number,row1:number,col0:number,col1:number}|null}}
  */
 export function buildAutomap(level) {
   const width = Math.max(0, Math.trunc(level?.width ?? 0));
@@ -154,7 +162,7 @@ export function buildAutomap(level) {
         || kind === 'dryChasm' || kind === 'wetChasm' || kind === 'lavaChasm') walkable++;
     }
   }
-  return { width, depth, kinds, counts, walkable };
+  return { width, depth, kinds, counts, walkable, canvas: level?.canvas ?? null };
 }
 
 /**

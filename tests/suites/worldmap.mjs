@@ -153,6 +153,10 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
 
     // ── the province plate, which is a record nothing had ever drawn ────────
     const hovered = await page.evalJs('window.__debug.hoverAt(700, 300)');
+    // The plaque is drawn by the next animation frame, not by the pointer moving: on a loaded
+    // machine the answer to `provincePlate` can arrive a frame before the paint it describes.
+    await page.waitFor(`window.__debug.state().mapArt.plaques.includes(${JSON.stringify(hovered)})`,
+      { label: 'the province plaque', timeoutMs: 3000 }).catch(() => {});
     const plate = await page.evalJs(`window.__debug.provincePlate(${JSON.stringify(hovered)})`);
     check('pointing at the continent names the province with the record’s own plate',
       Boolean(hovered) && plate?.name === hovered && plate.width > 0,
@@ -234,6 +238,17 @@ export function makeWorldmapSuite({ check, realErrors, shots, getPort, decodePng
     // so the card's canvas must be a scaled copy of that art and carry painted pixels.
     const journeyPromise = page.evalJs('window.__debug.travel("Daggerfall")');
     await page.waitFor('!!document.getElementById("travel-horse")', { label: 'the travel horse', timeoutMs: 5000 });
+    // The card goes up before the DFA is decoded (by design: it is the loading screen). Wait for
+    // the first painted frame instead of reading the just-created, still-blank canvas; otherwise
+    // the assertion is a race against `data.must('HORSE.DFA')`. The art assertion below is
+    // unchanged and still fails if the horse never paints.
+    await page.waitFor(`(() => {
+      const canvas = document.querySelector('#travel-horse canvas');
+      if (!canvas) return false;
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) return true;
+      return false;
+    })()`, { label: 'the horse art', timeoutMs: 5000 });
     const horse = await page.evalJs(`(() => {
       const host = document.getElementById('travel-horse');
       const canvas = host?.querySelector('canvas');

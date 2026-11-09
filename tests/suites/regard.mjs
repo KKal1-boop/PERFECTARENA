@@ -112,6 +112,20 @@ export function makeRegardSuite({ check, realErrors, shots, getPort }) {
       done?.completed === true
         && /^Return to (?:a|the) (?:person|man|woman|child)\b.+ for \d+ gold\.$/.test(done.objective ?? ''),
       done?.objective);
+    // The owner, 2026-10-22: *"the gui should point to the radiant quest npc who gave you the
+    // quest when you have completed it and you need to come back to him"*. A name is not a
+    // direction: the band now carries the arrow and the paces **to the person's own cell**
+    // (`personOffer`'s `giverCell`), in the town they were placed in.
+    await settle(260);
+    const hudBack = await page.evalJs('document.getElementById("hud-quest")?.textContent ?? ""');
+    check('and the GUI points back at the one who gave the job',
+      /the purse/.test(hudBack) && /(\d+ paces|\u00b7 here)/.test(hudBack)
+        && /(?:a|the) (?:person|man|woman|child)\b/.test(hudBack),
+      JSON.stringify(hudBack).slice(0, 240));
+    const backLead = await page.evalJs('({cell: window.__debug.jobs().active?.giverCell ?? null, feet: window.__debug.state().feet})');
+    check('and the cell it points at is the one the giver was placed on',
+      Number.isFinite(Number(backLead?.cell?.row)) && Number.isFinite(Number(backLead?.cell?.col)),
+      JSON.stringify(backLead).slice(0, 200));
 
     // ── the hand-in: the purse that had no door before ────────────────────────
     const purseBefore = await page.evalJs('window.__debug.player().gold ?? 0');

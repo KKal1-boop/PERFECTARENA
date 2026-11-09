@@ -29,6 +29,8 @@ export const STORY_SPEECH = Object.freeze({
   1447: [6.706, 5.017, 5.879, 5.688, 5.878, 4.724],
   // Ria's death, spoken over `VISION.FLC` when the player falls (the owner, 2026-10-22).
   1402: [6.418, 6.816, 2.216],
+  // Tharn's death speech (1403): the four clips the install keeps for it, 22.447 s.
+  1403: [4.421, 6.921, 5.892, 5.213],
   1404: [3.915],
   1405: [5.775],
   1407: [5.873, 5.775, 5.77, 5.437],

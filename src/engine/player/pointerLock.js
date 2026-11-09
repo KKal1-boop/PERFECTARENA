@@ -22,6 +22,40 @@ import { overlayOpen } from '../ui/enhancedOverlays.js';   // PL3: an enhanced o
 
 let _errBound = false;
 
+// ── A PHONE HAS NO MOUSE TO LOCK ────────────────────────────────────────────
+// The owner, 2026-10-22, playing on Android Chrome: *"when i click it starts saying 'change app to
+// see the cursor again' and i cant look around"*. That message IS the browser's pointer-lock
+// notice: the page asked for a lock on a screen whose only pointer is a finger. Every keydown and
+// every tap in the scene ends on `requestLook` (the interior's ladder, `bindCursorToggle`'s net),
+// so the notice came back on every press and the look stayed dead while the lock held the page.
+//
+// THE QUESTION IS NOT "IS THIS A TOUCH SCREEN" but "is there a mouse at all". `(any-pointer:
+// fine)` answers no on a phone and a tablet in hand, and yes on a desktop with a mouse or trackpad
+// **even while the touch layer is on through `?touch=on`** — so that door keeps its mouse look. A
+// browser that does not know the query (neither `fine` nor `coarse` matches) is not a phone's and
+// keeps the lock: no platform loses the mouse to a check it cannot run.
+export const FINE_POINTER_QUERY = '(any-pointer: fine)';
+export const COARSE_POINTER_QUERY = '(any-pointer: coarse)';
+
+/**
+ * Whether this page has a mouse-like pointer at all — what a pointer lock is *for*.
+ *
+ * @param {any} [win] the window-like the host runs under (a test stubs `matchMedia`)
+ * @returns {boolean}
+ */
+export function mousePointerAvailable(win = globalThis) {
+  const mm = win?.matchMedia;
+  if (typeof mm !== 'function') return true;   // no media queries at all: assume a pointer
+  try {
+    const fine = mm.call(win, FINE_POINTER_QUERY);
+    if (!fine || typeof fine.matches !== 'boolean') return true;
+    if (fine.matches) return true;
+    // The query is unknown here when NEITHER pointer class answers; an old engine keeps the lock.
+    const coarse = mm.call(win, COARSE_POINTER_QUERY);
+    return coarse?.matches !== true;
+  } catch { return true; }
+}
+
 // U45 - PlayerMouseLook.cursorActive (:32, :185-213), THE TOGGLE THAT
 // HAD NO CONSUMER. `ActivateCursor` has been bound to Enter in the
 // input registry since I1 and nothing has ever read it, so the port
@@ -183,6 +217,9 @@ export function requestLook(canvas) {
   // The precedence above: a cursor the player activated is not taken
   // back by the next gesture, only by the toggle.
   if (_cursorActive) return;
+  // …and a screen with no mouse in it has nothing to lock: asking is the Chrome
+  // banner a phone player reads as "change app to see the cursor again".
+  if (!mousePointerAvailable()) return;
   _lastRequestAt = nowMs();
   if (!_errBound && typeof document !== 'undefined') {
     document.addEventListener('pointerlockerror', () => {

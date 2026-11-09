@@ -113,36 +113,45 @@ test('the big opening loads, and a name the install does not ship is refused hon
   assert.match(String(refused.reason), /FLIC reader/);
 });
 
-// THE START-UP'S ORDER — Arena's own start-up sequence (OpenTESArena `IntroUiMVC.cpp`): a title
-// and a quote card of 5 s, the scroll movie, then the three scroll pictures held for 13, 13 and
-// 10 s. The king's betrayal (`INTRO.FLC`) is **not** a start-up card: it opens the game after
-// creation, so skipping a title card can never skip the story. Every step's file must be in the
-// install, loose or in GLOBAL.BSA.
+// THE START-UP'S ORDER — Arena's own start-up sequence (OpenTESArena `IntroUiMVC.cpp`): the 3-D
+// opening book (`INTRO.FLC`), a title and a quote card of 5 s, the scroll movie, then the three
+// scroll pictures held for 13, 13 and 10 s. New Game has its own sequence from OpenTESArena's
+// `MainMenuUiMVC::onNewGameButtonSelected`: the opening scroll, then nine `INTRO01–09.IMG`
+// history panels at 5 s each, before creation. Every step's file must be in the install, loose
+// or in GLOBAL.BSA.
 import { NEW_GAME_STEPS, STARTUP_STEPS } from '../../src/game/cutscene.js';
 import { parseImg } from '../../src/arena/image.js';
 import { parseBsa } from '../../src/arena/bsaArchive.js';
 
-test('the start-up runs in Arena\'s own order and timing, and the betrayal is not one of its cards', () => {
+test('the start-up and New Game each run Arena\'s own order and timing', () => {
   const order = STARTUP_STEPS.map((s) => s.file);
   assert.deepEqual(order, [
-    'TITLE.IMG', 'QUOTE.IMG', 'SCROLL.FLC', 'SCROLL01.IMG', 'SCROLL02.IMG', 'SCROLL03.IMG',
+    'INTRO.FLC', 'TITLE.IMG', 'QUOTE.IMG', 'SCROLL.FLC', 'SCROLL01.IMG', 'SCROLL02.IMG', 'SCROLL03.IMG',
   ]);
   const stills = STARTUP_STEPS.filter((s) => s.kind === 'still');
   assert.deepEqual(stills.map((s) => s.seconds), [5, 5, 13, 13, 10]);
   for (const step of STARTUP_STEPS.filter((s) => s.kind === 'movie')) {
     assert.ok(cutsceneByName(step.file), `${step.file} is a catalogued movie`);
   }
-  // **The king's murder opens the game, not the browser.** It plays after creation, on every
-  // new game, whatever the tab has already seen.
-  assert.deepEqual(NEW_GAME_STEPS.map((s) => s.file), ['INTRO.FLC']);
-  assert.ok(!order.includes('INTRO.FLC'), 'the start-up cards do not carry the story movie');
+  // **The New Game button owns the longer history.** OpenTESArena chains the opening scroll
+  // and nine `INTRO` pictures before creation; the panels are the Emperor's betrayal and the
+  // banishment of his champion. They are not the shorter `SCROLL01–03` start-up cards.
+  assert.deepEqual(NEW_GAME_STEPS.map((s) => s.file), [
+    'SCROLL.FLC', 'INTRO01.IMG', 'INTRO02.IMG', 'INTRO03.IMG', 'INTRO04.IMG', 'INTRO05.IMG',
+    'INTRO06.IMG', 'INTRO07.IMG', 'INTRO08.IMG', 'INTRO09.IMG',
+  ]);
+  const newStills = NEW_GAME_STEPS.filter((s) => s.kind === 'still');
+  assert.deepEqual(newStills.map((s) => s.seconds), Array(9).fill(5));
+  assert.deepEqual(newStills.map((s) => s.paletteFile), Array(9).fill('SCROLL03.IMG'));
+  assert.ok(cutsceneByName('SCROLL.FLC'), 'the New Game scroll is a catalogued movie');
+  assert.equal(order[0], 'INTRO.FLC', 'the book greets the session first');
 });
 
-test('every opening picture is in the install and decodes with a palette', () => {
+test('every opening and New Game picture is in the install and decodes with a palette', () => {
   const archive = fs.existsSync(file('GLOBAL.BSA'))
     ? parseBsa(new Uint8Array(fs.readFileSync(file('GLOBAL.BSA'))), 'GLOBAL.BSA')
     : null;
-  const pictures = STARTUP_STEPS.filter((s) => s.kind === 'still');
+  const pictures = [...STARTUP_STEPS, ...NEW_GAME_STEPS].filter((s) => s.kind === 'still');
   for (const step of pictures) {
     const loose = bytesOf(step.file);
     const bytes = loose ?? archive?.get(step.file) ?? null;

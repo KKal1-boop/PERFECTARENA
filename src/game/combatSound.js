@@ -55,7 +55,12 @@ import { decodeVoc } from '../arena/vocFile.js';
 
 /** Where the sound level is remembered, 0…1. */
 export const SFX_VOLUME_KEY = 'pa.sfx.volume';
-const DEFAULT_VOLUME = 0.8;
+/**
+ * **A new player hears the world at full level.** The owner, 2026-11-04: *"when you start the game
+ * for the first time the sound and music is to 100% and not 0"*. It was 0.8, and the absent-key
+ * read below turned a first visit into 0 — `Number(null)` is 0, and 0 is a finite number.
+ */
+const DEFAULT_VOLUME = 1;
 
 /**
  * **The event → Arena's own file.** A list, because two clips can make one sound (a body
@@ -191,6 +196,8 @@ let state = { fires: 0, last: null, volume: DEFAULT_VOLUME, blocked: false, sour
 function storedVolume() {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SFX_VOLUME_KEY) : null;
+    // **No stored level means no choice yet**, not a mute. A real stored "0" keeps its silence.
+    if (raw === null || raw === '') return DEFAULT_VOLUME;
     const n = Number(raw);
     return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : DEFAULT_VOLUME;
   } catch { return DEFAULT_VOLUME; }

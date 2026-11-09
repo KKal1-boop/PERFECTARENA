@@ -30,17 +30,20 @@
 //
 // Arena's own first ten minutes, and the owner's report that this port skipped them
 // (2026-10-16): *"after character creation a cutscene missing in perfectarena you start in
-// the imperial dungeon"*. So the flow here is creation → the opening movie (`INTRO.FLC`) →
-// **a locked cell in the Imperial Dungeons** (`game/startFlow.js`'s `START_INTERIOR`), and
-// Tamriel opens up when the player escapes (`game/questState.js`, whose first stage is
-// exactly that). This used to hand the player to the world map, which is the middle of the
-// story rather than its first step.
+// the imperial dungeon"*. The flow is the original's: the opening scroll and the nine-panel
+// history (`game/cutscene.js`'s `NEW_GAME_STEPS`), creation, then **a locked cell in the
+// Imperial Dungeons** (`game/startFlow.js`'s `START_INTERIOR`). Tamriel opens up when the
+// player escapes (`game/questState.js`, whose first stage is exactly that). Ria's `1400` in
+// the cell is the new game's own speech. This used to hand the player to the world map, which
+// is the middle of the story rather than its first step.
 
+import { NEW_GAME_STEPS } from '../game/cutscene.js';
 import { clearSave, loadCharacter, markCellDreamPending } from '../game/save.js';
 import { START_INTERIOR } from '../game/startFlow.js';
 
 /**
- * Forget the save and run character creation, then the opening and the Imperial Dungeons.
+ * Forget the save, play the opening scroll and nine-panel history, run character creation,
+ * then the cell in the Imperial Dungeons.
  *
  * @param {object} opts
  * @param {HTMLCanvasElement} opts.canvas
@@ -52,10 +55,11 @@ import { START_INTERIOR } from '../game/startFlow.js';
  */export async function beginNewGame({ canvas, renderer, status, source, params = null }) {
   if (!source) return { ok: false, why: 'no Arena data source' };
   clearSave();
-  // **Ria's explanation is owed with the new game.** The movie before the cell is the king's
-  // betrayal (`INTRO.FLC`); the explanation itself (`TEMPLATE.DAT` 1400) belongs to the cell and
-  // is played by the first level boot, from the save's own ledger (`game/storyScript.js`'s
-  // `dueCellDream`). This handshake is what tells a level boot that a game actually began.
+  // **Ria's explanation is owed with the new game.** The history before creation is
+  // `NEW_GAME_STEPS` (`SCROLL.FLC` and the nine `INTRO` panels); the explanation itself
+  // (`TEMPLATE.DAT` 1400) belongs to the cell and is played by the first level boot, from the
+  // save's own ledger (`game/storyScript.js`'s `dueCellDream`). This handshake is what tells a
+  // level boot that a game actually began.
   markCellDreamPending();
 
   /** The dev door's own folder travels in the URL; a picked one is already open in memory. */
@@ -77,24 +81,54 @@ import { START_INTERIOR } from '../game/startFlow.js';
   // registers one on `window.__arenaScene`).
   window.__arenaScene?.dispose?.();
 
+  // ── the original's new-game story, before the make ────────────────────────
+  // OpenTESArena's `MainMenuUiController::onNewGameButtonSelected` chains the opening
+  // scroll, the nine `INTRO` pictures at five seconds each, and character creation. Those
+  // panels are the betrayal the start-up's shorter `SCROLL01–03` cards do not tell. Skipping
+  // the sequence is the player's own key, not a reason to skip character creation.
+  const opening = { played: false, skipped: false, steps: [], current: null, reason: null };
+  window.__debug = window.__debug || {};
+  window.__debug.opening = opening;
+  if (!params?.has('nointro')) {
+    try {
+      const { showMovie, showStill } = await import('./cutscenePlayer.js');
+      for (const step of NEW_GAME_STEPS) {
+        opening.current = step.file;
+        let result;
+        try {
+          result = step.kind === 'still'
+            ? await showStill(step.file, {
+              source, arenaPath: folder ?? undefined, status,
+              seconds: step.seconds, paletteFile: step.paletteFile,
+            })
+            : await showMovie(step.file, { source, arenaPath: folder ?? undefined, status });
+        } catch (err) {
+          result = { played: false, skipped: false, reason: String(err?.message ?? err) };
+        }
+        opening.steps.push({ file: step.file, played: Boolean(result.played), skipped: Boolean(result.skipped) });
+        opening.played = opening.played || Boolean(result.played);
+        if (result.skipped) { opening.skipped = true; break; }
+      }
+      opening.current = null;
+    } catch (err) {
+      opening.reason = String(err?.message ?? err);
+    }
+  } else {
+    opening.reason = '?nointro';
+  }
+
   const chargenParams = urlFor('chargen');
   rewrite(chargenParams);
   const { bootChargen } = await import('./chargen.js');
   const { character } = await bootChargen(canvas, renderer, chargenParams, status, source);
 
-  // ── the opening movie, and the cell it wakes you in ──────────────────────
+  // ── the cell it wakes you in ─────────────────────────────────────────────
   //
-  // "New Game" is a game start by definition, so the movie is owed on **every** new game
-  // (`game/cutscene.js`'s `NEW_GAME_STEPS`) — never gated on what this tab has seen. A page
-  // whose install ships no such file still starts: a movie is never a dependency
-  // (`cutscenePlayer.js`). Ria's explanation follows it, owed by the cleared save.
-  try {
-    const { showMovie } = await import('./cutscenePlayer.js');
-    const played = await showMovie('INTRO.FLC', { source, arenaPath: folder, status });
-    window.__debug.opening = { ...played.state, played: played.played, skipped: played.skipped };
-  } catch (err) {
-    window.__debug.opening = { error: String(err?.message ?? err) };
-  }
+  // The new game's own cinematic has already played before the make; the cell now owes Ria's
+  // `1400` speech over `VISION.FLC` (`game/storyScript.js`'s `dueCellDream`). Keep the
+  // opening record across the scene handoff: the browser suites read it after the cell boots.
+  window.__debug = window.__debug || {};
+  window.__debug.opening = opening;
 
   // Creation is not a destination: a player who has just made a character belongs in the
   // Imperial Dungeons, at the first stage of the quest, not on the world map.

@@ -24,6 +24,15 @@
 // needs, and the palace's Jewel-of-Fire cell — the one the mithril key opens — is that
 // rule applied to the quest (`scenes/interior.js`'s objectives).
 //
+// ## Key types, from OpenTESArena
+//
+// `keyIdForLock` is **not** a new invention: OpenTESArena's `LockDefinition::init` reads
+// `keyID = (lockLevel - 1) % 12` from the same `LOCK` entries, and its `MapLogic` spends a
+// key on the door it opens and clears the ring when a dungeon level changes. The original
+// stores one slot per key id, twelve in all (`Player::addToKeyInventory`), which
+// `addKey` reproduces. That data is unavailable here only for the *thieving divisor* inside
+// `A.EXE`; the key law itself is the reference's own.
+//
 // ## The swing
 //
 // The panel spans one of the cell's two axes (`built.doors[].panel`), and a swinging door
@@ -69,6 +78,27 @@ export const DOOR_CLOSE_SECONDS = 0.35;
 export const SWING_DEGREES = 90 - 0.005 * (180 / Math.PI);
 /** The highest lock level an unaided arm can still force. */
 export const HAND_FORCE_MAX = 10;
+/** Arena's key ring: `ArenaItemUtils::DoorKeyCount` is twelve. */
+export const KEY_INVENTORY_SIZE = 12;
+
+/**
+ * Arena's own key id for a lock level.
+ *
+ * OpenTESArena's `LockDefinition::init` computes `keyID = (lockLevel - 1) % 12`: the world
+ * has twelve key types, and a lock's level names the one that turns it. This is not the same
+ * thing as "a key whose level is at least the lock's": a level-13 lock and a level-1 lock
+ * share key 0, which is why the original can put one key in a level and let it open two
+ * doors of the same type. The port's old match-by-level rule was a superset, and it never
+ * consumed a key; both are corrected here.
+ *
+ * @param {number} lockLevel
+ * @returns {number} 0…11, or -1 for no lock
+ */
+export function keyIdForLock(lockLevel) {
+  const level = Math.trunc(Number(lockLevel) || 0);
+  if (level <= 0) return -1;
+  return (level - 1) % 12;
+}
 
 /**
  * How far from its sign a riddle door may stand, in cells.
@@ -339,11 +369,62 @@ export function leafIntoSolid(door, cellSize, open, isSolid) {
  */
 export function keyOpens(keys, lockLevel) {
   if (!lockLevel) return null;
-  let best = null;
+  const wanted = keyIdForLock(lockLevel);
+  let exact = null;
+  let fallback = null;
   for (const key of keys ?? []) {
-    if ((key?.lock ?? 0) >= lockLevel && (!best || key.lock < best.lock)) best = key;
+    // **The exact type first.** A key's own id is Arena's law; a save written before this
+    // field existed has only `lock`, so its id is derived from that rather than lost.
+    const id = Number.isInteger(key?.keyId) ? key.keyId : keyIdForLock(key?.lock);
+    if (id === wanted && (!exact || (key.lock ?? 0) < (exact.lock ?? 0))) exact = key;
+    // The old superset remains only as a compatibility fallback for a key with no id at all.
+    if (key?.keyId == null && (key?.lock ?? 0) >= lockLevel
+      && (!fallback || key.lock < fallback.lock)) fallback = key;
   }
-  return best;
+  return exact ?? fallback;
+}
+
+/**
+ * The key ring after one key is spent. Arena removes a key when its lock opens
+ * (`Player::removeFromKeyInventory`), so a used key is gone, not a permanent master key.
+ *
+ * @param {object[]|null|undefined} keys
+ * @param {object} spent
+ * @returns {object[]}
+ */
+export function removeKey(keys, spent) {
+  return (keys ?? []).filter((key) => key !== spent);
+}
+
+/**
+ * Put a key on the ring, with Arena's own two refusals: a key of a type already carried is
+ * not duplicated, and a thirteenth key does not fit.
+ *
+ * OpenTESArena's `Player::addToKeyInventory` stores one slot per **key id**, not per door, and
+ * warns when all twelve are full. This port places a key per sealed door, so two doors of the
+ * same lock level mint two physical keys; carrying the second is redundant, exactly as it is
+ * in the original where the id is the whole identity. The spot is still consumed on a
+ * duplicate (the key was there and was picked up); a full ring refuses the pickup instead, so
+ * the key stays on the floor for a player who spends one.
+ *
+ * @param {object[]|null|undefined} keys
+ * @param {object|null} key
+ * @param {{capacity?: number}} [opts]
+ * @returns {{ok: boolean, keys: object[], duplicate: boolean, reason: string|null}}
+ */
+export function addKey(keys, key, { capacity = KEY_INVENTORY_SIZE } = {}) {
+  const ring = [...(keys ?? [])];
+  if (!key) return { ok: false, keys: ring, duplicate: false, reason: 'There is no key to take.' };
+  const id = Number.isInteger(key.keyId) ? key.keyId : keyIdForLock(key.lock);
+  if (id >= 0 && ring.some((held) => (
+    Number.isInteger(held?.keyId) ? held.keyId : keyIdForLock(held?.lock)
+  ) === id)) {
+    return { ok: true, keys: ring, duplicate: true, reason: 'You already carry a key of that kind.' };
+  }
+  if (ring.length >= capacity) {
+    return { ok: false, keys: ring, duplicate: false, reason: `You can carry only ${capacity} keys at a time.` };
+  }
+  return { ok: true, keys: [...ring, { ...key, keyId: id }], duplicate: false, reason: null };
 }
 
 /**
@@ -488,7 +569,10 @@ export function placeKeys({ level, doors, spawn }) {
     const spot = candidates.find((c) => !taken.has(`${c.row},${c.col}`));
     if (!spot) break;
     taken.add(`${spot.row},${spot.col}`);
-    keys.push({ row: spot.row, col: spot.col, lock: door.lock, art: 'KEY.IMG', door: { row: door.row, col: door.col } });
+    keys.push({
+      row: spot.row, col: spot.col, lock: door.lock, keyId: keyIdForLock(door.lock),
+      art: 'KEY.IMG', door: { row: door.row, col: door.col },
+    });
   }
   return keys;
 }

@@ -131,6 +131,27 @@ test('an encounter is spread across the level, not piled in one room', () => {
   assert.equal(tight.length, 4, 'a small room still gives its four');
 });
 
+test('a high-level ordinary creature may be the powerful elite: a doubled body and its own loot', () => {
+  // Daggerfall's high-level variants, in Arena's own bestiary: the kind does not change, the
+  // body is the powerful version of it, and the corpse carries what a person would.
+  const level = room(40);
+  let elite = null;
+  for (let seed = 1; seed <= 200 && !elite; seed++) {
+    const spawned = spawnEncounter({
+      level, seed, danger: 30, depth: 4, count: 4,
+      arrival: { row: 20, col: 20 }, minCells: 0, monsters: ['rat'],
+    });
+    elite = spawned.find((spawn) => spawn.elite) ?? null;
+  }
+  assert.ok(elite, 'no elite was rolled in 200 seeds');
+  assert.equal(elite.monster.elite, true, 'the monster itself carries the flag the scene paints');
+  assert.equal(elite.monster.id, 'rat', 'an elite is the same kind, not a new species');
+  assert.ok(elite.monster.maxHealth >= 2, `the elite body is doubled (${elite.monster.maxHealth})`);
+  assert.ok(elite.monster.damageMin >= 1, 'and its blow is the stronger one');
+  assert.ok(elite.loot && elite.loot.gold >= 1 && elite.loot.items.length > 0,
+    `an elite carries loot: ${JSON.stringify(elite.loot)}`);
+});
+
 test('the window widens with danger and with depth, and is the whole list at the end', () => {
   const shallow = rosterWindow(START_ROSTER, { danger: 2, depth: 0 }).length;
   const staged = rosterWindow(START_ROSTER, { danger: dangerOf({ stage: 4 }), depth: 0 }).length;

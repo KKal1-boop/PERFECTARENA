@@ -656,15 +656,40 @@ test("a settlement's gate is one opening in its wall, and nothing in it collides
     const before = buildLevelMesh(level, { upperStoreys: true });
 
     const opened = openSettlementGate(level);
-    assert.equal(opened.length, 2, `${name}: one opening of two cells, saw ${JSON.stringify(opened)}`);
-    assert.equal(opened[0].axis, opened[1].axis, `${name}: both cells of the opening stand on one line`);
-    const along = opened[0].axis === 'north' || opened[0].axis === 'south' ? 'col' : 'row';
-    assert.equal(Math.abs(opened[1][along] - opened[0][along]), 1,
-      `${name}: the two cells are side by side, saw ${JSON.stringify(opened)}`);
+    // The arch: the file's own `0x9` gateway voxels, one run of two cells.
+    const isArch = (g) => ((level.cells[g.row * mif.width + g.col].rawMap1 & 0xf000) >> 12) === 0x9;
+    const arch = opened.filter(isArch);
+    assert.equal(arch.length, 2, `${name}: one arch of two cells, saw ${JSON.stringify(opened)}`);
+    assert.equal(arch[0].axis, arch[1].axis, `${name}: both cells of the opening stand on one line`);
+    const along = arch[0].axis === 'north' || arch[0].axis === 'south' ? 'col' : 'row';
+    assert.equal(Math.abs(arch[1][along] - arch[0][along]), 1,
+      `${name}: the two arch cells are side by side, saw ${JSON.stringify(arch)}`);
     assert.ok(opened.every((g) => g.row === 0 || g.col === 0 || g.row === mif.height - 1 || g.col === mif.width - 1),
-      `${name}: the opening is in the settlement's outermost line`);
-    assert.ok(opened.every((g) => ((level.cells[g.row * mif.width + g.col].rawMap1 & 0xf000) >> 12) === 0x9),
-      `${name}: both cells are the file's own gateway voxel`);
+      `${name}: every gate is in the settlement's outermost line`);
+
+    // **…and every door picture on that line is a gate too.** The owner, 2026-10-22: *"in both pc
+    // and phone you should be able to use all door textures on the citywalls of villages and town
+    // to get in and out of said towns not just the main gate"*. A wall cell wearing the gate's own
+    // leaves (`T_DLGT.IMG` / `T_DRGT.IMG`) stands over street, so it is a way through: marked
+    // `gateway`, returned as a gate in its own right, and drawn exactly as before.
+    const doors = opened.filter((g) => !isArch(g));
+    for (const gate of doors) {
+      const cell = level.cells[gate.row * mif.width + gate.col];
+      assert.equal(cell.gateway, true, `${name}: the door at ${gate.row},${gate.col} is a gate`);
+      assert.match(String(inf.voxelTextures[cell.sideTexture]?.filename ?? ''), /^(?:T_)?D(?:L|R)GT\.IMG$/i,
+        `${name}: ${gate.row},${gate.col} really wears a door picture`);
+      const inward = gate.axis === 'north' ? [gate.row + 1, gate.col]
+        : gate.axis === 'south' ? [gate.row - 1, gate.col]
+          : gate.axis === 'west' ? [gate.row, gate.col + 1] : [gate.row, gate.col - 1];
+      const behind = level.cells[inward[0] * mif.width + inward[1]];
+      assert.equal(Boolean(behind) && !behind.solid, true,
+        `${name}: the door at ${gate.row},${gate.col} opens onto street, not a wall`);
+    }
+    // The skeletons that wear them: every village paints at least one pair of gate leaves beside
+    // its arch (VILLAGE1 draws three pairs, VILLAGE4 one), and a city its own pair.
+    if (/^VILLAGE|^CITY/i.test(name)) {
+      assert.ok(doors.length >= 2, `${name}: ${doors.length} doors, saw ${JSON.stringify(doors)}`);
+    }
     // **The illustrated gate posts are part of the way through.** They stand behind the arch
     // wearing `PGATE.IMG`; every one of them is marked `gateway` and therefore leaves the
     // collision soup (the owner: all gate-art walls must be passable).
@@ -1025,7 +1050,8 @@ test('a settlement keeps its gate open: the pass walls a city everywhere but its
   const inf = await data.inf('TCN.INF');
   const level = decodeLevel(mif.levels[0], inf, { width: mif.width, depth: mif.height, mapType: 'city' });
   const gates = openSettlementGate(level);
-  assert.equal(gates.length, 2, 'CITY1 cuts one two-cell opening');
+  assert.ok(gates.filter((g) => ((level.cells[g.row * level.width + g.col].rawMap1 & 0xf000) >> 12) === 0x9).length === 2,
+    'CITY1 cuts one two-cell arch (and paints its doors as well — D-93)');
   const built = buildLevelMesh(level, { boundaryWalls: true });
   const collider = new Collider();
   collider.addMesh('level', built.collider.positions, built.collider.indices, identity());

@@ -132,6 +132,47 @@ export function fileListSource(files, label = 'picker') {
 }
 
 /**
+ * **A folder dropped on the page**, as a source.
+ *
+ * The owner, 2026-10-22, on a browser that would not hand a directory to the file input:
+ * *"in opera and other browser … opera doesnt let you use all the folder"*. Chromium's
+ * `DataTransferItem.webkitGetAsEntry` walks a dropped DIRECTORY (a dropped file is a drop of one
+ * file, which is not an install), so this is the second door to the same source `pickArenaFolder`
+ * builds — nothing else in the game knows which door was used.
+ *
+ * A `readEntries` call answers at most 100 entries per page, which is why it is asked again until
+ * it answers nothing: Arena's folder is 150-odd files and a folder with subfolders is more.
+ *
+ * @param {DataTransfer|null} dataTransfer
+ * @param {string} [label]
+ * @returns {Promise<(ArenaSource & {files: Map<string, File>})|null>} null when the drop held no files
+ */
+export async function droppedFolderSource(dataTransfer, label = 'dropped folder') {
+  const items = dataTransfer?.items ? Array.from(dataTransfer.items) : [];
+  const roots = items.map((item) => item.webkitGetAsEntry?.() ?? null).filter(Boolean);
+  const files = [];
+  const walk = async (entry) => {
+    if (!entry) return;
+    if (entry.isFile) {
+      files.push(await new Promise((resolve, reject) => entry.file(resolve, reject)));
+      return;
+    }
+    if (!entry.isDirectory) return;
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      if (!batch?.length) break;
+      for (const child of batch) await walk(child);
+    }
+  };
+  for (const root of roots) await walk(root);
+  // A browser without `items`/`webkitGetAsEntry` still puts a dropped FOLDER's files in `files`
+  // (Chromium's own fallback), so that is read when the entry walk found nothing.
+  if (!files.length) files.push(...Array.from(dataTransfer?.files ?? []));
+  return files.length ? fileListSource(files, label) : null;
+}
+
+/**
  * Does a directory listing look like an Arena installation?
  *
  * @param {ArenaSource} source

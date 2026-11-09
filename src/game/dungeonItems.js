@@ -261,7 +261,11 @@ export function goldFor(kind, random) {
 export function pickupNote(pickup, gold) {
   if (pickup.kind === 'key') return 'A key — it opens a lock nothing else here will.';
   if (pickup.kind === 'equipment') return 'Equipment: the map kept a weapon here. It is in your hands.';
-  if (pickup.kind === 'gem') return 'A gem, heavy in the hand. It sells.';
+  // **A gem is treasure, not a pack item.** Arena's item library has no gem kind — the
+  // executable's gem table is the loot-name table (`exeTables.js`'s `gems`) — so the draw is
+  // paid into the purse here. The Staff's pieces are quest objectives (`takeObjective`),
+  // never this flat; saying the amount is what tells the player which one this was.
+  if (pickup.kind === 'gem') return `A gem of high value to a seller — ${gold} gold.`;
   if (pickup.kind === 'body') return `The body had ${gold} coins on it.`;
   if (gold > 0) return `${gold} gold — ${pickup.name}.`;
   return `Nothing but ${pickup.name}.`;

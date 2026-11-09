@@ -118,17 +118,26 @@ export function makeQuestMarksSuite({ check, realErrors, shots, getPort }) {
       return Boolean(world.provinceAtWorld(point)) && world.landAt(point, provinceID);
     };
     let start = null;
+    // **The window's own 32-cell guarantee.** `wilderness.js`'s `wildernessWindowOrigin` snaps a
+    // window to a block, so a player stands 32…95 cells into it; any cell within **32** of them is
+    // therefore always inside the window they are standing in, and anything further is a coin
+    // flip on the snap. This walk stops 30 out, which is the closest a test can come without
+    // testing the snap itself.
+    const approach = 30;
+    // **The stop is 30 from the *job*, not 30 from the start.** The start is 100 out, so the walk
+    // toward it covers 70 cells and the remaining 30 is the point the window is asked about.
+    const inward = 100 - approach;
     for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
       const row = target.row + dr * 100;
       const col = target.col + dc * 100;
-      if (land(row, col) && land(row + Math.round(-dr * 45), col + Math.round(-dc * 45))) {
+      if (land(row, col) && land(row - dr * inward, col - dc * inward)) {
         start = { row, col, dr, dc };
         break;
       }
     }
     check('a stretch of country 100 cells from the job is land', Boolean(start), JSON.stringify(start));
     if (!start) return;
-    const mid = { row: start.row - start.dr * 45, col: start.col - start.dc * 45 };
+    const mid = { row: start.row - start.dr * inward, col: start.col - start.dc * inward };
 
     // **`grid=2` is what makes the cell a Tamriel cell.** A `?wild=` without it is a legacy
     // per-settlement coordinate and the page migrates it onto the world grid — which moved this
@@ -160,23 +169,173 @@ export function makeQuestMarksSuite({ check, realErrors, shots, getPort }) {
     // level cell — the same arithmetic `wilder` uses when it slides.
     const origin = await page.evalJs('window.__debug.state().wild');
     await page.evalJs(`window.__debug.teleportCell(${mid.row - origin.originRow}, ${mid.col - origin.originCol})`);
-    await page.waitFor('Boolean(window.__debug.state().windowSlide?.doneAt)', { timeoutMs: 30000, label: 'the window slide' })
+    // **The slide this teleport asks for**, not whichever one the page already ran: a page can
+    // slide at boot (its first frame re-centres on the gate), so `doneAt` being set proves
+    // nothing — the record has to name the cell the player was just put on.
+    await page.waitFor(`window.__debug.state().windowSlide?.doneAt?.row === ${mid.row}`, { timeoutMs: 30000, label: 'the window slide' })
       .catch(() => {});
     await page.waitFor('window.__debug.combat().monsters.some((m) => m.bounty)', { timeoutMs: 15000, label: 'the quarry' })
       .catch(() => {});
     const arrived = await page.evalJs('({camp: window.__debug.state().radiantCamp ?? null,'
-      + ' bounties: window.__debug.combat().monsters.filter((m) => m.bounty).map((m) => ({ name: m.name, health: m.health, cell: m.cell })),'
+      + ' bounties: window.__debug.combat().monsters.filter((m) => m.bounty).map((m) => ({ name: m.name, health: m.health, cell: m.cell, id: m.bounty.encounterId })),'
       + ' objective: window.__debug.objective()})');
     const quarry = arrived?.bounties ?? [];
-    const near = quarry.filter((monster) => Math.max(Math.abs((monster.cell?.row ?? 1e9) - target.row),
-      Math.abs((monster.cell?.col ?? 1e9) - target.col)) <= 8).length;
+    // **A creature's cell is the window's, the job's cell is the world's.** The seam reports the
+    // level cell a body stands on; the job's own is a Tamriel cell, so the comparison is made in
+    // the window that is now standing (`state().wild`'s origin) rather than across the two.
+    const afterOrigin = await page.evalJs('window.__debug.state().wild');
+    const localTarget = { row: target.row - afterOrigin.originRow, col: target.col - afterOrigin.originCol };
+    const near = quarry.filter((monster) => Math.max(Math.abs((monster.cell?.row ?? 1e9) - localTarget.row),
+      Math.abs((monster.cell?.col ?? 1e9) - localTarget.col)) <= 8).length;
     check('the window that reaches the spot fields the three creatures the job asks for',
       quarry.length === 3 && near === 3 && arrived?.camp?.spawned >= 0,
-      JSON.stringify(arrived).slice(0, 400));
+      JSON.stringify(arrived).slice(0, 600));
     check('and the job’s own mark is placed, on ground a body can stand on',
       arrived?.objective?.wild === true && arrived?.objective?.dry === true,
       JSON.stringify(arrived?.objective ?? null).slice(0, 300));
     await page.screenshot(pathSafe(shots, 'wild-job-camp.png')).catch(() => {});
+
+    // ── 3. THE RESCUE'S CAPTIVE ────────────────────────────────────────────
+    // The owner, 2026-10-22: *"sprites of people you need to rescue in the wilderness dont
+    // properly spawn or persist and result invisible"*. A rescue is the one country job whose
+    // objective **is a person**, drawn with the install's own standing-man flat
+    // (`PERSON_MARKER_ART`). The hunt above already proved the quarry arrives with a slid
+    // window; this proves the *marker* does — the window that reaches the captive places them.
+    const rescueOffer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      .map((n) => generateQuest({ world, library, kind: 'rescue', seed: 0x5eed0 + n, giver, day: 1 }))
+      .find((offer) => offer.targetKind === 'wild' && offer.targetCell);
+    check('the board draws a country rescue to test', Boolean(rescueOffer),
+      JSON.stringify({ kinds: 'rescue', target: rescueOffer?.target }).slice(0, 200));
+    if (rescueOffer) {
+      const rescueState = applyRadiantEvent(createRadiantState(), 'accept', { offer: rescueOffer }).state;
+      const rescueTarget = rescueOffer.targetCell;
+      const rescueProvince = world.byName(rescueOffer.targetAnchor)?.provinceID ?? giver.provinceID;
+      const rescueLand = (row, col) => {
+        const point = pixelOfCell(row, col);
+        return Boolean(world.provinceAtWorld(point)) && world.landAt(point, rescueProvince);
+      };
+      let rescueStart = null;
+      for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+        const row = rescueTarget.row + dr * 100;
+        const col = rescueTarget.col + dc * 100;
+        if (rescueLand(row, col) && rescueLand(row - dr * (100 - 30), col - dc * (100 - 30))) {
+          rescueStart = { row, col, dr, dc };
+          break;
+        }
+      }
+      check('a stretch of country 100 cells from the captive is land', Boolean(rescueStart), JSON.stringify(rescueStart));
+      if (rescueStart) {
+        const rescueUrl = `http://localhost:${getPort()}/?wild=${rescueStart.row},${rescueStart.col}&grid=${WORLD_GRID_VERSION}&${q}`;
+        await page.goto(rescueUrl);
+        await readyWild();
+        await page.evalJs(`localStorage.setItem('perfectarena.radiant',${JSON.stringify(JSON.stringify(rescueState))})`);
+        await page.goto(rescueUrl);
+        await readyWild();
+        await page.evalJs('window.__debug.pause(true)');
+        const beforeRescue = await page.evalJs('({marker: window.__debug.state().objectiveMarker ?? null, objective: window.__debug.objective()})');
+        check('the captive is not in the window the player first walks into',
+          beforeRescue?.marker === null && beforeRescue?.objective === null,
+          JSON.stringify(beforeRescue).slice(0, 240));
+        await page.evalJs('window.__debug.pause(false)');
+        const rescueOrigin = await page.evalJs('window.__debug.state().wild');
+        const rescueMid = { row: rescueStart.row - rescueStart.dr * (100 - 30), col: rescueStart.col - rescueStart.dc * (100 - 30) };
+        await page.evalJs(`window.__debug.teleportCell(${rescueMid.row - rescueOrigin.originRow}, ${rescueMid.col - rescueOrigin.originCol})`);
+        await page.waitFor(`window.__debug.state().windowSlide?.doneAt?.row === ${rescueMid.row}`, { timeoutMs: 30000, label: 'the rescue window slide' })
+          .catch(() => {});
+        await page.waitFor('Boolean(window.__debug.state().objectiveMarker)', { timeoutMs: 8000, label: 'the captive' })
+          .catch(() => {});
+        const captive = await page.evalJs('({marker: window.__debug.state().objectiveMarker ?? null, objective: window.__debug.objective(),'
+          + ' hud: document.getElementById("hud-quest")?.textContent ?? ""})');
+        check('the window that reaches the captive places them, as the install’s own person flat',
+          captive?.marker?.art === 'MAN01.IMG' && captive?.objective?.wild === true
+            && String(captive?.marker?.what ?? '').length > 0,
+          JSON.stringify(captive?.marker ?? null).slice(0, 240));
+        check('and the GUI still points at them, with a bearing and its paces',
+          /paces|under your feet/.test(String(captive?.hud ?? '')) && /the spot/i.test(String(captive?.hud ?? '')),
+          JSON.stringify(captive?.hud ?? '').slice(0, 200));
+        await page.screenshot(pathSafe(shots, 'wild-rescue-captive.png')).catch(() => {});
+      }
+    }
+
+    // ── 4. THE HARVEST CAMP ─────────────────────────────────────────────────
+    // The owner's new job (2026-10-22): *"go pick up 5 hay bales of corn plants in the closest
+    // already generated camp in the wilds (the bales and corn sprites need to respawn as soon as
+    // the player leaves so if another quest points to that camp is ok)"*. The camp is a country
+    // cell the world draws (`radiantQuests.js`'s `wildTargetOf`); this boots a page standing on
+    // it, picks the bales up with the real `E`, and then asks a second job at the same camp for
+    // its five — the respawn the report asks for.
+    const harvestOffer = generateQuest({ world, library, kind: 'harvest', seed: 0x4ea5, giver, day: 1 });
+    check('the board draws a harvest to test, at the closest camp in the country',
+      harvestOffer.kind === 'harvest' && harvestOffer.targetKind === 'wild'
+        && harvestOffer.targetAnchor === giver.name
+        && Number.isFinite(harvestOffer.targetCell?.row), JSON.stringify({ target: harvestOffer.target, anchor: harvestOffer.targetAnchor }).slice(0, 200));
+    if (harvestOffer.targetKind === 'wild') {
+      const harvestCell = harvestOffer.targetCell;
+      const harvestState = applyRadiantEvent(createRadiantState(), 'accept', { offer: harvestOffer }).state;
+      const campUrl = `http://localhost:${getPort()}/?wild=${harvestCell.row},${harvestCell.col}&grid=${WORLD_GRID_VERSION}&${q}`;
+      await page.goto(campUrl);
+      await readyWild();
+      await page.evalJs(`localStorage.setItem('perfectarena.radiant',${JSON.stringify(JSON.stringify(harvestState))})`);
+      await page.goto(campUrl);
+      await readyWild();
+      await page.evalJs('window.__debug.pause(true)');
+      const camp = await page.evalJs('({camp: window.__debug.state().harvestCamp ?? null,'
+        + ' bales: window.__debug.state().loot.filter((s) => s.kind === "hay"),'
+        + ' corn: window.__debug.state().loot.filter((s) => s.prop).length,'
+        + ' objective: window.__debug.objective(), hud: document.getElementById("hud-quest")?.textContent ?? ""})');
+      const bales = camp?.bales ?? [];
+      check('the camp is dressed with five bales and its stands of corn, all drawn',
+        bales.length === 5 && bales.every((bale) => bale.drawn === true && bale.art === 'NHAYM.IMG')
+          && camp?.corn >= 2 && camp?.camp?.bales === 5,
+        JSON.stringify(camp?.camp ?? camp).slice(0, 300));
+      check('the camp is the objective, and no sixth marker stands on its ground',
+        camp?.objective?.wild === true && camp?.objective?.marker === false
+          && camp?.objective?.dry === true && /Gather the hay: 0\/5/.test(String(camp?.hud ?? '')),
+        JSON.stringify({ objective: camp?.objective ?? null, hud: camp?.hud ?? '' }).slice(0, 360));
+
+      // **Five bales, five presses.** Each stands on its own cell; `E` there is the pickup a
+      // player makes, and the job counts them one at a time.
+      let gathered = 0;
+      for (const bale of bales) {
+        await page.evalJs(`window.__debug.teleportCell(${bale.row}, ${bale.col})`);
+        await key('KeyE');
+        const now = await page.evalJs('({taken: window.__debug.state().loot.filter((s) => s.kind === "hay" && s.taken).length,'
+          + ' last: window.__debug.state().lastHarvest ?? null})');
+        if (now?.taken > gathered) gathered = now.taken;
+      }
+      // The pickup is an async `E` (the scene's own handler is `void interact()`), so the HUD is
+      // written a frame after the press: wait for the hand-in line before reading it.
+      await page.waitFor('window.__debug.state().lastHarvest?.count === "5/5"'
+        + ' && /Return to/.test(document.getElementById("hud-quest")?.textContent ?? "")',
+      { timeoutMs: 8000, label: 'the harvest hand-in' }).catch(() => {});
+      const finished = await page.evalJs('({taken: window.__debug.state().loot.filter((s) => s.kind === "hay" && s.taken).length,'
+        + ' objective: window.__debug.objective(), hud: document.getElementById("hud-quest")?.textContent ?? "",'
+        + ' last: window.__debug.state().lastHarvest ?? null})');
+      check('five presses on five bales empty the camp and finish the job',
+        gathered === 5 && finished?.taken === 5 && /Return to/.test(String(finished?.hud ?? "")),
+        JSON.stringify({ gathered, finished: finished?.taken, hud: finished?.hud }).slice(0, 300));
+      check('and the job’s own state says the fifth bale is what finished it',
+        String(finished?.last?.count ?? '') === '5/5', JSON.stringify(finished?.last ?? null).slice(0, 160));
+      await page.screenshot(pathSafe(shots, 'harvest-camp.png')).catch(() => {});
+
+      // **The same camp, a second job.** Leaving the page is leaving the level: the camp is
+      // dressed again from the ground up, so a later posting at this cell finds all five.
+      const secondOffer = { ...harvestOffer, id: `${harvestOffer.id}:again`, offeredOn: 1,
+        harvest: { required: 5, taken: [] } };
+      const secondState = applyRadiantEvent(createRadiantState(), 'accept', { offer: secondOffer }).state;
+      await page.evalJs('window.__debug.pause(false)');
+      await page.evalJs(`localStorage.setItem('perfectarena.radiant',${JSON.stringify(JSON.stringify(secondState))})`);
+      await page.goto(campUrl);
+      await readyWild();
+      await page.evalJs('window.__debug.pause(true)');
+      const restocked = await page.evalJs('({camp: window.__debug.state().harvestCamp ?? null,'
+        + ' bales: window.__debug.state().loot.filter((s) => s.kind === "hay")})');
+      check('a second job at the same camp finds all five bales standing again',
+        (restocked?.bales ?? []).length === 5
+          && restocked.bales.every((bale) => bale.taken === false && bale.harvest?.questId === secondOffer.id),
+        JSON.stringify(restocked?.camp ?? restocked).slice(0, 300));
+      await page.evalJs('window.__debug.pause(false)');
+    }
 
     check('no console errors', realErrors(page.consoleErrors()).length === 0,
       realErrors(page.consoleErrors()).map((e) => e.text).join(' | ').slice(0, 400));

@@ -20,6 +20,7 @@ import { makeDungeonPlaySuite } from './suites/dungeonplay.mjs';
 import { makeExeSuite } from './suites/exe.mjs';
 import { makeMovementSuite } from './suites/movement.mjs';
 import { makeAutomapSuite } from './suites/automap.mjs';
+import { makePhoneSuite } from './suites/phone.mjs';
 import { makeBountiesSuite } from './suites/bounties.mjs';
 import { makeMainQuestSuite } from './suites/mainquest.mjs';
 import { makeTownsfolkSuite } from './suites/townsfolk.mjs';
@@ -28,6 +29,7 @@ import { makeWorldSuite } from './suites/world.mjs';
 import { makeWorldmapSuite } from './suites/worldmap.mjs';
 import { makeRegardSuite } from './suites/regard.mjs';
 import { makeMenuSuite } from './suites/menu.mjs';
+import { makeGuiSuite } from './suites/gui.mjs';
 import { makeStartSuite } from './suites/start.mjs';
 import { makeGearSuite } from './suites/gear.mjs';
 import { makeBestiarySuite } from './suites/bestiary.mjs';
@@ -600,8 +602,14 @@ async function suiteArenaInterior(page) {
   const vp = await page.evalJs('JSON.stringify({ w: window.innerWidth, h: window.innerHeight })').then(JSON.parse);
   const scale = Math.min(vp.w / 320, vp.h / 200);
   const statusLine = vp.h;   // the line the scene stands the art on (`placeWeapon`'s default)
+  // Its own frame — 320 × 200 at that one scale — is **centred horizontally** in a window
+  // wider than it, and the blade keeps the margin it has *inside* the frame (284 art pixels
+  // from the frame's left). The owner's own words for the difference, on a landscape phone:
+  // *"the first person attack animations should be at the center of the screen … and instead
+  // are at the right"*.
+  const frameLeft = (vp.w - 320 * scale) / 2;
   const want = {
-    x: Math.round(vp.w - (320 - 284) * scale),
+    x: Math.round(frameLeft + 284 * scale),
     y: Math.round(statusLine - (147 - 68) * scale),
     w: Math.round(35 * scale),
     h: Math.round(79 * scale),
@@ -1264,6 +1272,10 @@ const SUITES = {
   // inside a dungeon or a building is the level the player is lost in, drawn in the game's own
   // automap colours with its 3×3 arrow; a city and the country keep the world map.
   automap: makeAutomapSuite({ check, realErrors, getPort: () => PORT }),
+  // **The phone in hand** (`suites/phone.mjs`): Chrome's own touch emulation, a 412×915 window,
+  // real `Input.dispatchTouchEvent` touches — the lock a phone must never ask for, the message
+  // page put away, and a sheet that fits, magnifies and can always be left.
+  phone: makePhoneSuite({ check, getPort: () => PORT }),
   bounties: makeBountiesSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // And the whole main quest is its own flow: eighteen page loads, one `E` key per beat,
   // and the ending. It is the suite that proves the game can be finished.
@@ -1288,6 +1300,10 @@ const SUITES = {
   // (New Game, which has to go back through creation **in this page** — the player's folder
   // cannot survive a navigation).
   menu: makeMenuSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
+  // **The interface itself** (): the cutting table against a live page — the
+  // paintings really on the elements, no page inventing a colour, the scroll photographing as
+  // paper, and character creation's room following the race.
+  gui: makeGuiSuite({ check, realErrors, shots: SHOTS, getPort: () => PORT }),
   // The **start menu**, and the story's own beginning: the title screen, New Game's creation →
   // the king's betrayal → the cell, Ria's explanation owed by the save, and Continue resuming
   // without replaying her. It is a suite and not a hand probe because this is the flow every

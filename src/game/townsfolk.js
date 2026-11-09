@@ -162,10 +162,87 @@ export function viewFileFor(outfit, view) {
  * @returns {number} 1…5
  */
 export function viewFacing(facing, personX, personZ, camX, camZ) {
+  return viewFacingWithin(facingDelta(facing, personX, personZ, camX, camZ), 0, 0);
+}
+
+/**
+ * **Which side of a figure's body the eye is on**, in radians: negative to their left, positive to
+ * their right, wrapped to −π…π.
+ *
+ * This is the angle the five views are read from, and the one the mirror is read from — but not
+ * the same *number*. The view only needs the magnitude (view `k` is an angle off the heading), and
+ * the mirror only needs the sign. Handing the absolute angle to both, as the player's own body did,
+ * made the mirror's sine permanently non-negative: every turn drew the same half of the body, and walking
+ * round the player showed the left profile with the right profile's art (the owner, 2026-10-22:
+ * *"third person walking around in 360 is bugged"*).
+ *
+ * @param {number} facing @param {number} personX @param {number} personZ
+ * @param {number} camX @param {number} camZ
+ * @returns {number} −π…π
+ */
+export function facingOffset(facing, personX, personZ, camX, camZ) {
   const toCamera = Math.atan2(camX - personX, camZ - personZ);
-  let delta = Math.abs(toCamera - facing) % (Math.PI * 2);
-  if (delta > Math.PI) delta = Math.PI * 2 - delta;
-  return Math.min(5, Math.max(1, 1 + Math.round((4 * delta) / Math.PI)));
+  let offset = toCamera - facing;
+  while (offset > Math.PI) offset -= Math.PI * 2;
+  while (offset < -Math.PI) offset += Math.PI * 2;
+  return offset;
+}
+
+/**
+ * How far off a figure's own heading the eye is, from 0 (in front of them) to π (behind) — the
+ * magnitude of `facingOffset`, which is what the five views are measured against.
+ *
+ * @param {number} facing @param {number} personX @param {number} personZ
+ * @param {number} camX @param {number} camZ
+ * @returns {number} 0…π
+ */
+export function facingDelta(facing, personX, personZ, camX, camZ) {
+  return Math.abs(facingOffset(facing, personX, personZ, camX, camZ));
+}
+
+/**
+ * **Which of the five views shows the player's own body, with a dead band at every boundary.**
+ *
+ * `viewFacing` rounds to forty-five-degree steps, which is right for a person going about their
+ * day but flickers for the body the player is watching: walking forward while turning sweeps the
+ * camera across one boundary and back on alternate frames, and each crossing swapped the sheet.
+ * A change of view now has to stand more than `hysteresis` (radians) past the boundary between
+ * the two, so the body turns when the eye really has turned and holds still otherwise.
+ *
+ * @param {number} delta  `facingDelta`'s answer, 0…π
+ * @param {number} previous  the view drawn last frame
+ * @param {number} [hysteresis]
+ * @returns {1|2|3|4|5}
+ */
+export function viewFacingWithin(delta, previous, hysteresis = 0.10) {
+  const step = Math.PI / 4;
+  let view = Math.min(5, Math.max(1, Math.round(delta / step) + 1));
+  if (view !== previous) {
+    // The boundary the eye crossed: view `k` covers δ in `[(k-1.5)·step, (k-0.5)·step]`, so the
+    // edge between the lower view and the next one is `(min - 0.5)·step`.
+    const edge = (Math.min(view, previous) - 0.5) * step;
+    if (Math.abs(delta - edge) < hysteresis) view = previous;
+  }
+  return view;
+}
+
+/**
+ * **Whether the body is the mirrored copy, with the same kind of dead band.**
+ *
+ * The mirror is the sign of `sin(offset)`, so an eye that sits exactly on the player's own line
+ * flipped between the sheet and its mirror every frame. It has to cross by `hysteresis`.
+ *
+ * The argument is the **signed** `facingOffset` — negative to the figure's left — never its
+ * magnitude: `sin` of 0…π is never negative, and a body handed that can only ever be one way
+ * round.
+ *
+ * @param {number} offset `facingOffset`'s answer, −π…π
+ * @param {boolean} previous @param {number} [hysteresis]
+ * @returns {boolean}
+ */
+export function mirrorWithin(offset, previous, hysteresis = 0.12) {
+  const sign = Math.sin(offset);
+  return sign < 0 !== previous && Math.abs(sign) >= hysteresis ? sign < 0 : previous;
 }
 
 /**

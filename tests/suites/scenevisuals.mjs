@@ -45,8 +45,22 @@ export function makeSceneVisualsSuite({ check, realErrors, shots, getPort, decod
       `${JSON.stringify(lanterns)}, lights ${night.pointLights}`);
     await page.evalJs('window.__debug.sceneEffects(true,true); window.__debug.setClock(600); window.__debug.look(0,0.65)'); await paint();
     const sky = await shot('visual-sky-clean.png');
+    // **The sky is the world, not the interface.** The compass is `COMPASS.IMG` at 3×, and its
+    // crest is a painted red ornament — the strip is an instrument over the sky, so its own
+    // rectangle is cut out of the scan rather than counted as a streaked material.
+    const over = await page.evalJs(`(() => {
+      const box = (sel) => { const el = document.querySelector(sel); if (!el) return null;
+        const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+      return { compass: box('#compass'), hud: box('#hud'), vw: innerWidth };
+    })()`);
+    const dpr = sky.width / over.vw;
+    const onUi = (x, y) => ['compass', 'hud'].some((name) => {
+      const r = over[name];
+      return r && x >= r.x * dpr - 2 && x <= (r.x + r.w) * dpr + 2 && y >= r.y * dpr - 2 && y <= (r.y + r.h) * dpr + 2;
+    });
     let debugPixels = 0;
     for (let y = 0; y < sky.height * 0.3; y++) for (let x = 0; x < sky.width; x++) {
+      if (onUi(x, y)) continue;
       const i = (y * sky.width + x) * 4, r = sky.data[i], g = sky.data[i + 1], b = sky.data[i + 2];
       if ((r > 140 && r > g * 2.5 && r > b * 2.5) || (g > 140 && g > r * 2.5 && g > b * 2.5)) debugPixels++;
     }

@@ -239,6 +239,31 @@ export function makeCombatSuite({ check, realErrors, shots, getPort }) {
       `${standing.player} → ${standingLater.player}`);
     await page.screenshot(path.join(shots, 'm6-third-person.png'));
 
+    // ── the eye walking round the body shows both of its sides ──────────────
+    //
+    // The owner, 2026-10-22: *"third person walking around in 360 is bugged now both in pc and
+    // android"*. The five views are read from the **magnitude** of the angle between the body's
+    // heading and the eye, and the mirror from its **sign** — and the scene was handing the
+    // magnitude to both. `sin` of 0…π is never negative, so the body could only ever be drawn one
+    // way round: a full orbit showed views 5→4→3→2→1→2→3→4→5 with the same handedness on both
+    // halves, the left profile wearing the right profile's art. A whole circle is a law the unit
+    // test can state and this one can watch the page honour.
+    await page.pressKey('KeyW', true);
+    await new Promise((r) => setTimeout(r, 400));
+    await page.pressKey('KeyW', false);
+    await new Promise((r) => setTimeout(r, 250));
+    const orbit = [];
+    for (let i = 0; i < 24; i++) {
+      await page.evalJs(`window.__debug.look(${(i / 24) * Math.PI * 2}, 0)`);
+      await new Promise((r) => setTimeout(r, 90));
+      orbit.push(await page.evalJs('window.__debug.state().playerView'));
+    }
+    const orbitViews = [...new Set(orbit.map((v) => v?.view))].sort();
+    const orbitSides = [...new Set(orbit.map((v) => v?.mirrored))].sort();
+    check('a full turn of the eye shows all five views of the player\'s body, and both of its sides',
+      orbitViews.length === 5 && orbitSides.length === 2,
+      `views ${orbitViews.join(',')} — sides ${orbitSides.join(',')}: ${orbit.map((v) => `${v?.view}/${v?.mirrored}`).join(' ')}`);
+
     // ── the third-person camera does not enter walls ─────────────────────────
     // The old camera was a fixed 3.6 m behind the player, so a corridor put it inside the
     // masonry. The boom is now raycast from the player's head and shortened at the first

@@ -28,6 +28,7 @@ import { deserializeRadiantState, createRadiantState, serializeRadiantState } fr
 import { deserializeRegard, createRegardRecord, serializeRegard } from './regard.js';
 import { parseWorld, serializeWorld } from './worldState.js';
 import { createGuildState } from './guilds.js';
+import { normalizeLogbook } from './logbook.js';
 import { WORLD_GRID_VERSION, migrateWildCell } from './tamrielGrid.js';
 
 /** Where the last location's identity is remembered, so the map can return to it. */
@@ -46,6 +47,17 @@ export const REGARD_KEY = 'perfectarena.regard';
 export const WORLD_KEY = 'perfectarena.world';
 /** Guild memberships, ranks and earned standing, saved by the same JSON discipline. */
 export const GUILD_KEY = 'perfectarena.guilds';
+/** The Daggerfall-style logbook: the player's own notes beside the quest's journal. */
+export const LOGBOOK_KEY = 'perfectarena.logbook';
+
+/**
+ * The player's logbook, made safe. A missing or truncated record is an empty book, not an error.
+ * @returns {{version: number, nextId: number, notes: object[]}}
+ */
+export function loadLogbook() { return normalizeLogbook(read(LOGBOOK_KEY)); }
+
+/** Write the logbook; a browser that refuses storage loses the notes, never the game. */
+export function saveLogbook(book) { write(LOGBOOK_KEY, normalizeLogbook(book)); }
 
 export function loadWorldState() { return parseWorld(read(WORLD_KEY)); }
 export function saveWorldState(world) { write(WORLD_KEY, serializeWorld(world)); }
@@ -302,7 +314,7 @@ export function saveGuildState(state) {
 
 /** Forget everything. Used by the tests, and by a player who wants a new game. */
 export function clearSave() {
-  for (const key of [LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY, CHARACTER_KEY, REGARD_KEY, LOOT_KEY, WORLD_KEY, GUILD_KEY]) {
+  for (const key of [LAST_LOCATION_KEY, QUEST_KEY, RADIANT_KEY, CHARACTER_KEY, REGARD_KEY, LOOT_KEY, WORLD_KEY, GUILD_KEY, LOGBOOK_KEY]) {
     try { if (typeof localStorage !== 'undefined') localStorage.removeItem(key); } catch { /* nothing to do */ }
   }
 }

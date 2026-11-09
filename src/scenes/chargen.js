@@ -1,10 +1,20 @@
 // CHARACTER CREATION, ON SCREEN.
 //
-// The panel is a DOM layer over Arena's **own character-sheet art**: `charspel.img`
-// is a 320×200 screen with its own embedded palette (12-byte header, 64 000 pixels,
-// 768 palette bytes — FORMATS §6), and it is drawn as the backdrop the questions are
-// asked on. Nothing else about the look is invented: the questions, the answers and
-// the class the answers suggest are the game's data (FORMATS §10a).
+// **The room is Arena's own painting.** The character sheet is composed of a body per
+// race — `CHARBK0R.IMG` for a man, `CHRBKF0R.IMG` for a woman (`ArenaPortraitUtils::
+// getBody`, OpenTESArena, MIT) — and each one is a whole 320×200 scene, not a cut-out:
+// a village under the Breton's body, snow peaks under the Nord's, a monolith under the
+// dark elf's. The left half of every one of them is black, because that is where the
+// original put its own sheet. So this screen hangs the racing painting on the wall, puts
+// the creation page over that black half, and repaints when the race or the gender
+// changes — the same picture the game would show on the sheet of the character being
+// made. (It used to draw `CHARSPEL.IMG` across the window at 35% behind a flat slab,
+// and a canvas cannot be `object-fit`, so the 320×200 art was stretched to the window's
+// shape as well. Both are fixed.)
+//
+// The page itself is `PARCH.IMG`'s scroll, cut and nine-sliced by `game/arenaGui.js`;
+// the questions, the answers and the class the answers suggest are the game's data
+// (FORMATS §10a).
 //
 // The flow itself lives in `game/chargen.js` and knows nothing about the DOM, so the
 // order of events can be tested in Node and only the panel is browser code.
@@ -30,6 +40,8 @@ import {
 } from '../game/chargen.js';
 import { loadCharacter, saveCharacter } from '../game/save.js';
 import { playMusic } from '../game/musicPlayer.js';
+import { loadArenaGui } from '../game/arenaGui.js';
+import { PORTRAIT_RACES, drawCharacterPortrait } from '../game/characterPortrait.js';
 import { escapeHtml } from '../engine/ui/escape.js';
 
 /**
@@ -59,6 +71,32 @@ function toScreenImageData(indices, palette, width, height, fallback) {
 }
 
 /**
+ * The rectangle of a painting that is actually painted: the first and last column and row
+ * that are not the sheet's index 0. A character sheet is a body on a black page, and the page
+ * is the margin — this is what is left when the margin is taken off.
+ *
+ * @param {Uint8Array} indices
+ * @param {number} width @param {number} height
+ * @returns {{x:number, y:number, w:number, h:number}}
+ */
+function paintedBounds(indices, width, height) {
+  let left = width, right = -1, top = height, bottom = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (indices[y * width + x] === 0) continue;
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+    }
+  }
+  // A painting that is *all* index 0 has no picture in it; answer the whole sheet rather than a
+  // zero-width crop the canvas would refuse.
+  if (right < left || bottom < top) return { x: 0, y: 0, w: width, h: height };
+  return { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+}
+
+/**
  * Boot character creation.
  *
  * @param {HTMLCanvasElement} _canvas the game's GL canvas (unused here)
@@ -83,37 +121,141 @@ export async function bootChargen(_canvas, _renderer, params, status, source = n
     throw new Error('question.txt is not in this Arena install, so there is no questionnaire to ask');
   }
 
-  // ── the backdrop: Arena's own sheet art ────────────────────────────────────
-  let artCanvas = null;
-  try {
-    const art = await data.img('CHARSPEL.IMG');
-    if (art.width === 320 && art.height === 200) {
-      const palette = art.palette ?? await data.palette('CHARSHT.COL');
-      const image = toScreenImageData(art.indices, palette, art.width, art.height, palette);
-      artCanvas = document.createElement('canvas');
-      artCanvas.width = art.width;
-      artCanvas.height = art.height;
-      artCanvas.getContext('2d').putImageData(image, 0, 0);
+  // ── the page's paper, cut from the player's own copy of the game ───────────
+  // `arenaGui.js` publishes `PARCH.IMG`'s scroll and `MENU.IMG`'s ornaments as CSS
+  // variables (see `engine/ui/guiKit.js`); the creation page is one of the pages that
+  // wears them. A folder without the art leaves the stylesheet's fallback ink.
+  void loadArenaGui(data);
+
+  // ── the room: the race's own painted sheet ─────────────────────────────────
+  /** The last room painting drawn, so a re-render of the same step reads nothing. */
+  let roomKey = null;
+  /** What the room actually shows, for the debug seam and the tests. */
+  let roomInfo = null;
+  const roomCache = new Map();
+  /**
+   * The body painting for a race and gender, as a screen (index 0 opaque black).
+   * @param {string} raceId @param {string} gender
+   * @returns {Promise<{file: string, canvas: HTMLCanvasElement}|null>}
+   */
+  async function roomPainting(raceId, gender) {
+    const race = String(raceId ?? 'breton').toLowerCase().replace(/[\s_-]/g, '');
+    const index = Math.max(0, PORTRAIT_RACES.indexOf(race));
+    // **She is a portrait, and she is covered.** `CHRBKF0#.IMG` is Arena's character sheet and
+    // the owner's report is exact (2026-11-04): *"in the character creation if you chose a woman
+    // you can see her bare chest"*. A townswoman walking sprite is not a portrait either, so the
+    // room composes the same character-sheet figure the inventory uses (`characterPortrait.js`):
+    // the female body, her face, the install's **`FRSHIRT.IMG` robe** and `FPANTS.IMG` over it.
+    // The robe is the original's magic-class garment and has the high neckline the nonmagic
+    // shirt lacks; it is drawn after the body, so the portrait cannot fall back to the bare sheet.
+    if (gender === 'female') {
+      const file = `PORTRAIT:CHRBKF0${index}.IMG`;
+      if (roomCache.has(file)) return roomCache.get(file);
+      let made = null;
+      try {
+        const portrait = document.createElement('canvas');
+        const info = await drawCharacterPortrait(portrait, data, {
+          gender: 'female', raceId, maxSpellPoints: 1,
+          armour: { cuirass: 'plate-cuirass' },
+        });
+        const canvas = document.createElement('canvas');
+        canvas.width = portrait.width; canvas.height = portrait.height;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(portrait, 0, 0);
+        made = {
+          file, canvas, bounds: { x: 0, y: 0, w: canvas.width, h: canvas.height },
+          cover: info.files.shirt, body: info.files.body,
+          cuirass: info.equipment.find((layer) => layer.slot === 'cuirass')?.item ?? null,
+        };
+      } catch (err) {
+        console.warn(`[chargen] ${file} was not readable: ${err.message}`);
+      }
+      roomCache.set(file, made);
+      return made;
     }
-  } catch (err) {
-    // The art is a backdrop, not a dependency: the panel works without it.
-    console.warn(`[chargen] the character-sheet art was not readable: ${err.message}`);
+    const file = `CHARBK0${index}.IMG`;
+    if (roomCache.has(file)) return roomCache.get(file);
+    let made = null;
+    try {
+      const art = await data.img(file);
+      const palette = art.palette ?? await data.palette('CHARSHT.COL');
+      // **The picture, not the sheet.** Every one of these paintings is a 320×200 character
+      // sheet with the body standing in the right-hand part and index 0 (the page's black)
+      // around it. Hung whole, the plate would be a framed rectangle that is half empty; the
+      // crop below is the lit part the artist painted, found in the bytes rather than guessed.
+      const bounds = paintedBounds(art.indices, art.width, art.height);
+      const image = toScreenImageData(art.indices, palette, art.width, art.height, palette);
+      const sheet = document.createElement('canvas');
+      sheet.width = art.width; sheet.height = art.height;
+      sheet.getContext('2d').putImageData(image, 0, 0);
+      const canvas = document.createElement('canvas');
+      canvas.width = bounds.w; canvas.height = bounds.h;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(sheet, bounds.x, bounds.y, bounds.w, bounds.h, 0, 0, bounds.w, bounds.h);
+      made = { file, canvas, bounds };
+    } catch (err) {
+      // The room is scenery, not a dependency: a folder without this race's body art
+      // simply has no painting behind the page.
+      console.warn(`[chargen] ${file} was not readable: ${err.message}`);
+    }
+    roomCache.set(file, made);
+    return made;
   }
 
   // ── the DOM ────────────────────────────────────────────────────────────────
   const host = document.getElementById('chargen') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'chargen' }));
   host.innerHTML = '';
   host.classList.add('on');
+  // **The room has a wall.** The sheet is the plate on it; a second copy of the same painting,
+  // softened into the wall, is what stops the room being a black void around the page.
+  const roomWall = document.createElement('canvas');
+  roomWall.id = 'chargen-room';
+  host.appendChild(roomWall);
   const backdrop = document.createElement('canvas');
   backdrop.id = 'chargen-art';
-  if (artCanvas) { backdrop.width = artCanvas.width; backdrop.height = artCanvas.height; }
   host.appendChild(backdrop);
   const panel = document.createElement('div');
   panel.id = 'chargen-panel';
   host.appendChild(panel);
-  if (artCanvas) {
-    backdrop.getContext('2d').drawImage(artCanvas, 0, 0);
-    backdrop.style.display = 'block';
+
+  /**
+   * Hang the room the character is being made in — the race's own painting, redrawn only
+   * when the race or the gender moves.
+   * @returns {Promise<void>}
+   */
+  async function paintRoom() {
+    const key = `${creation.raceId}:${creation.gender}`;
+    if (key === roomKey) return;
+    roomKey = key;
+    const room = await roomPainting(creation.raceId, creation.gender);
+    // A race the player changed *again* while this read was in flight must not be painted
+    // over by the answer for the one before it.
+    if (key !== roomKey) return;
+    if (!room) {
+      roomInfo = null;
+      backdrop.classList.remove('on');
+      roomWall.classList.remove('on');
+      return;
+    }
+    backdrop.width = room.canvas.width;
+    backdrop.height = room.canvas.height;
+    const ctx = backdrop.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, backdrop.width, backdrop.height);
+    ctx.drawImage(room.canvas, 0, 0);
+    backdrop.classList.add('on');
+    // The wall is the same painting at the window's size, blurred by the stylesheet — the
+    // sheet's own stone and sky, not a second, unrelated texture.
+    roomWall.width = room.canvas.width;
+    roomWall.height = room.canvas.height;
+    roomWall.getContext('2d').drawImage(room.canvas, 0, 0);
+    roomWall.classList.add('on');
+    roomInfo = {
+      file: room.file, width: room.canvas.width, height: room.canvas.height,
+      crop: { ...room.bounds }, cover: room.cover ?? null, cuirass: room.cuirass ?? null,
+    };
   }
 
   const hasCharacter = Boolean(loadCharacter());
@@ -299,7 +441,8 @@ export async function bootChargen(_canvas, _renderer, params, status, source = n
    * install does not ship that family rather than drawn as a blank. The stage cycles the five
    * shipped angles plus the three mirrored ones, and Walk/Attack play the sheet's own frames;
    * the skin, hair and coat choices repaint the same art through `raceSkin.js`, so the preview
-   * and the figure in the world are one palette and one drawing.
+   * and the figure in the world are one palette and one drawing. A body with no strike sheet
+   * attacks in its own stride rather than borrowing another figure's clothes.
    */
   function renderAppearance() {
     stopPreview();
@@ -433,9 +576,11 @@ export async function bootChargen(_canvas, _renderer, params, status, source = n
     const attack = appearanceAttack(look, creation);
     const sprite = spriteById(look.spriteId);
     if (note) {
-      note.textContent = attack?.sameSheet
-        ? 'this body carries Arena\u2019s own strike frames'
-        : 'the town\u2019s clothes have no strike art; the blow borrows the unarmoured arms of the same sex';
+      note.textContent = attack?.strike
+        ? (attack.sameSheet
+          ? 'this body carries Arena\u2019s own strike frames'
+          : 'this body\u2019s strike is Arena\u2019s own art, in the same palette')
+        : 'this body has no strike art; it moves in its own frames, so the face and clothes never change';
     }
     let tick = 0;
     const paint = async () => {
@@ -573,6 +718,9 @@ export async function bootChargen(_canvas, _renderer, params, status, source = n
 
   function render() {
     if (step !== 'appearance') stopPreview();
+    // The room follows the race and the gender, on every step: a player who picks the dark
+    // elf on the identity page sees the dark elf's own painting behind the page at once.
+    void paintRoom();
     if (step === 'intro') renderIntro();
     else if (step === 'questions') renderQuestion();
     else if (step === 'identity') renderIdentity();
@@ -617,7 +765,7 @@ export async function bootChargen(_canvas, _renderer, params, status, source = n
       suggested: verdict().suggested.class,
       notice: notice || null,
       appearance: { ...look, sprite: spriteById(look.spriteId)?.label ?? null },
-      art: artCanvas ? { width: artCanvas.width, height: artCanvas.height } : null,
+      art: roomInfo ? { ...roomInfo } : null,
     }),
     /** The question on screen, exactly as the panel shows it. */
     question: () => {

@@ -3,11 +3,13 @@
 // The owner, played side by side with the real Arena: *"in morrowind mostly dark elf npcs in skyrim
 // mostly nords … all provinces should have a mix of people but mostly their race of people"*. Arena
 // ships one human body and no per-race art, so `src/game/raceSkin.js` makes a race **visible as
-// skin colour** by recolouring the install's own palette: the six `PAL.COL` entries the citizen
-// sheets paint skin with — **229, 231, 232, 234, 235, 236**, holding `#bb9477 #aa765f #9c6854
-// #7e4a3c #673b30 #5a2d24` light to dark, measured off the sheets themselves (`.scratch/raceprobe.mjs`
-// decodes `MLGEN01W.CFA`, histograms its indices and reads each one's `PAL.COL` triple: 14, 18, 27,
-// 55, 6 and 4 pixels) — are rescaled between a race's own two anchors.
+// skin colour** by recolouring the install's own palette: the ten `PAL.COL` entries the citizen
+// sheets paint skin with — **224, 226, 227, 229, 231, 232, 234, 235, 236, 237**, holding
+// `#d3cbb3 #cdba9b #d4b28f #bb9477 #aa765f #9c6854 #7e4a3c #673b30 #5a2d24 #4d1e18` light to
+// dark, measured off the sheets themselves
+// (`.scratch/raceprobe.mjs` decodes `MLGEN01W.CFA`, histograms its indices and reads each one's
+// `PAL.COL` triple; 227 is the face/hand highlight measured on `11MAGWLK.CFA` and the barbarian's
+// belly on `01BARWLK.CFA`) — are rescaled between a race's own two anchors.
 //
 // These checks hold the two halves that could silently go wrong: **the recolour moves the skin and
 // nothing else** (a townsman's clothes, armour, boots and hair are the install's own bytes, exactly),
@@ -225,12 +227,12 @@ test('a cat\u2019s coat is its own, drawn from the same identity as its face, an
 
 // ── the ladder is the install's own ─────────────────────────────────────────────────────────
 
-test('the skin ladder is six of the install\u2019s palette entries, ascending, light to dark', () => {
-  assert.deepEqual([...SKIN_LADDER], [229, 231, 232, 234, 235, 236]);
+test('the skin ladder is ten of the install\u2019s palette entries, ascending, light to dark', () => {
+  assert.deepEqual([...SKIN_LADDER], [224, 226, 227, 229, 231, 232, 234, 235, 236, 237]);
   for (let i = 1; i < SKIN_LADDER.length; i++) {
     assert.ok(SKIN_LADDER[i] > SKIN_LADDER[i - 1], `entry ${i} steps up from the one before`);
   }
-  // The run is one material's shading: every step is darker than the one above it, and the six
+  // The run is one material's shading: every step is darker than the one above it, and the ten
   // live inside a narrow band of the table (not spread across the image's whole range).
   for (let i = 1; i < ARENA_SKIN.length; i++) {
     assert.ok(lum(ARENA_SKIN[i]) < lum(ARENA_SKIN[i - 1]),
@@ -241,7 +243,7 @@ test('the skin ladder is six of the install\u2019s palette entries, ascending, l
 });
 
 test('the ladder is exactly what the install\u2019s PAL.COL holds at those indices', { skip: noInstall }, () => {
-  // The provenance pin: the module's six triples are the file's own bytes, not typed out by hand.
+  // The provenance pin: the module's triples are the file's own bytes, not typed out by hand.
   const col = parseCol(new Uint8Array(fs.readFileSync(path.join(ARENA, 'PAL.COL'))));
   SKIN_LADDER.forEach((index, i) => {
     const at = index * 3;
@@ -252,7 +254,7 @@ test('the ladder is exactly what the install\u2019s PAL.COL holds at those indic
 
 // ── the recolour moves the skin and nothing else ────────────────────────────────────────────
 
-test('a recolour rewrites the six skin entries and leaves every other byte alone', () => {
+test('a recolour rewrites the ten skin entries and leaves every other byte alone', () => {
   const before = Uint8Array.from(BASE);
   const out = skinPaletteFor('darkElf', BASE);
   assert.ok(out instanceof Uint8Array, 'a recoloured palette is a new table');
@@ -265,7 +267,7 @@ test('a recolour rewrites the six skin entries and leaves every other byte alone
     if (skinAt.has(i)) { moved++; continue; }
     assert.equal(out[i], before[i], `byte ${i} (index ${Math.floor(i / 3)}) is the install\u2019s own`);
   }
-  assert.equal(moved, SKIN_LADDER.length * 3, 'exactly the ladder\u2019s eighteen bytes moved');
+  assert.equal(moved, SKIN_LADDER.length * 3, 'exactly the ladder\u2019s thirty bytes moved');
   // …and the ones that moved are the race's ramp, not something nearby.
   ladderFor('darkElf').forEach((triple, i) => {
     const at = SKIN_LADDER[i] * 3;
@@ -519,6 +521,18 @@ test('the walking families are the ones the changer paints, and the watch is not
   // gold run, boots and belt included, rather than leaving the mane two-tone.
   assert.deepEqual(hairFamilyOf('GUARD01.CFA')?.run, [190, 204, 205, 209, 211, 212, 213, 214, 215, 216, 217, 218]);
   assert.equal(hairFamilyOf('GUARD01.CFA')?.whole, true);
+  // **A roster figure's other actions are the same figure** (2026-10-22): an archer walks from
+  // `0#PLTWLK.CFA` and looses from `01PLTBOW.CFA` (`game/humans.js`'s `rosterFile`), so the same
+  // head has to be the same colour in both. Only the forward-facing `01` files ship for the two
+  // actions, which the family allows.
+  assert.equal(hairFamilyOf('01PLTBOW.CFA')?.key, 'ROSTER_M');
+  assert.equal(hairFamilyOf('01PLTATT.CFA')?.key, 'ROSTER_M');
+  assert.equal(hairFamilyOf('11MAGWLK.CFA')?.key, 'ROSTER_MAG_W');
+  assert.equal(hairFamilyOf('11MAGATT.CFA')?.key, 'ROSTER_MAG_W');
+  assert.equal(hairFamilyOf('01MAGWLK.CFA')?.run.length, 0, 'the man mage\u2019s hood is not a hair run');
+  assert.equal(hairFamilyOf('11MNKATT.CFA')?.key, 'ROSTER_ROBE');
+  assert.equal(hairFamilyOf('01MNKWLK.CFA')?.key, 'ROSTER_MNK_M', 'the man monk has a fringe of his own');
+  assert.equal(hairFamilyOf('11CHNBOW.CFA')?.key, 'ROSTER_W');
   for (const name of ['KING.IMG', 'MAN01.DFA', 'MLGEN01F.CFA', null, '']) {
     assert.equal(hairFamilyOf(name), null, `${name} belongs to no walking family`);
   }
@@ -679,9 +693,40 @@ test('the install’s own sheets report their hair, and the dress is not hair', 
   // the head band, and the mage's robe keeps its embroidery.
   assert.deepEqual(hairOf('01BARWLK.CFA'), [], 'the barkeep paints no head above the line');
   assert.ok(hairOf('01CHNWLK.CFA').includes(192) && hairOf('01CHNWLK.CFA').includes(198));
-  // …and what is *worn* is not hair: the mage's grey hood (17–23), the barkeep's dark cloth
-  // (51, 107–112), and the watch's helm stay exactly as the install painted them.
-  assert.ok(!hairOf('01MAGWLK.CFA').some((i) => i >= 17 && i <= 23), 'a hood is not hair');
+  // **The woman mage's white head is hair; the man's same run is a hood.** `11MAGWLK` paints
+  // 16–22 down the sides and back of her head and `11MAGATT` paints the same run plus 23; naming
+  // the whole run keeps the walk and the strike one palette. `01MAGWLK`'s 16–23 is a closed
+  // outline around the face with no hair below it, so it is deliberately not a head.
+  // **Seventeen entries, in tone order**: 24/25 are the last grey strands of the contiguous run
+  // (`11MAGATT` 24 on rows 0–5, `11MAGWLK` 25 down the sides), and 180–184/186/187 are the second
+  // cool-grey run her other angles paint (`12MAGWLK` 180–184 at the crown, `11MAGSWD`
+  // 183/184/186/187 down the back). Sorted by index the second run would be painted with the
+  // darkest steps, which is why the family's order is the ramp's order.
+  const mageHair = [16, 17, 18, 180, 19, 181, 20, 182, 21, 183, 184, 22, 23, 186, 187, 24, 25];
+  assert.deepEqual(
+    hairOf('11MAGWLK.CFA'),
+    mageHair,
+    'the woman mage\u2019s white head, both grey runs included',
+  );
+  assert.deepEqual(
+    hairOf('11MAGATT.CFA'),
+    mageHair,
+    'and her strike\u2019s head is the same run',
+  );
+  assert.deepEqual(hairOf('12MAGWLK.CFA'), mageHair, 'the body that paints the second grey run answers the same ramp');
+  assert.deepEqual(hairOf('01MAGWLK.CFA'), [], 'the man mage wears a hood, not hair');
+  // **The woman monk's red head is the same on both actions.**
+  assert.deepEqual(hairOf('11MNKWLK.CFA'), [132, 140, 141, 142, 143, 144]);
+  assert.deepEqual(hairOf('11MNKATT.CFA'), [132, 140, 141, 142, 143, 144], 'her strike keeps exactly the same head');
+  // **The man monk's fringe** (2026-11-04): the side hair is 237 (the dark red mass) and 133 (its
+  // auburn highlight), with 190 on the strike. 191 is the **robe's outline** — the owner caught the
+  // first fix: *"changed part of his dress instead of his hair"* — so it stays out of the run.
+  const monkMan = [133, 237, 190];
+  assert.deepEqual(hairOf('01MNKWLK.CFA'), monkMan, 'the man monk\u2019s side fringe is the whole run');
+  assert.deepEqual(hairOf('01MNKATT.CFA'), monkMan, 'and his strike answers the same three entries');
+  assert.ok(!monkMan.includes(191), 'the robe\u2019s outline is not hair');
+  // …and what is *worn* is not hair: the barkeep's dark cloth (51, 107–112), and the watch's
+  // helm stay exactly as the install painted them.
   // **A guard's mane is hair**, and it shares its ramp with the gold trim (see the family above).
   assert.deepEqual(hairOf('GUARD01.CFA'), [204, 205, 212, 214, 216, 217, 218]);
   assert.deepEqual(hairOf('GUARD05.CFA'), [204, 205, 209, 212, 214, 216, 217, 218]);

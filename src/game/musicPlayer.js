@@ -1,9 +1,16 @@
 // THE MUSIC PLAYER — Arena's own songs, decoded and played over WebAudio.
 //
 // `game/arenaMusic.js` is the law and the reader (which file for which place, and an XMIDI stream
-// as timed notes). This is the browser half: fetch the record from the install through the same
-// `/arena-local` door the fanfare and the level's `@SOUND` clips use, parse it once, and play it as
-// a loop built out of oscillator notes.
+// as timed notes). This is the browser half: **read the record through the game's own source**
+// (loose file, then `GLOBAL.BSA` — where every `.XMI` lives), parse it once, and play it as a loop
+// built out of oscillator notes.
+//
+// **The song comes from the same folder as the sounds** (`setMusicSource`). It used to be fetched
+// from `/arena-local/<NAME>?arena=…` — this project's dev server mount — which is why the owner's
+// Cloudflare deployment played every effect and no music: a picked folder is not a URL, so the
+// music's only door led nowhere. `main.js` hands the chosen source in at boot, and the
+// `/arena-local` fetch stays as the fallback for a page with no source (`?arena=` tests, and a
+// module used on its own).
 //
 // Arena's soundtrack is XMIDI with FM instrument programs; there are no samples to decode. A
 // faithful FM bank is a much bigger thing than this needs, so each program family gets a small
@@ -20,9 +27,30 @@
 // point answers `null`/false rather than throwing.
 
 import { officialTrackSeconds, parseXmi } from './arenaMusic.js';
+import { sourceReader } from '../arena/arenaData.js';
 
 /** Parsed songs, by upper-case file name — one parse per page per song. */
 const songs = new Map();
+/**
+ * The game's own byte reader, handed in by `main.js` (`setMusicSource`): loose file, then
+ * `GLOBAL.BSA`. Null on a page that never gave the music one, and then the `/arena-local`
+ * fallback in `songBytes` is the door.
+ */
+let readSongBytes = null;
+
+/**
+ * **Tell the music where the game's files are.** Once per source, at boot and after a re-pick.
+ *
+ * @param {import('../arena/arenaData.js').ArenaSource|null} source
+ */
+export function setMusicSource(source) {
+  try { readSongBytes = source ? sourceReader(source) : null; } catch { readSongBytes = null; }
+  // A new folder is a new install: songs read from the old one are not this one's.
+  songs.clear();
+}
+
+/** Whether a source has been handed in (the seam a page test reads). */
+export const musicSourceReady = () => typeof readSongBytes === 'function';
 /** The live AudioContext, made on the first song. */
 let ctx = null;
 /** The mix bus: every song and jingle goes through one compressor, so a dense chord cannot clip. */
@@ -63,11 +91,20 @@ const MASTER = 0.9;
  * turns it off should be obeyed on the next page too.
  */
 export const MUSIC_VOLUME_KEY = 'pa.music.volume';
-const DEFAULT_VOLUME = 0.8;
+/**
+ * **A new player hears the score at full level.** The owner, 2026-11-04: *"when you start the game
+ * for the first time the sound and music is to 100% and not 0"*. It was 0.8, and the absent-key
+ * read below turned a first visit into 0 — `Number(null)` is 0, and 0 is a finite number — so the
+ * default was never heard: a fresh page muted the score.
+ */
+const DEFAULT_VOLUME = 1;
 
 function storedVolume() {
   try {
     const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(MUSIC_VOLUME_KEY) : null;
+    // **No stored level means no choice yet**, not a mute: only a real number is the player's
+    // own, and an absent key falls to the default above. A stored "0" is still obeyed.
+    if (raw === null || raw === '') return DEFAULT_VOLUME;
     const n = Number(raw);
     return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : DEFAULT_VOLUME;
   } catch { return DEFAULT_VOLUME; }
@@ -222,20 +259,47 @@ export function noteHz(note) {
 }
 
 /**
+ * **One song's bytes**, from the game's own source first and the dev mount second.
+ *
+ * `setMusicSource`'s reader is the same lookup every other file goes through (`arenaData.js`:
+ * loose file, then `GLOBAL.BSA`), which is where the `.XMI` records actually live — so a picked
+ * folder, a served checkout and a static deployment all answer the same way. A page with no
+ * source (a module driving `playMusic` on its own, a suite with `?arena=`) keeps the old
+ * `/arena-local` door.
+ *
+ * @param {string} key upper-case 8.3 name
+ * @param {string} arenaPath the dev door's `?arena=` path, for the fallback
+ * @returns {Promise<Uint8Array|null>}
+ */
+async function songBytes(key, arenaPath) {
+  if (readSongBytes) {
+    try {
+      const bytes = await readSongBytes(key);
+      if (bytes?.length) return bytes;
+    } catch { /* a source that cannot answer: the dev door below is the fallback */ }
+  }
+  try {
+    const res = await fetch(`/arena-local/${key}?arena=${encodeURIComponent(arenaPath)}`);
+    if (!res.ok) return null;
+    return new Uint8Array(await res.arrayBuffer());
+  } catch { return null; }
+}
+
+/**
  * Fetch, parse and cache one song.
  *
  * @param {string} name  e.g. `TAVERN.XMI`
  * @param {string} arenaPath  the dev door's `?arena=` path
  * @returns {Promise<object|null>}
  */
-async function loadSong(name, arenaPath) {
+export async function loadSong(name, arenaPath) {
   const key = name.toUpperCase();
   if (songs.has(key)) return songs.get(key);
   const pending = (async () => {
     try {
-      const res = await fetch(`/arena-local/${key}?arena=${encodeURIComponent(arenaPath)}`);
-      if (!res.ok) return null;
-      const song = parseXmi(new Uint8Array(await res.arrayBuffer()));
+      const bytes = await songBytes(key, arenaPath);
+      if (!bytes) return null;
+      const song = parseXmi(bytes);
       if (!song) return null;
       // **The official track is the loop.** The decoded stream keeps the file's silent tail
       // and sparse outro (SUNNYDAY's last event is at 2:12 against a 0:48 track), so the

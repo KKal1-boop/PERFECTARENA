@@ -110,5 +110,6 @@ test('Continue resumes the save\'s own last place, and drops the menu\'s own key
   assert.equal(nowhere.get('interior'), null);
 });
 
-// The opening is no longer gated per tab: every new game plays `INTRO.FLC`, and the cell
-// always owes Ria's explanation (`unit/storyscript`), so a reload cannot swallow either.
+// The opening is the start-up's card — `INTRO.FLC` before the title screen, once per session
+// (`game/cutscene.js`'s `STARTUP_STEPS`). A new game goes straight to the cell, which always
+// owes Ria's explanation (`unit/storyscript`), so a reload cannot swallow either.

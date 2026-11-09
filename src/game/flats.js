@@ -237,6 +237,8 @@ export function isFolkArt(name) {
  *   chest, a key, a corpse (`game/dungeonItems.js` carries the table)
  * @property {number} modifier  the record's own `F:` scale flag (1, 1.5 or 3), which
  *   `flatSize` multiplies a static flat's density by
+ * @property {'dry'|'wet'|'lava'|true|null} chasm  the cell's own chasm kind, when its floor is one —
+ *   what makes the flat a thing **standing on water** rather than on ground (`flatBaseY`)
  */
 
 /**
@@ -291,7 +293,8 @@ export function collectFlats(level, inf) {
     // only way to say "this flat is three times a flat", read here so a map that uses it is
     // drawn at its own size. This install uses none.
     const modifier = record?.scaleModifier ?? 1;
-    flats.push({ row: cell.z, col: cell.x, flatIndex: found.index, name, on: found.on, yOffset, itemIndex, modifier });
+    flats.push({ row: cell.z, col: cell.x, flatIndex: found.index, name, on: found.on, yOffset, itemIndex, modifier,
+      chasm: cell.floor?.chasm ?? null });
   }
 
   /** @type {Map<string, FlatCell[]>} */
@@ -335,7 +338,8 @@ export function collectFlats(level, inf) {
  * and the ceiling minus the art's height for a hanging one.
  *
  * @param {number} yOffset  the `.INF` flat record's `Y`
- * @param {{height: number, floorY: number, ceilingY: number}} room  in world units
+ * @param {{height: number, floorY: number, ceilingY: number, onWater?: boolean}} room  in world
+ *   units; `onWater` — the cell under the flat is a chasm (`collectFlats`'s `chasm`)
  * @returns {number} the billboard's base, i.e. the flat's bottom
  */
 /**
@@ -367,8 +371,17 @@ export function flatGroundY(cell, { floorY, cellSize = 1 } = {}) {
 }
 
 export function flatBaseY(yOffset, room) {
-  const { height, floorY, ceilingY } = room;
+  const { height, floorY, ceilingY, onWater = false } = room;
   if (yOffset < 0) return Math.max(floorY, ceilingY - height);
+  // **A flat standing on water stands ON it** — the one thing this install's `Y` does not mean
+  // over a chasm. The wilderness's own records with a positive `Y` are exactly the aquatic ones:
+  // `THRUSH01/02` (the corn/reeds that grow in the shallows) and `BOATSIDE`/`BOATQURT` (the
+  // harbour's boats), measured across every `.RMD` the install ships — all 435 corn flats and
+  // every boat sit on a wet cell. Lifted by their `Y`'s share of the room they stood **half a
+  // metre over the water**, the reported *"THRUSH01 and THRUSH02 … are floating midair"*, and a
+  // boat hovered over its own harbour. The surface is the ground those pictures are drawn from,
+  // so the offset has nothing to lift them off and the base is the water line itself.
+  if (onWater) return floorY;
   if (!yOffset) return floorY;
   return floorY + Math.max(0, ceilingY - floorY) * (yOffset / 100);
 }

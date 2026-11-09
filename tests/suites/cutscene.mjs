@@ -74,9 +74,20 @@ export function makeCutsceneSuite({ check, realErrors, shots, getPort, decodePng
       { label: 'the movie again', timeoutMs: 30000 });
     await page.pressKey('Escape');
     await page.pressKey('Escape', false);
+    await page.waitFor('document.getElementById("cutscene-skip-hint") && !document.getElementById("cutscene-skip-hint").hidden', { label: 'the skip confirmation', timeoutMs: 5000 });
+    const skipHint = await page.evalJs(`(() => {
+      const h = document.getElementById('cutscene-skip-hint');
+      const r = h.getBoundingClientRect();
+      return { text: h.textContent, hidden: h.hidden, right: Math.round(innerWidth - r.right), bottom: Math.round(innerHeight - r.bottom) };
+    })()`);
+    check('the first input only shows “click again to skip” at the bottom-right',
+      skipHint.text === 'click again to skip' && skipHint.hidden === false
+      && skipHint.right < 40 && skipHint.bottom < 40, JSON.stringify(skipHint));
+    await page.pressKey('Escape');
+    await page.pressKey('Escape', false);
     await page.waitFor('window.__debug.cutscene().done === true', { label: 'the skip', timeoutMs: 10000 });
     const skipped = await movieState();
-    check('a real key skips the movie the way a player escapes a cutscene they have seen',
+    check('a second real key skips the movie, as a player who has seen it would',
       skipped.skipped === true && skipped.framesDrawn < 28, JSON.stringify({ frames: skipped.framesDrawn, skipped: skipped.skipped }));
 
     // ── a skip while the file is still arriving ──────────────────────────────
@@ -92,6 +103,7 @@ export function makeCutsceneSuite({ check, realErrors, shots, getPort, decodePng
     const early = JSON.parse(await page.evalJs(`(async () => {
       const { showMovie } = await import('/src/scenes/cutscenePlayer.js');
       const playing = showMovie('WALK.FLC', { arenaPath: ${JSON.stringify(arena)} });
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
       const result = await playing;
       return JSON.stringify({ skipped: result.skipped, frames: result.frames, requested: result.state?.requested ?? null, played: result.played });

@@ -20,7 +20,7 @@ import { ArenaData } from '../../src/arena/arenaData.js';
 import { nodeSource } from '../../tools/lib/nodeSource.mjs';
 import {
   ARMOUR_WORDS, describePerson, folkCountFor, folkFromListing,
-  balanceHousehold, outfitsFromFolk, placeTownsfolk, sexOfArt, viewFacing, viewFileFor,
+  balanceHousehold, facingOffset, outfitsFromFolk, placeTownsfolk, sexOfArt, mirrorWithin, viewFacing, viewFacingWithin, viewFileFor,
 } from '../../src/game/townsfolk.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
@@ -171,6 +171,80 @@ test('which angle shows a person depends on where they look and where you stand'
     const view = viewFacing(yaw, 0, 0, 3, 3);
     assert.ok(view >= 1 && view <= 5, `${yaw} → ${view}`);
   }
+});
+
+test('the player’s own body does not flicker at a facing boundary (D-94)', () => {
+  // The owner, 2026-10-22: *"when you move your visual in third person and are walking forward
+  // your character flickers too much. if you dont move your visual it stays still"*. The five
+  // views are 45° apart, and a camera held exactly on a boundary — which is what walking forward
+  // while turning does, frame after frame — flipped the body between two sheets.
+  const step = Math.PI / 4;
+  const edge = step / 2;                   // the boundary between view 1 and view 2 (22.5°)
+  // A wobble either side of the boundary keeps the view it had.
+  assert.equal(viewFacingWithin(edge + 0.04, 1), 1, 'a hair past the boundary stays');
+  assert.equal(viewFacingWithin(edge - 0.04, 2), 2, 'and so does the other side');
+  // A real turn crosses it at once.
+  assert.equal(viewFacingWithin(edge + 0.3, 1), 2, 'a turn of 17° shows the next side');
+  // Away from any boundary the plain reading stands.
+  assert.equal(viewFacingWithin(0, 5), 1, 'in front is view 1');
+  assert.equal(viewFacingWithin(Math.PI, 1), 5, 'behind is view 5');
+  // **The mirror has the same dead band**, and it is the one that flipped the picture
+  // horizontally: the sign of `sin` at the player's own line.
+  assert.equal(mirrorWithin(0.05, false), false, 'a hair one way does not mirror');
+  assert.equal(mirrorWithin(-0.05, true), true, 'and a hair the other does not unmirror');
+  assert.equal(mirrorWithin(-0.4, false), true, 'a real turn does mirror');
+  assert.equal(mirrorWithin(0.4, true), false, 'and unmirrors again');
+  // Sweeping the camera across a boundary in small steps — the reported flicker — must change
+  // the drawn body a handful of times, not once per frame.
+  let view = 1;
+  let mirror = false;
+  let changes = 0;
+  for (let i = 0; i < 120; i++) {
+    const delta = edge + Math.sin(i * 0.9) * 0.05;   // ±3° wobble astride the boundary
+    const next = viewFacingWithin(delta, view);
+    if (next !== view) changes++;
+    view = next;
+    const nextMirror = mirrorWithin(delta, mirror);
+    if (nextMirror !== mirror) changes++;
+    mirror = nextMirror;
+  }
+  assert.equal(changes, 0, `a 3° wobble changed the body ${changes} times`);
+});
+
+test('walking the eye all the way round the player shows both halves of the body (D-100)', () => {
+  // The owner, 2026-10-22: *"third person walking around in 360 is bugged now both in pc and
+  // android"*. The five views take the **magnitude** of the angle between the body's heading and
+  // the eye; the mirror takes the **sign**. The scene fed `facingDelta` (a magnitude) to
+  // `mirrorWithin`, whose sine is therefore never negative, so the mirror was pinned to `false`
+  // and one side of every turn wore the other side's art. Both numbers come from one signed
+  // angle now, and this is the law that was broken.
+  const radius = 3;
+  /** The body's own sheet for an eye `deg` round a body facing +z, read the way the scene reads it. */
+  const drawn = (deg, previous = { view: 1, mirror: false }) => {
+    const a = (deg * Math.PI) / 180;
+    const offset = facingOffset(0, 0, 0, Math.sin(a) * radius, Math.cos(a) * radius);
+    return {
+      view: viewFacingWithin(Math.abs(offset), previous.view, 0),
+      mirror: mirrorWithin(offset, previous.mirror, 0),
+    };
+  };
+  // The same angle on either side of the body is the same *view* and the opposite *picture*.
+  for (const deg of [30, 60, 120, 150]) {
+    const right = drawn(deg, { view: drawn(0).view, mirror: false });
+    const left = drawn(-deg, { view: drawn(0).view, mirror: false });
+    assert.equal(right.view, left.view, `${deg}° either way is view ${right.view}`);
+    assert.notEqual(right.mirror, left.mirror, `${deg}° either way draws different halves of the body`);
+  }
+  // A whole circle passes through all five views and both sides — never one side only.
+  let view = 1, mirror = false;
+  const seen = new Set();
+  for (let deg = 0; deg < 360; deg += 5) {
+    const next = drawn(deg, { view, mirror });
+    view = next.view; mirror = next.mirror;
+    seen.add(`${view}/${mirror}`);
+  }
+  assert.deepEqual([...new Set([...seen].map((s) => s.split('/')[0]))].sort(), ['1', '2', '3', '4', '5']);
+  assert.deepEqual([...new Set([...seen].map((s) => s.split('/')[1]))].sort(), ['false', 'true']);
 });
 
 test('every townsperson the game places knows their outfit and where they are looking', () => {

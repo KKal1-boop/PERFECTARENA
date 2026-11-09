@@ -450,12 +450,18 @@ export const ART_BASELINE = 147;
  *     window (what a real VGA mode did to a 4:3 monitor) stretched the art away from its
  *     own proportions on any other window, which is the reported "cut and floating
  *     mid-screen".
- *   * **The art keeps its own margins**, measured from the window rather than from a
- *     letterboxed 320 × 200 box: its right edge is the original's own `320 − (xOffset + width)`
- *     from the right of the window (`SWORD.CIF`'s idle blade sits 1 art pixel off it), and
- *     its bottom edge stands on the status line (`ART_BASELINE`), which in the port is the
- *     top of the HUD panel. `SWORD.CIF`'s mid-air slash frames (`yOffset + height` 139) keep
- *     the 8-pixel gap above that line the art gives them, because the rule is the *line*, not
+ *   * **The art keeps its own margins, inside the original's own frame.** The frame is
+ *     320 × 200 at that one scale, and it is **centred horizontally** in a window that is
+ *     wider than it — a landscape phone (915 × 412) fits the frame to its height, 660 px of
+ *     a 915-px window, and gluing the art to the window's right edge put every swing on the
+ *     far right of a handset the player holds in two hands (the owner, 2026-10-22: *"the
+ *     first person attack animations should be at the center of the screen even if the phone
+ *     is horizontal and instead are at the right"*). The original is a 4:3 screen with black
+ *     to the sides on a wider one; the weapon is drawn in *that* screen, not stretched onto
+ *     the glass.
+ *   * **Its bottom edge stands on the status line** (`ART_BASELINE`), which in the port is the
+ *     window's bottom edge; `SWORD.CIF`'s mid-air slash frames (`yOffset + height` 139) keep
+ *     the 8-pixel gap above the line the art gives them, because the rule is the *line*, not
  *     "pin the bottom of the picture".
  *
  * @param {{xOffset: number, yOffset: number, width: number, height: number}} art
@@ -471,8 +477,10 @@ export function placeWeapon(art, screen) {
   const yOffset = Number(art?.yOffset) || 0;
   const w = (Number(art?.width) || 0) * scale;
   const h = (Number(art?.height) || 0) * scale;
-  // Right edge: the original's margin from the screen's right, scaled.
-  const x = winW - (SCREEN.width - xOffset) * scale;
+  // Left edge: the 320-wide frame's own left in the window, plus the frame's offset for this
+  // art. A window narrower than the frame (portrait) has no slack and starts at zero.
+  const frameLeft = (winW - SCREEN.width * scale) / 2;
+  const x = frameLeft + xOffset * scale;
   // Bottom edge: the original's own distance *above* the status line, scaled.
   const y = baseline - (ART_BASELINE - yOffset) * scale;
   return {

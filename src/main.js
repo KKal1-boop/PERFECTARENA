@@ -18,9 +18,9 @@
 //
 // A URL that asks for **nothing** opens Arena's **start menu** — the install's title screen,
 // Continue or New Game (`scenes/startMenu.js`). New Game is Arena's own first ten minutes:
-// creation, the king's betrayal (`INTRO.FLC`), and a locked cell in the Imperial Dungeons
-// where Ria Silmane explains what happened (`game/startFlow.js`, `game/storyScript.js`). A URL
-// that names a scene is a deep link and is taken at its word.
+// the opening scroll and nine-panel history, creation, and a locked cell in the Imperial
+// Dungeons where Ria Silmane explains what happened (`game/startFlow.js`,
+// `game/storyScript.js`). A URL that names a scene is a deep link and is taken at its word.
 //
 // Arena's data is read at runtime from a folder the *player* picks; nothing is
 // bundled with the game. See docs/DECISIONS.md D9 and docs/ARCHITECTURE.md §1.
@@ -33,6 +33,11 @@ import { CELL_DREAM } from './game/storyScript.js';
 // of its own (`game/startFlow.js`) so it can be tested without a renderer; this file only
 // boots what it decides.
 import { destinationParams, isGameStart, resumeParams } from './game/startFlow.js';
+// **The music reads the same folder the sounds do** (`game/musicPlayer.js`). A song is a record
+// inside `GLOBAL.BSA`, and the player's folder is not a URL: without this hand-off the music
+// asked `/arena-local/` — this project's dev mount — and a deployed page had no such route, so
+// every effect played and the soundtrack was silent.
+import { setMusicSource } from './game/musicPlayer.js';
 
 /** Every uncaught error and console error the page produces, for the tests. */
 function installErrorTrap() {
@@ -52,19 +57,48 @@ function installErrorTrap() {
   return errors;
 }
 
-/** Put a message (and optionally a button) on the boot overlay. */
-function overlay(text, { button = null } = {}) {
+/**
+ * **Where the project's own tip jar is** — printed on the boot overlay, under the file picker.
+ *
+ * The owner, 2026-10-25: *"when you open the game both on android and pc when youre chosing the
+ * game files it should happen 'support the game at: https://ko-fi.com/perfectarena'"*. The line
+ * rides with every boot message rather than with one of them, because the folder prompt is the
+ * first thing a player sees and the only screen every install passes through; the archive door
+ * and the error messages are the same screen, so none of them has to remember it.
+ */
+export const SUPPORT_URL = 'https://ko-fi.com/perfectarena';
+
+/** Put a message (and optionally one or two buttons) on the boot overlay. */
+function overlay(text, { button = null, buttons = null } = {}) {
   const el = document.getElementById('boot');
   if (!el) { document.body.textContent = text; return; }
   el.textContent = text;
   el.classList.remove('hidden');
-  if (button) {
+  // A phone cannot pick a folder, so the overlay has to offer *both* doors: the folder, and
+  // the install as a .zip / .rar (`arena/archiveSource.js`).
+  for (const spec of buttons ?? (button ? [button] : [])) {
+    if (!spec) continue;
     const b = document.createElement('button');
-    b.textContent = button.label;
-    b.onclick = button.onClick;
+    b.textContent = spec.label;
+    b.onclick = spec.onClick;
     el.appendChild(document.createElement('br'));
     el.appendChild(b);
   }
+  // **The tip jar, on every boot message.** `textContent = text` above wipes the element, so the
+  // line is written after the message and its buttons rather than sitting in the markup — which
+  // also keeps it on the prompt a dismissed dialog, a dropped archive or a failed read brings
+  // back. The link opens in a new tab: a player who gives the page up to Ko-fi would lose the
+  // folder they had just chosen.
+  const support = document.createElement('p');
+  support.className = 'boot-support';
+  support.append('Support the game at: ');
+  const link = document.createElement('a');
+  link.href = SUPPORT_URL;
+  link.textContent = SUPPORT_URL;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  support.appendChild(link);
+  el.appendChild(support);
 }
 
 /**
@@ -73,60 +107,127 @@ function overlay(text, { button = null } = {}) {
  * @param {URLSearchParams} params @param {(m:string)=>void} status
  */
 async function bootFromPickedFolder(canvas, renderer, params, status) {
-  const { pickArenaFolder } = await import('./arena/browserSource.js');
+  const { pickArenaFolder, droppedFolderSource } = await import('./arena/browserSource.js');
+  const { archiveSource, looksLikeArchiveName, pickArenaArchive } = await import('./arena/archiveSource.js');
+
+  /** Boot with a source, whichever door produced it (a picker or a dropped folder). */
+  const bootWithSource = async (source) => {
+    setMusicSource(source);
+    window.__debug.arenaSource = source.label;
+    try {
+      if (isGameStart(params)) {
+        // A plain launch is the **start menu**: Arena's title screen, with Continue and
+        // New Game. New Game runs the scroll history, creation and the cell; Continue
+        // resumes the save's own last place (`game/startFlow.js`'s `resumeParams`).
+        await gameStart(canvas, renderer, params, status, source);
+      } else if (needsCharacter(params)) {
+        // A deep link that asks for a scene, from a browser with no character: creation
+        // resolves in this page so the folder the player just picked still answers.
+        const { bootChargen } = await import('./scenes/chargen.js');
+        await bootChargen(canvas, renderer, params, status, source);
+        await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
+      } else {
+        await run(canvas, renderer, destinationParams(params, { fresh: false }), status, source);
+      }
+      document.getElementById('boot')?.classList.add('hidden');
+      window.__ready = true;
+    } catch (err) {
+      console.error(err);
+      overlay(`Could not read that install:\n${err?.message ?? err}`,
+        { buttons: [{ label: 'Choose a different folder', onClick: ask }, { label: 'Open .zip / .rar', onClick: askArchive }] });
+    }
+  };
+
+  /** **The archive door:** a single `.zip`/`.rar` holding the install, which every browser takes. */
+  const askArchive = async () => {
+    let source;
+    try {
+      source = await pickArenaArchive({ onProgress: status });
+    } catch (err) {
+      console.error(err);
+      overlay(`Could not read that archive:\n${err?.message ?? err}`,
+        { button: { label: 'Try another archive', onClick: askArchive } });
+      return;
+    }
+    if (!source) { ask(); return; }
+    await bootWithSource(source);
+  };
 
   // Asking for the folder is its own little loop, so a dismissed dialog is answered by
   // *offering the picker again* rather than by a dead end. The first version told the
   // player to reload the page — and its picker resolved with `null` a second after it
   // opened, so reloading did not help either (see `pickArenaFolder`).
   const ask = () => {
-    overlay('PERFECTARENA needs your Arena folder to read its maps, textures and text.\n'
-      + 'Pick the folder that contains GLOBAL.BSA (usually called ARENA).\n'
-      + 'Nothing is uploaded and nothing is copied — the data is read in place.',
+    // **The first screen is the only screen every visitor passes through**, so it has to answer
+    // the two questions a stranger arriving from a trailer asks before either button makes sense:
+    // *what is this*, and *where do I get Arena*. It used to open on "needs your Arena folder" and
+    // GLOBAL.BSA — true, but it assumed the visitor already owned the game. Most do not: Arena is
+    // free on GOG and Steam, and nothing on the page said so. The instruction that was here is
+    // kept verbatim below the answer, because it is still the one line that makes the picker work.
+    overlay('PERFECTARENA — The Elder Scrolls: Arena (1994) in your browser. Free and unofficial.\n'
+      + 'It plays from Arena\'s own maps, textures and text, so it needs your copy of Arena.\n'
+      + 'Arena is free on GOG and Steam: install it, then pick the folder that holds GLOBAL.BSA\n'
+      + '(usually called ARENA) — or drop that folder on this page, or open the whole install\n'
+      + 'as a .zip / .rar. Nothing is uploaded and nothing is copied; the data is read in place.\n'
+      + 'Walk out of a town and keep walking: the wilderness between settlements is continuous.',
     {
-      button: {
-        label: 'Choose Arena folder',
-        onClick: async () => {
-          let source;
-          try {
-            source = await pickArenaFolder({ onProgress: status });
-          } catch (err) {
-            console.error(err);
-            overlay(`Could not open the folder picker:\n${err?.message ?? err}`, { button: { label: 'Try again', onClick: ask } });
-            return;
-          }
-          if (!source) {
-            overlay('No folder chosen.\nChoose the folder that contains GLOBAL.BSA (usually called ARENA).',
-              { button: { label: 'Choose Arena folder', onClick: ask } });
-            return;
-          }
-          window.__debug.arenaSource = source.label;
-          try {
-            if (isGameStart(params)) {
-              // A plain launch is the **start menu**: Arena's title screen, with Continue and
-              // New Game. New Game runs creation, the king's betrayal and the cell; Continue
-              // resumes the save's own last place (`game/startFlow.js`'s `resumeParams`).
-              await gameStart(canvas, renderer, params, status, source);
-            } else if (needsCharacter(params)) {
-              // A deep link that asks for a scene, from a browser with no character: creation
-              // resolves in this page so the folder the player just picked still answers.
-              const { bootChargen } = await import('./scenes/chargen.js');
-              await bootChargen(canvas, renderer, params, status, source);
-              await run(canvas, renderer, destinationParams(params, { fresh: true }), status, source);
-            } else {
-              await run(canvas, renderer, destinationParams(params, { fresh: false }), status, source);
+      buttons: [
+        {
+          label: 'Choose Arena folder',
+          onClick: async () => {
+            let source;
+            try {
+              source = await pickArenaFolder({ onProgress: status });
+            } catch (err) {
+              console.error(err);
+              overlay(`Could not open the folder picker:\n${err?.message ?? err}\nDrop the ARENA folder on the page instead.`,
+                { button: { label: 'Try again', onClick: ask } });
+              return;
             }
-            document.getElementById('boot')?.classList.add('hidden');
-            window.__ready = true;
-          } catch (err) {
-            console.error(err);
-            overlay(`Could not read that folder:\n${err?.message ?? err}`, { button: { label: 'Choose a different folder', onClick: ask } });
-          }
+            if (!source) {
+              overlay('No folder chosen.\nChoose the folder that contains GLOBAL.BSA (usually called ARENA), or drop it on the page.',
+                { button: { label: 'Choose Arena folder', onClick: ask } });
+              return;
+            }
+            await bootWithSource(source);
+          },
         },
-      },
+        { label: 'Open .zip / .rar', onClick: askArchive },
+      ],
     });
   };
   ask();
+
+  // **The folder dropped on the page.** A browser whose file dialog will not hand over a
+  // directory — Opera has been reported by the owner — still lets a folder be dragged onto the
+  // page (`DataTransferItem.webkitGetAsEntry`), so the same source is built from the drop and
+  // boots exactly as a picked one does.
+  addEventListener('dragover', (e) => { e.preventDefault(); }, { passive: false });
+  addEventListener('drop', async (e) => {
+    e.preventDefault();
+    // **A dropped archive is a dropped install.** One file is the only thing some browsers
+    // will hand over, so a `.zip`/`.rar` dropped on the page is read the same way the picker
+    // reads one.
+    const archive = Array.from(e.dataTransfer?.files ?? []).find((f) => looksLikeArchiveName(f?.name));
+    status(archive ? `unpacking ${archive.name}…` : 'reading the dropped folder…');
+    let source = null;
+    try {
+      source = archive
+        ? await archiveSource(archive, { onProgress: status })
+        : await droppedFolderSource(e.dataTransfer);
+    } catch (err) {
+      console.error(err);
+      overlay(`Could not read what was dropped:\n${err?.message ?? err}`,
+        { buttons: [{ label: 'Choose Arena folder', onClick: ask }, { label: 'Open .zip / .rar', onClick: askArchive }] });
+      return;
+    }
+    if (!source) {
+      overlay('That drop held no files.\nDrop the ARENA folder itself (the one with GLOBAL.BSA in it), or the .zip / .rar holding it.',
+        { button: { label: 'Choose Arena folder', onClick: ask } });
+      return;
+    }
+    await bootWithSource(source);
+  }, { once: true });
 }
 
 /**
@@ -160,9 +261,9 @@ async function run(canvas, renderer, params, status, source) {
 
 /**
  * A game start, in Arena's order: the start-up cards, the **title screen**, and the player's
- * choice. New Game is the real new-game flow (`scenes/newGame.js`: creation → `INTRO.FLC`, the
- * king's betrayal → the cell); Continue resumes the save's own last place. A `?menu` URL is the
- * dev door to the menu alone.
+ * choice. New Game is the real new-game flow (`scenes/newGame.js`: the opening scroll and its
+ * nine-panel history → creation → the cell); Continue resumes the save's own last place. A
+ * `?menu` URL is the dev door to the menu alone.
  *
  * @param {HTMLCanvasElement} canvas @param {object} renderer
  * @param {URLSearchParams} params @param {(m:string)=>void} status
@@ -201,7 +302,7 @@ async function gameStart(canvas, renderer, params, status, source) {
  * The **start-up** cinematics, once per session: the title and quote cards, the scroll movie and
  * its three pictures (`game/cutscene.js`'s `STARTUP_STEPS`, OpenTESArena's `IntroUiMVC` order).
  * A skip ends the cards only — never the story, which is exactly the bug this split removes: the
- * king's betrayal and Ria's explanation are their own beats, played when the game begins.
+ * New Game history and Ria's explanation are their own beats, played when the game begins.
  *
  * @param {(m: string) => void} status
  * @param {URLSearchParams} params
@@ -316,6 +417,7 @@ async function boot() {
   if (arenaPath) {
     const { localServerSource } = await import('./arena/browserSource.js');
     const source = localServerSource(arenaPath);
+    setMusicSource(source);
     window.__debug.arenaSource = source.label;
     // A launch through `tools/launch.mjs` is `?arena=<folder>` and no scene: the start menu,
     // exactly as a picked folder gets (`scenes/startMenu.js`). `?chargen` is a dev door and is
@@ -345,6 +447,7 @@ async function boot() {
   const { servedArenaSource } = await import('./arena/browserSource.js');
   const served = await servedArenaSource();
   if (served) {
+    setMusicSource(served);
     window.__debug.arenaSource = served.label;
     if (isGameStart(params)) {
       await gameStart(canvas, renderer, params, status, served);

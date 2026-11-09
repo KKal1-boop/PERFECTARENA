@@ -14,9 +14,10 @@
 //     (`game/save.js`'s `loadLastLocation`), or the world map when they have not stood anywhere
 //     yet. It is disabled — and says so — when there is no character.
 //   * **NEW GAME** runs the real new-game flow (`scenes/newGame.js`): the save is cleared,
-//     creation opens in this page (a picked folder cannot survive a navigation), the king's
-//     betrayal plays (`INTRO.FLC`), and the player wakes in the cell with Ria's explanation
-//     owed (`game/storyScript.js`'s `dueCellDream`).
+//     the opening scroll and the nine-panel history play (`game/cutscene.js`'s
+//     `NEW_GAME_STEPS`), creation opens in this page (a picked folder cannot survive a
+//     navigation), and the player wakes in the cell with Ria's explanation owed
+//     (`game/storyScript.js`'s `dueCellDream`).
 //
 // The screen is DOM, like the pause menu and the creator, because those already prove the
 // game's UI law: panels are DOM, the world is GL, and a menu is a panel. It takes the keyboard
@@ -25,6 +26,7 @@
 
 import { ArenaData } from '../arena/arenaData.js';
 import { toRgba } from '../arena/palette.js';
+import { loadArenaGui } from '../game/arenaGui.js';
 
 /**
  * Show the title screen and wait for a choice.
@@ -43,9 +45,6 @@ export async function showStartMenu(source, opts = {}) {
   host.innerHTML = `
     <canvas id="startmenu-art" width="320" height="200"></canvas>
     <div class="panel">
-      <p class="kicker">The Elder Scrolls</p>
-      <h1>ARENA</h1>
-      <p class="sub">The Imperial Seat, betrayed.</p>
       <div class="rows" role="menu" aria-label="Arena">
         <button type="button" class="choice" data-action="continue" ${hasSave ? '' : 'disabled'}>
           <span class="key">C</span>Continue
@@ -67,6 +66,12 @@ export async function showStartMenu(source, opts = {}) {
   try {
     status('title');
     const data = new ArenaData(source);
+    // **The title screen is a page too**, so it wears the same kit the game's pages do: the
+    // scroll's frame, the inks, the ornament. Without this the panel has a 21 px scroll border
+    // and no scroll to draw in it — which is the tan slab the owner saw on the title screen
+    // (*"you also bugged the start new game main title menu"*). It is fire-and-forget because
+    // the picture below is what this screen cannot work without, and the kit is not.
+    void loadArenaGui(data);
     const image = await data.img('TITLE.IMG');
     const palette = image.palette ?? (await data.img('TITLE.IMG')).palette;
     if (palette) {

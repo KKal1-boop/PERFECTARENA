@@ -51,7 +51,7 @@ export function weaponCarried(character) {
  *
  * @param {object} character
  * @param {{quest?: object, kills?: number, xp?: number, day?: number, side?: string|null}} [world]
- * @returns {{section: string, rows: {name: string, note: string}[]}[]}
+ * @returns {{section: string, rows: {name: string, note: string, icon?: string}[]}[]}
  */
 export function carried(character, world = {}) {
   const weapon = weaponCarried(character);
@@ -65,32 +65,36 @@ export function carried(character, world = {}) {
   const sections = [
     {
       section: 'The adventurer',
+      // Each row says **which of the install's own glyphs it wears** (`iconRoleFor`): the pack
+      // used to be a column of prose, and the owner asked for icons for weapons, armour, spells
+      // and potions (2026-10-25). The icon is a *kind*, never a picture of the exact sword.
       rows: [
-        { name: `${weapon.name} (${weapon.materialName})`, note: `${weapon.min}–${weapon.max} damage, in hand` },
+        { name: `${weapon.name} (${weapon.materialName})`, note: `${weapon.min}–${weapon.max} damage, in hand`, icon: 'weapon' },
         // Agility is attribute 3 (`character.js`'s `ATTRIBUTES` order) and one point of
         // armour class is five of it — `armourClass` takes the attribute, not the actor.
-        { name: `${armourClass(attributeOf(character, 'agility', 3, 0))} armour class`, note: 'from Agility, the armour rule UESP states' },
-        { name: `${character?.gold ?? 0} gold`, note: world.side ? `side work: ${world.side}` : 'earned by the job board' },
+        { name: `${armourClass(attributeOf(character, 'agility', 3, 0))} armour class`, note: 'from Agility, the armour rule UESP states', icon: 'armour' },
+        { name: `${character?.gold ?? 0} gold`, note: world.side ? `side work: ${world.side}` : 'earned by the job board', icon: 'coin' },
         // **The burden** — the owner's *"inventory should have max weight and armor should
         // weight also"*. The bar is the character's Strength (`items.js`), and the bag plus
         // everything worn counts, so a plate suit is a decision and not a cosmetic.
         {
           name: `${weight.toFixed(1)} / ${max.toFixed(0)} kg`,
           note: weight > max ? 'overloaded — sell, store or drop something' : 'carried and worn',
+          icon: 'misc',
         },
       ],
     },
   ];
   const items = [];
-  if (quest.pieces) items.push({ name: `Staff of Chaos — ${quest.pieces}/8 pieces`, note: 'the main quest' });
-  if (quest.mithrilKey) items.push({ name: 'Mithril key', note: 'the Imperial Palace' });
-  if (quest.hasKeyItem) items.push({ name: 'Jewel of Fire', note: 'the Imperial Palace' });
+  if (quest.pieces) items.push({ name: `Staff of Chaos — ${quest.pieces}/8 pieces`, note: 'the main quest', icon: 'scroll' });
+  if (quest.mithrilKey) items.push({ name: 'Mithril key', note: 'the Imperial Palace', icon: 'scroll' });
+  if (quest.hasKeyItem) items.push({ name: 'Jewel of Fire', note: 'the Imperial Palace', icon: 'scroll' });
   if (items.length) sections.push({ section: 'Quest items', rows: items });
   sections.push({
     section: 'The record',
     rows: [
-      { name: `${world.kills ?? 0} slain · ${world.xp ?? 0} experience`, note: 'what the fight counted' },
-      { name: `${world.day ?? 0} days travelled`, note: 'fast travel and the calendar' },
+      { name: `${world.kills ?? 0} slain · ${world.xp ?? 0} experience`, note: 'what the fight counted', icon: 'misc' },
+      { name: `${world.day ?? 0} days travelled`, note: 'fast travel and the calendar', icon: 'misc' },
     ],
   });
   return sections;

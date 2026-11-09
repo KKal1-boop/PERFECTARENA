@@ -17,19 +17,31 @@
 // Arena's figures are palettized: a sheet's bytes are indices into the install's own `PAL.COL`, and
 // a *ladder* of adjacent entries is one material shaded light to dark. Measured off the install
 // (`.scratch/raceprobe.mjs`: decode the sheet, histogram its indices, read each index's `PAL.COL`
-// triple), the citizen sheets paint skin from one contiguous run of six entries:
+// triple), the citizen sheets paint skin from one ordered ladder of the install's palette:
 //
 //   index   PAL.COL      pixels in `MLGEN01W.CFA` (a man of the town, walk, front)
+//   224     #d3cbb3      — (the pale brow and hand highlight on the women's sheets)
+//   226     #cdba9b      — (the step under it)
+//   227     #d4b28f      — (the lightest face/hand highlight on the armoured sheets)
 //   229     #bb9477      14
 //   231     #aa765f      18
 //   232     #9c6854      27
 //   234     #7e4a3c      55
 //   235     #673b30       6
 //   236     #5a2d24       4
+//   237     #4d1e18      — (the deepest shadow under the chin)
 //
-// light to dark in that order, and the same six indices carry the skin in `FMGENW01.CFA` (a woman
-// of the town) and in the rest of the family. Indices 230 and 233 also sit inside that run but no
-// citizen sheet uses them. **Everything else the sheets paint is not skin and must not move:**
+// light to dark in that order. **227 is the highlight the first measurement missed**, and it is
+// the dominant face colour on figures such as `11MAGWLK.CFA` (measured 2026-11-04: 431 of its 671
+// pixels are in the head, and the rest are the hands and chest), so leaving it out left every
+// recoloured face wearing Arena's default flesh while its neck and hands changed race. **224, 226
+// and 237 were the second miss** (2026-11-04, the owner's *"missing skin recoloring pixels on
+// their face"*): the women's faces paint a pale brow above the old first step and a warm shadow
+// under the chin — `FMGENW01` 45/40/50 pixels, `11MNKWLK` 106/67, and `11MAGWLK` 182/41 plus 18
+// of the 237 — so a Dark Elf or a Redguard kept a pale forehead and a flesh-coloured chin. 224 is
+// also the highlight on her hands (`11MAGWLK`: 79 pixels below the head line). 225, 228, 230 and
+// 233 sit between these entries and no citizen sheet paints them. **Everything else the
+// sheets paint is not skin and must not move:**
 // 32–35, 38–39, 55 and 101 are steel, 75–81 teal cloth, 130–133 and 138 red cloth, 148–152 and 154
 // brown boots and hair, and 161–167 green. A recolour that touched those would repaint a
 // townsman's clothes to change his face.
@@ -48,7 +60,7 @@
 //
 // ── THE LAW ─────────────────────────────────────────────────────────────────────────────
 //
-// A race does **not** invent a new ramp: it *rescales Arena's own*. The six ladder entries keep
+// A race does **not** invent a new ramp: it *rescales Arena's own*. The ladder's entries keep
 // their own order and their own even spacing, and only the two ends move, so the art's own
 // light-to-dark shading — which is what makes a pixel figure read as a body rather than a flat
 // shape — survives the recolour exactly. That is one interpolation, no colour library, no
@@ -60,20 +72,29 @@
 
 import { toRgba } from '../arena/palette.js';
 
-/** The six `PAL.COL` entries the citizen sheets paint skin with, light to dark. */
-export const SKIN_LADDER = Object.freeze([229, 231, 232, 234, 235, 236]);
+/**
+ * The ten `PAL.COL` entries the citizen sheets paint skin with, light to dark.
+ *
+ * The run is the install's own shading, not a hand-picked set: 224/226 are the pale brow and hand
+ * highlight, 227–236 the face's body, and 237 the shadow under the chin (see the header).
+ */
+export const SKIN_LADDER = Object.freeze([224, 226, 227, 229, 231, 232, 234, 235, 236, 237]);
 
 /**
- * Arena's own skin, as those six entries hold it — the ramp a race's own is rescaled from.
- * Read off the install's `PAL.COL` bytes (`.scratch/raceprobe.mjs`).
+ * Arena's own skin, as those seven entries hold it — the ramp a race's own is rescaled from.
+ * Read off the install's `PAL.COL` bytes (`.scratch/raceprobe.mjs`, `.scratch/attackprobe.mjs`).
  */
 export const ARENA_SKIN = Object.freeze([
+  Object.freeze([0xd3, 0xcb, 0xb3]),   // 224 lightest (pale brow/hand highlight)
+  Object.freeze([0xcd, 0xba, 0x9b]),   // 226
+  Object.freeze([0xd4, 0xb2, 0x8f]),   // 227 (face/hand highlight)
   Object.freeze([0xbb, 0x94, 0x77]),   // 229 light
   Object.freeze([0xaa, 0x76, 0x5f]),   // 231
   Object.freeze([0x9c, 0x68, 0x54]),   // 232
   Object.freeze([0x7e, 0x4a, 0x3c]),   // 234
   Object.freeze([0x67, 0x3b, 0x30]),   // 235
   Object.freeze([0x5a, 0x2d, 0x24]),   // 236 dark
+  Object.freeze([0x4d, 0x1e, 0x18]),   // 237 darkest (under the chin)
 ]);
 
 /**
@@ -190,15 +211,16 @@ export function raceSkinFor(race) {
 const ladderCache = new Map();
 
 /**
- * The six colours a race's skin ladder holds, light to dark — Arena's own steps between the
+ * The colours a race's skin ladder holds, light to dark — Arena's own steps between the
  * race's two anchors.
  *
- * `ladderFor(race)[0]` is the light anchor and `ladderFor(race)[5]` the dark one; the four between
+ * `ladderFor(race)[0]` is the light anchor and the last entry the dark one; the steps between
  * them are the straight line between the two, so the ladder keeps Arena's even shading steps.
  * Returns **a fresh array of fresh triples** every call, so a caller cannot mutate the cache.
  *
  * @param {string} race
- * @returns {[number, number, number][]|null} six triples, or null for a race this module does not know
+ * @returns {[number, number, number][]|null} one triple per ladder entry, or null for a race this
+ *   module does not know
  */
 export function ladderFor(race) {
   const anchors = raceSkinFor(race);
@@ -358,13 +380,62 @@ export const HAIR_FAMILIES = Object.freeze([
   // Deliberately **not** included, and measured too: the greys 17–23 and 32–35 (a mage's hood),
   // 51 and 107–112 (dark cloth and armour, painted down the body as well) — those are worn, not
   // grown.
-  // **The trades that wear robes.** A mage's gold is embroidery on the robe, not grown hair
-  // (measured: `11MAGWLK` 194/196/197 are dabs at rows 19–54, 1–9 pixels above the head line) —
-  // so this family keeps the head-band law even for the gold run. It is listed before `ROSTER`
-  // because `hairFamilyOf` takes the first match.
+  // **The women of the mage house.** `11MAG`'s head is the white ramp 16–25, not the gold
+  // embroidery: every one of those entries is painted above the head line on all six angles, down
+  // the sides and back of her head, and the strike sheet paints the same run. The old roster family
+  // did not include them at all, so a hair colour left her white head untouched and repainted
+  // one stray gold trim pixel (212) instead. `ATT` is included so the swing keeps her head.
+  Object.freeze({
+    key: 'ROSTER_MAG_W',
+    // **Every action is the same woman**: the walk's 360, the strike and the bow, and the sword,
+    // staff and spell sheets, whose white hair is the same run (measured 2026-11-04).
+    match: /^1[1-5]MAG(WLK|ATT|BOW|SPL|STF|SWD)\.CFA$/,
+    // **The whole white ramp, in the order the eye sees it.** 16–25 are the contiguous run, but
+    // some of her angles paint the same hair from a second cool-grey run — `12MAGWLK` uses
+    // 180–184 at the crown (measured 2026-11-04: all 42 of its pixels above the head line), and
+    // `11MAGSWD` uses 183/184/186/187 down the back. Sorted by index those would land after 25
+    // and take the darkest steps, so the run is written in tone order and `complete` keeps it.
+    run: Object.freeze([
+      16, 17, 18, 180, 19, 181, 20, 182, 21, 183, 184, 22, 23, 186, 187, 24, 25,
+    ]),
+    // **The whole white run is her head.** The walk paints seven of the eight shades and the
+    // strike paints all eight; using each sheet's painted subset would give the same hair two
+    // different ramps. Naming the whole run keeps every shared entry the same colour on both.
+    complete: true,
+  }),
+  // **The men of the mage house wear a hood.** The same 16–23 entries are a full outline around
+  // `01MAG`'s face with no hair below it (measured 2026-11-04), so naming them as hair would
+  // recolour his hood. An empty run is a real answer: the figure has no painted head for the
+  // changer, and its robe trim stays the install's own.
+  Object.freeze({
+    key: 'ROSTER_MAG_M',
+    match: /^0[1-5]MAG(WLK|ATT|BOW)\.CFA$/,
+    run: Object.freeze([]),
+  }),
+  // **The men of the monk house wear a tonsure** (2026-11-04). The fringe at the sides of his bald
+  // crown is **237** (`#4d1e18`, the dark red hair) and **133** (`#59252b`, its auburn highlight),
+  // with **190** (`#381919`) on the strike. 237 is outside the auburn run, so `hairIndicesOf`
+  // answered `[133]` — two red pixels — and the owner's *"MNK fighter male red hair dont get
+  // recolored at all"* was the fringe itself, still there. His correction — *"changed part of his
+  // dress instead of his hair"* — is why **191 stays out**: 191 paints the robe's outline (127
+  // head-band pixels and 128 down the body on `01MNKWLK`), so recolouring it moves the dress. 237
+  // is the right entry because it is painted **only on the head** (measured: 114 head / 0 body on
+  // `01MNKWLK`, 53/0 on the strike, 44/0 on the kick), so recolouring it cannot touch the robe.
+  // The run is taken whole so the walk and the strike cannot shade the fringe differently (190 is
+  // painted only on the strike).
+  Object.freeze({
+    key: 'ROSTER_MNK_M',
+    match: /^0[1-5]MNK(WLK|ATT|KIC)\.CFA$/,
+    run: Object.freeze([133, 237, 190]),
+    complete: true,
+  }),
+  // **The monks' robes.** Their heads are the auburn run and their gold is embroidery on the
+  // robe, not grown hair (measured: `11MAGWLK` 194/196/197 are dabs at rows 19–54, 1–9 pixels
+  // above the head line) — so this family keeps the head-band law even for the gold run. It is
+  // listed before `ROSTER` because `hairFamilyOf` takes the first match.
   Object.freeze({
     key: 'ROSTER_ROBE',
-    match: /^\d\d(MAG|MNK)WLK\.CFA$/,
+    match: /^\d\dMNK(WLK|ATT|BOW)\.CFA$/,
     run: Object.freeze([
       128, 129, 130, 131, 132, 133, 134, 135, 136,
       139, 140, 141, 142, 143, 144, 145, 146, 147,
@@ -377,7 +448,9 @@ export const HAIR_FAMILIES = Object.freeze([
   // (`11CHNWLK` 218 is painted only down the back) — so the run is taken whole.
   Object.freeze({
     key: 'ROSTER_W',
-    match: /^1[1-5](UNA|LTR|CHN|PLT|BAR)WLK\.CFA$/,
+    // **`ATT` and `BOW` are the same figure**, and a woman's hair has to keep its colour as she
+    // swings or looses. The armoured roster's three actions are one body drawn three ways.
+    match: /^1[1-5](UNA|LTR|CHN|PLT|BAR)(WLK|ATT|BOW)\.CFA$/,
     run: Object.freeze([
       128, 129, 130, 131, 132, 133, 134, 135, 136,
       139, 140, 141, 142, 143, 144, 145, 146, 147,
@@ -391,7 +464,11 @@ export const HAIR_FAMILIES = Object.freeze([
   // — the barkeep's apron keeps its gold (`01BARWLK` 212/214/215 are rows 22–54 only).
   Object.freeze({
     key: 'ROSTER_M',
-    match: /^0[1-5](UNA|LTR|CHN|PLT|BAR)WLK\.CFA$/,
+    // **`ATT` and `BOW` are the same figure**: an archer is drawn from `01PLTWLK.CFA` walking and
+    // `01PLTBOW.CFA` loosing (`game/humans.js`'s `rosterFile`), and a head that changes colour
+    // between the two is two people. The two actions face forward only (the `01` file), which the
+    // match allows too.
+    match: /^0[1-5](UNA|LTR|CHN|PLT|BAR)(WLK|ATT|BOW)\.CFA$/,
     run: Object.freeze([
       128, 129, 130, 131, 132, 133, 134, 135, 136,
       139, 140, 141, 142, 143, 144, 145, 146, 147,
@@ -529,7 +606,8 @@ export const HAIR_KEYS = Object.freeze(Object.keys(HAIR_COLORS));
  * @param {{width: number, height: number, frames: {indices: ArrayLike<number>}[]}} cfa
  * @param {{headShare?: number, name?: string|null}} [opts]  `name` — the record's own file name
  *   (`BABE01.CFA`), which is what names the family; without it the union is used
- * @returns {number[]} the hair entries this sheet paints, light to dark (ascending index)
+ * @returns {number[]} the hair entries this sheet paints, light to dark (a completed family's
+ *   authored order; otherwise ascending index)
  */
 export function hairIndicesOf(cfa, { headShare = 0.22, name = null } = {}) {
   const frames = cfa?.frames ?? [];
@@ -539,6 +617,12 @@ export function hairIndicesOf(cfa, { headShare = 0.22, name = null } = {}) {
   const family = hairFamilyOf(name) ?? hairFamilyOf(cfa?.name);
   // A family with no hair has none.
   if (family && !family.run.length) return [];
+  // A family whose run is all hair answers the whole run, painted or not: the missing shade in
+  // one view must not shift the ramp the next view uses (`ROSTER_MAG_W`'s walk and strike, the
+  // monk's 190 on the walk). The order is the family's own, **light to dark** — some of the white
+  // hair shades are not adjacent in the palette (180–187), so sorting by index would paint a
+  // highlight with the darkest step.
+  if (family?.complete) return [...family.run];
   const head = Math.max(1, Math.round(h * headShare));
   const feet = Math.round(h * HAIR_FOOT_FROM);
   const candidates = new Set(family ? family.run : HAIR_CANDIDATES);
@@ -677,8 +761,8 @@ export function hasSkin(spec) {
  * A palette with one skin spec's colours written over it — a race's skin **and** a hair colour.
  *
  * This is the whole recolour: the base table is copied byte for byte and only the entries the
- * spec names change — the six `SKIN_LADDER` entries for a race, and the entries `hairIndices`
- * names for a hair colour — so a townsman's clothes, armour and boots are exactly the install's
+ * spec names change — every `SKIN_LADDER` entry for a race, and the entries `hairIndices` names
+ * for a hair colour — so a townsman's clothes, armour and boots are exactly the install's
  * own colours and only his face is his province's race and only his head is his own. The input is
  * never modified.
  *

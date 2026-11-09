@@ -21,6 +21,7 @@
 // the dodge a *read* and not a spam.
 
 import { CASTER_IDS, elementOf, isIrresistible } from './bestiary.js';
+import { spellProjectileArt } from './combatFx.js';
 /** A bolt travels this fast, in metres a second. */
 export const BOLT_SPEED = 13;
 /** Within this of the player's body, a bolt lands. */
@@ -86,6 +87,13 @@ export function fireBolt(from, to, wound) {
     spell: wound?.spell ?? null,
     irresistible: isIrresistible(wound),
     caster: wound?.id ?? null,
+    // **The bolt is drawn as the install's own projectile** (`FX_<family>B.CFA`, from the
+    // executable's 27-name effect table): a fire daemon's flight is fire's loop and a snow wolf's
+    // is ice's, instead of one spark coloured by hand. The scene loads the sheet and draws it; a
+    // shot from a bow clears this, because an arrow is `ARROW02.CFA`.
+    art: spellProjectileArt(wound?.element ?? elementOf(wound)),
+    // Its own clock, for the frames: a loop at `SPELL_ART_FPS` starts at its first frame.
+    age: 0,
   };
 }
 
@@ -129,6 +137,31 @@ export function boltAtPlayer(bolt, feet) {
   const horizontal = Math.hypot(bolt.x - feet[0], bolt.z - feet[2]);
   if (horizontal > BOLT_HIT_RADIUS) return false;
   return bolt.y >= feet[1] - 0.1 && bolt.y <= feet[1] + 1.9;
+}
+
+/**
+ * Whether a bolt's **passage** touches the player, not only the point a frame left it at.
+ *
+ * `BOLT_SPEED` 13 m/s covers 0.65 m in a twentieth of a second — more than the 1.1 m wide
+ * body it is aimed at — so testing the destination alone lets a true hit tunnel straight
+ * through the player whenever a step is a little coarse (a frame hitch, a paused page's
+ * `advance`). The segment is sampled at less than the hit radius, using the same body test
+ * `boltAtPlayer` owns, so a fast bolt and a slow one agree about what they hit.
+ *
+ * @param {{x: number, y: number, z: number}} from  where the step began
+ * @param {{x: number, y: number, z: number}} to  where it ended
+ * @param {[number, number, number]} feet  the player's feet, engine order
+ * @returns {boolean}
+ */
+export function boltCrossedPlayer(from, to, feet) {
+  const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+  const length = Math.hypot(dx, dy, dz);
+  const steps = Math.max(1, Math.ceil(length / (BOLT_HIT_RADIUS * 0.9)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if (boltAtPlayer({ x: from.x + dx * t, y: from.y + dy * t, z: from.z + dz * t }, feet)) return true;
+  }
+  return false;
 }
 
 /**

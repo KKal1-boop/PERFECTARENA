@@ -5,8 +5,10 @@
 //
 //   * the **title screen** is the install's `TITLE.IMG` behind Continue and New Game, and
 //     Continue is refused, and says so, when there is no character to continue;
-//   * **New Game** runs creation in this page, then the king's betrayal (`INTRO.FLC`, 76 frames)
-//     and then the cell — the order `game/startFlow.js` and `scenes/newGame.js` own;
+//   * **New Game** plays the opening scroll and the nine-panel history, runs creation in this
+//     page, and wakes the player in the cell — the order `game/startFlow.js` and
+//     `scenes/newGame.js` own. The pictures are the New Game's own, not the shorter start-up
+//     cards;
 //   * **Ria's explanation** (`TEMPLATE.DAT` 1400) is owed by the new game and plays in the cell,
 //     over `VISION.FLC`, with all 21 of the install's clips — a player who skips the title cards
 //     still hears the story, which is the whole reason the beat moved out of the opening flow;
@@ -31,20 +33,75 @@ export function makeStartSuite({ check, realErrors, shots, getPort }) {
     await page.waitFor('window.__debug?.startMenu?.open === true', { label: 'the start menu', timeoutMs: 60000 });
 
     const menu = await page.evalJs('window.__debug.startMenu');
-    const screen = await page.evalJs('({ art: document.getElementById("startmenu")?.className, text: document.getElementById("startmenu")?.textContent ?? "" })');
-    check('a plain launch opens Arena\'s start menu, with the install\'s title art behind it',
-      menu?.open === true && /\bart\b/.test(screen.art) && /ARENA/.test(screen.text),
-      JSON.stringify({ art: screen.art, options: menu?.options }));
+    const screen = await page.evalJs(`(() => {
+      const host = document.getElementById('startmenu');
+      const art = document.getElementById('startmenu-art');
+      const cs = getComputedStyle(art);
+      return {
+        art: host?.className,
+        text: host?.textContent ?? '',
+        title: host?.querySelector('h1')?.textContent ?? null,
+        kicker: Boolean(host?.querySelector('.kicker')),
+        sub: Boolean(host?.querySelector('.sub')),
+        filter: cs.filter,
+        opacity: cs.opacity,
+      };
+    })()`);
+    check('a plain launch opens Arena\'s start menu over its undimmed title art, with no duplicate title block',
+      menu?.open === true && /\bart\b/.test(screen.art)
+      && screen.title === null && screen.kicker === false && screen.sub === false
+      && !/Imperial Seat|The Elder Scrolls/i.test(screen.text)
+      && screen.filter === 'none' && screen.opacity === '1',
+      JSON.stringify({ art: screen.art, title: screen.title, filter: screen.filter, opacity: screen.opacity }));
+    // The art is an absolutely positioned canvas over the whole window, so it painted *over* the
+    // panel at a desk's aspect — the menu was there, under the picture. What the eye sees at the
+    // panel's own middle must be the panel, and what it is painted on must be the page's tan.
+    const painted = await page.evalJs(`(() => {
+      const panel = document.querySelector('#startmenu .panel');
+      const r = panel.getBoundingClientRect();
+      const at = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+      const cs = getComputedStyle(panel);
+      // The page's tone is read off the stylesheet's own token, so a change to the paper's
+      // colour is a change in one place rather than in this suite too.
+      const hex = getComputedStyle(document.documentElement).getPropertyValue('--ui-paper').trim();
+      const h = hex.replace('#', '');
+      const paper = h.length === 6
+        ? 'rgb(' + [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)).join(', ') + ')'
+        : null;
+      return { inPanel: Boolean(at && panel.contains(at)), bg: cs.backgroundColor, paper, clip: cs.backgroundClip, z: cs.zIndex };
+    })()`);
+    check('and the page stands in front of the picture — the scroll is drawn, not hidden under the art',
+      painted.inPanel === true && Boolean(painted.paper) && painted.bg === painted.paper
+      && painted.clip === 'padding-box' && painted.z !== 'auto',
+      JSON.stringify(painted));
+    check('the scroll\'s transparent corners are cut-outs, not a pale paper border',
+      painted.clip === 'padding-box', painted.clip);
     const options = menu?.options ?? [];
-    check('the menu offers New Game, and refuses Continue when there is no character — and says why',
+    check('the menu offers New Game, refuses Continue without a character, and has no Scenes button',
       options.some((o) => o.action === 'new' && !o.disabled)
       && options.some((o) => o.action === 'continue' && o.disabled)
+      && !options.some((o) => o.action === 'scenes')
       && /no character saved/.test(screen.text),
       JSON.stringify(options));
     await page.screenshot(path.join(shots, 'start-menu.png'));
 
-    // ── New Game: creation → the king's betrayal → the cell ──────────────────
+    // ── New Game: the scroll history → creation → the cell ───────────────────
     await page.evalJs('window.__debug.startMenu.choose("new")');
+    await page.waitFor('window.__debug?.opening?.current != null', { label: 'the New Game scroll history', timeoutMs: 60000 });
+    const historyStart = await page.evalJs('window.__debug.opening.current ?? null');
+    await page.pressKey('Escape');
+    await page.pressKey('Escape', false);
+    await page.waitFor('document.getElementById("cutscene-skip-hint") && !document.getElementById("cutscene-skip-hint").hidden', { label: 'the first skip note', timeoutMs: 5000 });
+    const skipHint = await page.evalJs(`(() => {
+      const h = document.getElementById('cutscene-skip-hint');
+      const r = h.getBoundingClientRect();
+      return { text: h.textContent, hidden: h.hidden, right: Math.round(innerWidth - r.right), bottom: Math.round(innerHeight - r.bottom) };
+    })()`);
+    check('the first skip input only asks again, in the bottom-right; the second one skips',
+      skipHint.text === 'click again to skip' && skipHint.hidden === false
+      && skipHint.right < 40 && skipHint.bottom < 40, JSON.stringify(skipHint));
+    await page.pressKey('Escape');
+    await page.pressKey('Escape', false);
     await page.waitFor('window.__debug?.scene === "chargen"', { label: 'creation from New Game', timeoutMs: 60000 });
     await page.evalJs('window.__debug.answerAll("a")');
     const described = JSON.parse(await page.evalJs('JSON.stringify(window.__debug.describe({ name: "Probe Hero", raceId: "nord" }))') ?? '{"ok":false}');
@@ -55,14 +112,15 @@ export function makeStartSuite({ check, realErrors, shots, getPort }) {
     await page.evalJs('window.__debug.gotostep("done")');
     await page.clickSelector('#chargen-panel #cg-play');
 
-    // The betrayal is the new game's own movie, and it is not one of the start-up cards.
-    await page.waitFor('window.__debug?.opening?.file === "INTRO.FLC"', { label: 'the king’s betrayal', timeoutMs: 60000 });
-    const intro = await page.evalJs('window.__debug.opening');
-    check('the king\'s betrayal plays after creation, whole (INTRO.FLC, 76 frames)',
-      intro?.file === 'INTRO.FLC' && intro?.frameCount === 76 && intro?.played === true,
-      JSON.stringify({ file: intro?.file, frames: intro?.frameCount, played: intro?.played }));
-    await page.pressKey('Escape'); await page.pressKey('Escape', false);
-    await page.waitFor('window.__debug?.scene === "interior"', { label: 'the cell after the movie', timeoutMs: 90000 });
+    // **The New Game history is before the make, not between creation and the cell.** Its
+    // first picture is the opening scroll; the nine INTRO panels follow it. Skipping the
+    // sequence only skips the story, never character creation.
+    await page.waitFor('window.__debug?.scene === "interior"', { label: 'the cell after creation', timeoutMs: 120000 });
+    const opening = await page.evalJs('window.__debug.opening');
+    check('New Game plays the opening scroll history before creation, then wakes the character in the cell',
+      (historyStart === 'SCROLL.FLC' || historyStart === 'INTRO01.IMG')
+      && opening?.steps?.[0]?.file === 'SCROLL.FLC' && opening?.skipped === true,
+      JSON.stringify({ historyStart, opening }));
 
     // ── Ria's explanation, in the cell ───────────────────────────────────────
     await page.waitFor('window.__debug.movie()?.textKey === 1400', { label: 'Ria’s explanation', timeoutMs: 60000 });
@@ -79,6 +137,7 @@ export function makeStartSuite({ check, realErrors, shots, getPort }) {
     check('the explanation is owed by the new game, not by a menu screen that can be skipped',
       Array.isArray(owed.dreamsSeen) && owed.dreamsSeen.includes(1400),
       JSON.stringify(owed.dreamsSeen));
+    await page.pressKey('Escape'); await page.pressKey('Escape', false);
     await page.pressKey('Escape'); await page.pressKey('Escape', false);
     await page.waitFor('window.__debug.movie()?.done === true', { label: 'explanation dismissed', timeoutMs: 20000 });
 

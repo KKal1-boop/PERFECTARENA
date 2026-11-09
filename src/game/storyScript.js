@@ -29,6 +29,17 @@ export const QUEST_OPENING = 1500;
  */
 export const DEATH_TEXT = 1402;
 
+/**
+ * **The other death** (`1403`): Tharn's gloating over the player's corpse.
+ *
+ * UESP's *Imperial Palace* notes that "Jagar Tharn's 'game over' cutscene" plays after a death
+ * during the main quest, and stops once the Emperor is freed. `TEMPLATE.DAT` 1403 is that
+ * speech ("You were a fool to confront me…"), spoken in Tharn's voice over `JAGAR.FLC`. Ria's
+ * 1402 remains the death after the quest is over, and the death before the first piece, when
+ * Tharn has no reason to address the prisoner at all.
+ */
+export const DEATH_TEXT_BAD = 1403;
+
 /** Ria's dream that follows pieces 1…7: `1294 + pieces`. */
 export const RIA_DREAM_BASE = 1294;
 
@@ -131,6 +142,29 @@ export function dueCellDream(quest) {
 }
 
 /**
+ * The death scene this save owes.
+ *
+ * The original's two deaths are both in the install: Ria's farewell (`1402`) and Tharn's
+ * gloating (`1403`). UESP records that Tharn's "game over" cutscene plays while the main
+ * quest is still running and stops once the Emperor is free, so a player who has begun the
+ * Staff hunt hears him, and a player who has finished hears her.
+ *
+ * **The quest starts at the escape**, not at the first piece: UESP's walkthrough begins the
+ * main quest when the player leaves the Imperial Dungeons, and Tharn's taunt is owed from
+ * then on. A death in the cell is still Ria's, and a death after the Emperor is free is hers
+ * again — Tharn is gone by then.
+ *
+ * @param {{step?: number, pieces?: number, ended?: boolean}} quest
+ * @returns {number} 1403 during the quest, 1402 before it and after it
+ */
+export function dueDeathScene(quest = {}) {
+  const pieces = Math.max(0, Math.min(8, Math.trunc(Number(quest?.pieces) || 0)));
+  const step = Math.max(0, Math.trunc(Number(quest?.step) || 0));
+  if (quest?.ended) return DEATH_TEXT;
+  return step > 0 || pieces > 0 ? DEATH_TEXT_BAD : DEATH_TEXT;
+}
+
+/**
  * Tharn's ambush owed at the next encounter, or null.
  *
  * UESP: after each piece, his vision comes at a random monster encounter, and his minions
@@ -158,6 +192,7 @@ export function storySpeaker(key) {
   if (key === PALACE_TAUNT || key === JEWEL_CRY) return 'Jagar Tharn';
   if (key >= RIA_DREAM_BASE && key <= JEWEL_BRIEFING) return 'Ria Silmane';
   if (key === CELL_DREAM || key === QUEST_OPENING || key === DEATH_TEXT) return 'Ria Silmane';
+  if (key === DEATH_TEXT_BAD) return 'Jagar Tharn';
   return null;
 }
 
@@ -232,6 +267,7 @@ export const STORY_BEATS = Object.freeze([
   Object.freeze({ key: 1398, beat: 'Tharn after piece 7', speaker: 'Jagar Tharn', movie: 'JAGAR.FLC' }),
   Object.freeze({ key: 1399, beat: 'Tharn after piece 8', speaker: 'Jagar Tharn', movie: 'JAGAR.FLC' }),
   Object.freeze({ key: DEATH_TEXT, beat: 'the player falls', speaker: 'Ria Silmane', movie: 'VISION.FLC' }),
+  Object.freeze({ key: DEATH_TEXT_BAD, beat: 'the player falls during the quest', speaker: 'Jagar Tharn', movie: 'JAGAR.FLC' }),
   Object.freeze({ key: PALACE_TAUNT, beat: 'the palace gate', speaker: 'Jagar Tharn', movie: 'JAGAR.FLC' }),
   Object.freeze({ key: JEWEL_CRY, beat: 'the Jewel taken', speaker: 'Jagar Tharn', movie: 'JAGAR.FLC' }),
   Object.freeze({ key: EMPEROR_THANKS, beat: 'the Emperor restored', speaker: 'Emperor Uriel Septim VII', movie: null }),

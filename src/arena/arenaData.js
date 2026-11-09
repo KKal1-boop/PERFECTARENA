@@ -1,15 +1,3 @@
-// THE ARENA DATA LAYER.
-//
-// Sits between a byte source (a picked folder, or HTTP in tests) and the game:
-// everything the game asks for is a *name* — `CAS.MIF`, `CAS.INF`, `CASA.IMG` —
-// and it comes back decoded and cached.
-//
-// Lookup order for every name is **loose file, then `GLOBAL.BSA`**, because a
-// player's folder has both (the maps it draws with live in the archive; the
-// ones the installer left behind stay loose). Nothing is bundled with the game.
-//
-// See docs/ARCHITECTURE.md §3 for the module map.
-
 import { parseBsa } from './bsaArchive.js';
 import { parseCif } from './cifFile.js';
 import { parseImg } from './image.js';
@@ -34,6 +22,27 @@ export const SET_FRAME_SIZE = 64;
 const sourceCaches = new WeakMap();
 
 /** Arena's own data, decoded and cached. */
+/**
+ * **A byte reader for a source, sharing the scene's own cache.**
+ *
+ * The music is the one reader that does not live inside a scene (`game/musicPlayer.js` plays
+ * through a frame loop and survives scene changes), so it cannot borrow the scene's `ArenaData`
+ * object — but it must read the same way the scene does: a loose file first, then `GLOBAL.BSA`.
+ * Arena's songs (`SHEET.XMI`, `SUNNYDAY.XMI`, …) are archive records and not loose files.
+ *
+ * The cache is keyed by SOURCE (a `WeakMap` below), so this shares the archive index the scene
+ * already parsed rather than parsing `GLOBAL.BSA` a second time.
+ *
+ * @param {ArenaSource} source
+ * @param {{onWarn?: (msg:string)=>void}} [opts]
+ * @returns {(name: string) => Promise<Uint8Array|null>}
+ */
+export function sourceReader(source, opts = {}) {
+  if (!source?.getBytes) return async () => null;
+  const data = new ArenaData(source, opts);
+  return (name) => data.bytes(String(name));
+}
+
 export class ArenaData {
   /**
    * @param {ArenaSource} source

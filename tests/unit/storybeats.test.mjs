@@ -13,8 +13,8 @@ import test from 'node:test';
 import { CUTSCENES, cutsceneByName } from '../../src/game/cutscene.js';
 import { cutsceneSong } from '../../src/game/arenaMusic.js';
 import {
-  DREAM_MOVIE, ENDING_MOVIES, JEWEL_SCENE, PALACE_MOVIE, PALACE_SCENE,
-  THARN_MOVIE, storyMoviesFor, storyScenesFor,
+  DREAM_MOVIE, ENDING_MOVIES, JEWEL_SCENE, JEWEL_SHIELD_SCENE, PALACE_MOVIE, PALACE_SCENE,
+  STAFF_SCENES, THARN_MOVIE, storyMoviesFor, storyScenesFor,
 } from '../../src/game/storyBeats.js';
 import { JEWEL_CRY, PALACE_TAUNT, storyMovie, storySpeaker } from '../../src/game/storyScript.js';
 
@@ -60,20 +60,38 @@ test('the speakers are Arena’s two dream faces: Ria’s vision, Tharn’s jaga
   assert.equal(storySpeaker(1447), 'Jagar Tharn');
 });
 
-test('the ending keeps its two movies in order', () => {
-  assert.deepEqual([...ENDING_MOVIES], ['JAGARDTH.FLC', 'END01.FLC']);
+test('the ending keeps Arena\'s whole chain in order', () => {
+  // Tharn's fall (the CD's `NUJAGDTH.FLC`, or the original `JAGARDTH.FLC`), the Emperor
+  // restored (`NUKING.FLC`, or its `KING.FLC` stand-in), then the closing diptych and the
+  // corridor: five films, the order the install's own `END01`/`END02` art expects.
+  assert.deepEqual([...ENDING_MOVIES], [
+    'NUJAGDTH.FLC', 'NUKING.FLC', 'END01.FLC', 'END02.FLC', 'AFLC2.FLC',
+  ]);
+});
+
+test('the Staff\'s assembly is the forge and the vision in the sky', () => {
+  assert.deepEqual(STAFF_SCENES.map((s) => s.movie), ['STAFF.FLC', 'CHAOSVSN.FLC']);
+  assert.deepEqual(storyMoviesFor('staffAssembled'), ['STAFF.FLC', 'CHAOSVSN.FLC']);
+  assert.deepEqual(storyScenesFor('staffAssembled').map((s) => s.textKey), [null, null]);
+});
+
+test('the Jewel at the palace altar is the shield movie, and it is not a line of speech', () => {
+  assert.equal(JEWEL_SHIELD_SCENE.movie, 'JAGRSHLD.FLC');
+  assert.equal(JEWEL_SHIELD_SCENE.textKey, null);
+  assert.deepEqual(storyMoviesFor('jewelShield'), ['JAGRSHLD.FLC']);
 });
 
 test('an event with no scene says so rather than inventing one', () => {
-  for (const event of ['enter', 'staffAssembled', 'mithrilKey', 'won', 'escaped', '', null]) {
+  for (const event of ['enter', 'mithrilKey', 'won', 'escaped', '', null]) {
     assert.deepEqual(storyScenesFor(event), [], String(event));
   }
 });
 
 test('every movie wired is one the catalogue knows, and every one has a cue', () => {
   const wired = [
-    ...ENDING_MOVIES, PALACE_MOVIE, DREAM_MOVIE, THARN_MOVIE,
-    ...storyMoviesFor('jewelOfFire'),
+    ...ENDING_MOVIES, PALACE_MOVIE, DREAM_MOVIE, THARN_MOVIE, JEWEL_SHIELD_SCENE.movie,
+    ...STAFF_SCENES.map((s) => s.movie),
+    ...storyMoviesFor('jewelOfFire'), ...storyMoviesFor('palaceGate'),
   ];
   for (const file of wired) {
     assert.ok(cutsceneByName(file), `${file} is in the catalogue`);

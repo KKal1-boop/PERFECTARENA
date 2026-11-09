@@ -269,7 +269,9 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
       await page.evalJs(`window.__debug.prepareCombat(${wIdx}, { charge: false, begin: false, nextAttack: 0.15 })`);
       for (let slice = 0; slice < 40 && dodgedBolt !== 'dodged'; slice++) {
         await page.evalJs('window.__debug.advance(0.05)');
-        const mid = await page.evalJs('(() => { const c = window.__debug.combat(); const b = c.bolts; if (!b.length) return null; const feet = window.__debug.state().feet; return Math.hypot(b[0].x - feet[0], b[0].z - feet[2]); })()');
+        // The **newest** bolt is this fixture's: an unrelated caster may already have one in
+        // the air when the wraith is prepared, and watching that one proves someone else's aim.
+        const mid = await page.evalJs('(() => { const c = window.__debug.combat(); const b = c.bolts; if (!b.length) return null; const feet = window.__debug.state().feet; const bolt = b[b.length - 1]; return Math.hypot(bolt.x - feet[0], bolt.z - feet[2]); })()');
         if (mid !== null && mid < 2.6 && mid > 0.4) { await page.pressKey('KeyQ'); await page.pressKey('KeyQ', false); }
         // A later cast's *hit* must not overwrite this attempt's `dodged`: the instance the
         // roll answers is this cast's own bolt, read the slice it resolved in.
@@ -321,14 +323,22 @@ export function makeActionCombatSuite({ check, realErrors, shots, getPort }) {
 
     await page.evalJs(`window.__debug.damageEnemy(${await ratIndex()}, 10000)`);
     await settle();
-    const death0 = mine(await page.evalJs('window.__debug.combat()'));
-    await page.evalJs('window.__debug.advance(0.09)'); await settle();
-    const death1 = mine(await page.evalJs('window.__debug.combat()'));
-    await page.evalJs('window.__debug.advance(0.1)'); await settle();
-    const death2 = mine(await page.evalJs('window.__debug.combat()'));
+    // **Follow the sheet, rather than pinning two wall-clock reads to a frame.** The sim's
+    // substeps decide how much of a 0.1 s `advance` lands on the clock, so a read can sit one
+    // frame short even though the sheet is playing correctly. Slices of 0.05 s are shorter
+    // than the 12 fps frame (1/12 s), so no frame can be skipped, and the check still holds
+    // the original's order: first pose, second pose, then the corpse pose.
+    const deathFrames = [mine(await page.evalJs('window.__debug.combat()')).frame];
+    for (let slice = 0; slice < 8 && !deathFrames.includes('RAT6.CFA#2'); slice++) {
+      await page.evalJs('window.__debug.advance(0.05)');
+      await settle();
+      deathFrames.push(mine(await page.evalJs('window.__debug.combat()')).frame);
+    }
+    const firstPose = deathFrames.indexOf('RAT6.CFA#1');
+    const corpsePose = deathFrames.indexOf('RAT6.CFA#2');
     check('death plays the original 6.CFA sequence then holds the corpse',
-      death0.frame === 'RAT6.CFA#0' && death1.frame === 'RAT6.CFA#1' && death2.frame === 'RAT6.CFA#2',
-      `${death0.frame} → ${death1.frame} → ${death2.frame}`);
+      deathFrames[0] === 'RAT6.CFA#0' && firstPose >= 0 && corpsePose > firstPose,
+      deathFrames.join(' → '));
     await page.screenshot(path.join(shots, 'action-death-corpse.png'));
     await page.evalJs('window.__debug.damageEnemy(0, 10000)');
     const door = (await page.evalJs('window.__debug.state().leaves')).find((leaf) => !leaf.locked);

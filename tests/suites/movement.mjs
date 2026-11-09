@@ -170,11 +170,22 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
     // no collision so I can actually go into the wilderness"* — and the assembled page is the only
     // place the law can be read: `openSettlementGate` runs on the skeleton **plus its city blocks**,
     // and the wall, the gate's leaves and the street all look exactly as they did before.
+    // **Every door the wall draws is one of them** (the owner, 2026-10-22: *"in both pc and phone you
+    // should be able to use all door textures on the citywalls … not just the main gate"*). The list
+    // is the arch's two cells, the gate leaves drawn along the ring, and the painted posts behind the
+    // arch — so it is read as a law rather than a count: each is in this city's wall (its outer line,
+    // or the few cells the gate's own art stands behind it), and each has left the collision soup.
     const gateways = await page.evalJs('window.__debug.state().gateway');
-    check('and its boxes are out of the collision soup, without the art moving',
-      Array.isArray(gateways) && gateways.length === 2
-      && gateways.every((g) => g.row === 0 || g.col === 0 || g.row === size[1] - 1 || g.col === size[0] - 1),
-      JSON.stringify(gateways));
+    const cells = await page.evalJs(`(${JSON.stringify(gateways ?? [])}).map((g) => ({
+      ...g, cell: window.__debug.cellAt(g.row, g.col),
+    }))`);
+    const inWall = (g) => g.row === 0 || g.col === 0 || g.row === size[1] - 1 || g.col === size[0] - 1
+      || Math.min(g.row, g.col, size[1] - 1 - g.row, size[0] - 1 - g.col) <= 3;
+    check('and every one of them — the arch, its door leaves and its painted posts — is out of the collision soup, without the art moving',
+      Array.isArray(gateways) && gateways.length >= 2
+      && gateways.every(inWall)
+      && cells.every((g) => g.cell?.gateway === true),
+      JSON.stringify(cells.map((g) => `${g.row},${g.col}${g.axis ? ' ' + g.axis : ''} gateway=${g.cell?.gateway} kind=${g.cell?.kind}`)));
     const inwardRow = gate.row === size[1] - 1 ? -1 : gate.row === 0 ? 1 : 0;
     const inwardCol = gate.col === size[0] - 1 ? -1 : gate.col === 0 ? 1 : 0;
     const outYaw = inwardCol === 1 ? Math.PI : inwardCol === -1 ? 0 : inwardRow === 1 ? -Math.PI / 2 : Math.PI / 2;
@@ -198,11 +209,18 @@ export function makeMovementSuite({ check, realErrors, shots, getPort }) {
     // yellow `at`.
     const compass = await page.evalJs(`(() => {
       const el = document.getElementById('compass-points');
+      const at = el ? el.querySelector('span.at') : null;
+      const face = document.getElementById('compass-face')?.textContent ?? null;
       return { spans: el ? el.children.length : null, at: el ? el.querySelectorAll('span.at').length : null,
-        text: el ? el.textContent : null, face: document.getElementById('compass-face')?.textContent ?? null };
+        text: el ? el.textContent : null, face, lit: at ? at.textContent : null,
+        // The mark's window holds the reading as two pieces of type (the lit point and the
+        // degree); compassReading().text is the same reading as one line, for the seam.
+        whole: at && face ? (at.textContent + ' ' + face) : null,
+        seam: window.__debug?.compass?.()?.text ?? null };
     })()`);
-    check('the compass strip is eight points and one bearing, however many times the scene re-boots',
-      compass.spans === 8 && compass.at === 1 && /^[NSEW]{1,2} \d{1,3}°$/.test(compass.face ?? ''),
+    check('the compass mark is eight points and one bearing, however many times the scene re-boots',
+      compass.spans === 8 && compass.at === 1 && /^[NSEW]{1,2} \d{1,3}°$/.test(compass.whole ?? '')
+      && (!compass.seam || compass.seam === compass.whole),
       JSON.stringify(compass));
 
     // The country page stands; the same push aimed *along* the wall must not throw the player

@@ -9,6 +9,7 @@
     "start": "node tools/launch.mjs",
     "dev": "node tools/serve.mjs 8080",
     "serve": "node tools/serve.mjs",
+    "pack": "node tools/pack-cloud.mjs",
     "test": "node --test tests/unit/*.test.mjs",
     "test:browser": "node tests/run-browser.mjs",
     "probe:mif": "node tools/mif-dump.mjs",

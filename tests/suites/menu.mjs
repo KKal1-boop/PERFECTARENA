@@ -11,9 +11,9 @@
 //     player's Arena folder cannot survive a navigation — `scenes/newGame.js`), and the new
 //     character lands where Arena puts one: **a locked cell in the Imperial Dungeons**, at the
 //     quest's own first stage, in a world that has never heard of them (`game/startFlow.js`).
-//     The movie that comes before it is `INTRO.FLC`, and it is played here by the same
-//     `showMovie` every other cutscene beat uses; a machine without the file still starts,
-//     because a movie is never a dependency.
+//     The start-up book (`INTRO.FLC`) belongs before the title screen (`game/cutscene.js`'s
+//     `STARTUP_STEPS`); creation itself goes straight to the cell, where Ria's `1400` is the
+//     new game's own cinematic. A machine without the file still starts.
 //
 // Nothing here is asserted from a flag the flow sets about itself: the save is read out of
 // `localStorage`, the panel is read out of the DOM, the frames are the scene's own count,
@@ -171,6 +171,12 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
     await settle();
     await page.clickSelector('#menu button[data-menu="newgame"]');
     await page.clickSelector('#menu .confirm button[data-menu="newgame-confirm"]');
+    await page.waitFor('window.__debug?.opening?.current != null', { label: 'the New Game scroll history', timeoutMs: 60000 });
+    await page.pressKey('Escape');
+    await page.pressKey('Escape', false);
+    await page.waitFor('document.getElementById("cutscene-skip-hint") && !document.getElementById("cutscene-skip-hint").hidden', { label: 'the first skip note', timeoutMs: 5000 });
+    await page.pressKey('Escape');
+    await page.pressKey('Escape', false);
     await page.waitFor('window.__debug?.scene === "chargen" || !!window.__bootError', { label: 'creation after New Game', timeoutMs: 120000 });
     const bootError = await page.evalJs('window.__bootError || null');
     check('Begin a new game goes back to character creation without a boot error',
@@ -219,10 +225,11 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
       !boot && (await page.evalJs('window.__debug?.scene')) === 'interior'
       && /interior=START\.MIF/.test(await page.evalJs('location.search')),
       boot ? String(boot).slice(0, 200) : await page.evalJs('location.search'));
-    check('the opening movie was played or honestly skipped, never silently missing',
-      Boolean(await page.evalJs('window.__debug.opening'))
-      && (await page.evalJs('window.__debug.opening.played === true || typeof window.__debug.opening.skipped === "string" || typeof window.__debug.opening.error === "string"')),
-      JSON.stringify(await page.evalJs('window.__debug.opening ?? null')));
+    // The New Game's own history runs before creation; the cell's cinematic is Ria's `1400`.
+    const opening = await page.evalJs('window.__debug.opening ?? null');
+    check('Begin a new game plays the opening scroll and its history before creation',
+      Boolean(opening) && opening.steps?.[0]?.file === 'SCROLL.FLC' && opening.skipped === true,
+      JSON.stringify(opening));
 
     const started = JSON.parse(await page.evalJs(
       'JSON.stringify({ quest: window.__debug.quest(), regard: window.__debug.regard(), day: window.__debug.regard().day })'));
@@ -249,7 +256,7 @@ export function makeMenuSuite({ check, realErrors, shots, getPort }) {
     await page.clickSelector('#map-newgame');
     check('and it asks first, with its own warning on the sheet',
       (await page.evalJs('!!document.getElementById("map-newgame-yes")')) === true,
-      await page.evalJs('document.getElementById("map-sheet").textContent.slice(-160)'));
+      await page.evalJs('document.getElementById("map-tools").textContent.slice(-160)'));
     await page.screenshot(path.join(shots, 'm7-map-newgame.png'));
     await page.clickSelector('#map-newgame-no');
     check('backing out of it leaves the new character alone',

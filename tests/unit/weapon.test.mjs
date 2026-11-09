@@ -270,9 +270,20 @@ test('the weapon is placed by the original\'s own margins, at one scale for both
   assert.equal(place.h, Math.round(79 * 3.6));
   // Its bottom edge is on the status line ...
   assert.equal(place.bottom, 560, 'the blade stands on the line');
-  // ... and its right edge one art pixel (times the scale) from the window's.
-  assert.equal(screen.width - place.right, Math.round((320 - (284 + 35)) * 3.6));
-  assert.ok(screen.width - place.right <= 4);
+  // ... and it keeps the margin it has *inside* the original's 320-wide frame, whose own box
+  // is centred in a window wider than it (the owner, 2026-10-22: on a landscape phone the
+  // swings sat on the far right instead of the centre of the screen). The frame is 1152 px of
+  // 1280, so it starts 64 px in and the blade's 1-pixel margin is inside that.
+  const frameLeft = (1280 - 320 * 3.6) / 2;
+  assert.equal(frameLeft, 64);
+  assert.ok(Math.abs(place.x - (frameLeft + 284 * 3.6)) <= 1, `left ${place.x}`);
+  assert.ok(Math.abs(place.right - (frameLeft + (284 + 35) * 3.6)) <= 1, `right ${place.right}`);
+  // …and a landscape phone is the case that named it: 915 × 412 fits the frame to its height,
+  // 660 px, so the frame stands at 128…788 and the blade is on the frame's right, not the
+  // window's edge it used to be pinned to (841…913).
+  const phone = placeWeapon(idle, { width: 915, height: 412, baseline: 412 });
+  assert.ok(phone.x > 700 && phone.right < 800, `phone blade ${phone.x}…${phone.right}`);
+  assert.ok(phone.x > (915 - 320 * phone.scale) / 2, 'and it is inside the frame, not on the glass edge');
   // A frame that sits above the line keeps its own gap: the mid-air slash of SWORD.CIF
   // (`yOffset + height` 139) is 8 art pixels above it, as in the original.
   const slash = { xOffset: 0, yOffset: 110, width: 167, height: 29 };
@@ -284,7 +295,8 @@ test('the weapon is placed by the original\'s own margins, at one scale for both
   const tall = placeWeapon(idle, { width: 439, height: 799, baseline: 660 });
   assert.equal(tall.scale, 439 / 320);
   assert.equal(tall.bottom, 660);
-  assert.equal(439 - tall.right, Math.round(1 * tall.scale));
+  // The frame is exactly the window's width here, so the blade's own margin is the window's.
+  assert.ok(Math.abs(439 - tall.right - 1 * tall.scale) <= 1, `portrait right ${tall.right}`);
   assert.ok(tall.y + tall.h <= 660, 'the whole picture is above the line');
   // A window with no HUD on it falls back to its own bottom.
   assert.equal(placeWeapon(idle, { width: 320, height: 200 }).bottom, 200);

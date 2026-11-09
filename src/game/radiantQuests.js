@@ -58,6 +58,27 @@ export function slayProgress(quest) {
   return { monster: kind.id, required, defeated, ids };
 }
 
+/** How many bales a harvest job asks for. */
+export const HARVEST_REQUIRED = 5;
+
+/**
+ * **How much of a camp's hay is in, for a harvest.**
+ *
+ * Five bales is the job's own number (`HARVEST_REQUIRED`); each is a spot in the camp with its
+ * own id (`<quest>#hay<0…4>`), so the machine can refuse a bale twice or one that is not the
+ * camp's — the same way a hunt refuses a creature it has already counted.
+ *
+ * @param {object} quest  the active job
+ * @returns {{required: number, taken: string[], ids: string[]}|null} null when this is not a harvest
+ */
+export function harvestProgress(quest) {
+  if (quest?.kind !== 'harvest') return null;
+  const required = Math.max(1, Math.min(10, Math.floor(Number(quest.harvest?.required) || HARVEST_REQUIRED)));
+  const ids = Array.from({ length: required }, (_, i) => `${quest.id}#hay${i}`);
+  const taken = [...new Set((quest.harvest?.taken ?? []).filter((id) => ids.includes(id)))];
+  return { required, taken, ids };
+}
+
 /**
  * Arena's artifacts — every one of them a phrase that appears in `artfact1.dat`
  * or `artfact2.dat`, which the unit test enforces. `tier` is only used to scale a
@@ -157,6 +178,7 @@ export const RADIANT_KINDS = Object.freeze([
   { id: 'hunt', label: 'hunt in the wild', data: false, needsDungeon: false, where: 'wild' },
   { id: 'fetch', label: 'fetch a lost thing', data: false, needsDungeon: true, where: 'dungeon' },
   { id: 'gather', label: 'gather a rare thing', data: false, needsDungeon: false, where: 'wild' },
+  { id: 'harvest', label: 'bring in a camp’s hay', data: false, needsDungeon: false, where: 'wild' },
   { id: 'rescue', label: 'rescue a captive', data: false, needsDungeon: false, where: 'either' },
   { id: 'deliver', label: 'carry a message', data: false, needsDungeon: false, where: 'either' },
   { id: 'investigate', label: 'find a missing traveller', data: false, needsDungeon: false, where: 'wild' },
@@ -268,18 +290,24 @@ function targetOf(location, province) {
  * never the anchor: `?location=` needs a settlement record, and a job anchored on one could be
  * a second journey from the nearest town.
  *
+ * **A harvest anchors on the giver itself** (`nearest`): its camp is *the closest one* in the
+ * wilds — the job is a walk out of the offering town's own gate, not a trek to another town's
+ * country. Every other kind keeps drawing its anchor from the province, which is what makes a
+ * hunter's mark feel like it belongs to a different piece of the map.
+ *
  * @param {import('./worldMap.js').WorldMap} world
  * @param {object} giver  the settlement offering the work
  * @param {ArenaRandom} random
+ * @param {{nearest?: boolean}} [opts]  `nearest` — anchor on the giver, not a drawn settlement
  * @returns {{name: string, kind: 'wild', global: {x:number,y:number}, mif: null,
  *   province: string, climate: string, near: string, cell: {row:number,col:number},
  *   anchor: string, anchorID: number|null, anchorProvinceID: number, walk: number}}
  */
-function wildTargetOf(world, giver, random) {
+function wildTargetOf(world, giver, random, { nearest = false } = {}) {
   const provinceID = giver.provinceID;
   const settlements = world.settlements().filter((s) => s.provinceID === provinceID && s.name);
   const pool = settlements.length ? settlements : [giver];
-  const anchorPlace = pool[random.nextBelow(pool.length)];
+  const anchorPlace = nearest ? giver : pool[random.nextBelow(pool.length)];
   const base = anchorPlace.tamriel ?? anchorPlace.global ?? giver.tamriel ?? giver.global;
   // The town's own cell: the middle of the painted pixel its icon stands on. Offsets are
   // added to this, so "how far" is the walk the player actually makes, not a pixel count.
@@ -517,7 +545,8 @@ export function generateQuest(opts) {
   const elsewhere = settlements.filter((s) => s.provinceID !== giver.provinceID || s.name !== giver.name);
   const recipient = elsewhere.length ? elsewhere[random.nextBelow(elsewhere.length)] : giver;
 
-  const target = wild ? wildTargetOf(world, giver, random)
+  // **A harvest goes to the closest camp**: its anchor is the town offering the work.
+  const target = wild ? wildTargetOf(world, giver, random, { nearest: kind === 'harvest' })
     : spec.where === 'dungeon' ? targetOf(dungeon, dungeon.province)
       : targetOf(recipient, recipient.province);
   // A delivery has a *second* place: where it comes from, used for its prose.
@@ -622,6 +651,18 @@ export function generateQuest(opts) {
       };
       break;
     }
+    case 'harvest': {
+      prose = {
+        title: `Bring in the hay near ${target.anchor ?? target.name}`,
+        text: `A camp out in ${target.name}, in ${target.province}, has cut its corn and stacked it in bales, and ${giver.name} wants the fodder in before the weather turns. `
+          + `Carry five hay bales back from the camp and the purse is yours.`,
+        subject: `five hay bales`,
+        tier: 1,
+        dataText: false,
+        source: 'authored',
+      };
+      break;
+    }
     case 'gather': {
       prose = {
         title: `Gather ${gathering.name} near ${target.anchor ?? target.name}`,
@@ -696,6 +737,10 @@ export function generateQuest(opts) {
     subject: prose.subject, tier: prose.tier, priceWord: prose.priceWord ?? null,
     days, reward,
     ...(kind === 'slay' || kind === 'hunt' ? { combat: { monster: monster.cfa, required: 3, defeated: [] } } : {}),
+    // **Five bales, and the camp's own five cells.** The spots are not named here — the scene
+    // places them (`scenes/interior.js`'s harvest camp) and the ids are the job's, so a second
+    // job at the same camp gets its own five.
+    ...(kind === 'harvest' ? { harvest: { required: HARVEST_REQUIRED, taken: [] } } : {}),
   };
 }
 
@@ -803,6 +848,12 @@ export function personOffer(opts) {
       giverId,
       giverPerson: typeof person.description === 'string' ? person.description : null,
       giverArmour: typeof person.armour === 'string' ? person.armour : null,
+      // **The cell the one who asked stands on.** `giverId` is a *key* (`regard.js`'s
+      // `name#row,col`), so the HUD could only ever name the person; a finished job has to lead
+      // the player back to them, and the scene's bearing to a cell is what an arrow is made of
+      // (the owner, 2026-10-22: *"the gui should point to the radiant quest npc who gave you the
+      // quest when you have completed it"*).
+      giverCell: { row: Math.trunc(cell.row), col: Math.trunc(cell.col) },
     };
   } catch (err) {
     console.warn('[radiant] no offer for', person?.description, '-', err?.message ?? err);
@@ -986,7 +1037,7 @@ function atTarget(active, where, ctx = {}) {
 }
 
 /** The events the radiant machine understands. */
-export const RADIANT_EVENTS = Object.freeze(['accept', 'arrive', 'found', 'killed', 'rescue', 'deliver', 'return', 'abandon']);
+export const RADIANT_EVENTS = Object.freeze(['accept', 'arrive', 'found', 'killed', 'harvest', 'rescue', 'deliver', 'return', 'abandon']);
 
 /**
  * Apply one radiant event.
@@ -1027,6 +1078,27 @@ export function applyRadiantEvent(state, event, ctx = {}) {
         return refuse(`"${active.title}" is at ${active.target}${where ? `, not ${where}` : ''}`);
       }
       next.log.push(`Reached ${active.target}.`);
+      return { ok: true, state: next };
+    }
+    case 'harvest': {
+      // **One bale at a time**, like a kill: the camp has five spots, each with an id, and the
+      // job is finished by the fifth. The event is only legal in the camp's own clearing
+      // (`atTarget`) — a bale cannot be carried in from another field.
+      if (!active) return refuse('no job is in hand');
+      if (active.kind !== 'harvest') return refuse(`"${active.title}" is not a harvest`);
+      if (active.completed) return refuse('this job is already finished');
+      if (!atTarget(active, where, ctx)) return refuse(`that has to happen at ${active.target}`);
+      const progress = harvestProgress(active);
+      if (!progress || ctx.questId !== active.id || !progress.ids.includes(ctx.harvestId)) {
+        return refuse('gather the camp\u2019s own bales');
+      }
+      if (progress.taken.includes(ctx.harvestId)) return refuse('that bale was already gathered');
+      const taken = [...progress.taken, ctx.harvestId];
+      const completed = taken.length >= progress.required;
+      next.active = { ...active, harvest: { required: progress.required, taken }, completed };
+      next.log.push(`Hay: ${taken.length}/${progress.required} bales at ${active.target}.`);
+      if (!completed) return { ok: true, state: next };
+      next.log.push(`Harvested: ${active.subject} at ${active.target}. Return to ${active.giver}.`);
       return { ok: true, state: next };
     }
     case 'found':
@@ -1108,7 +1180,9 @@ export function radiantObjective(state) {
   if (!active) return null;
   if (!active.completed) {
     const progress = slayProgress(active);
-    const hunt = progress ? ` Defeat ${active.subject}: ${progress.defeated.length}/${progress.required}.` : '';
+    const bales = harvestProgress(active);
+    const hunt = progress ? ` Defeat ${active.subject}: ${progress.defeated.length}/${progress.required}.`
+      : bales ? ` Gather the hay: ${bales.taken.length}/${bales.required}.` : '';
     // **The last leg is on foot.** A country job is not a fast travel destination: the player
     // arrives at its anchor (a town, village or dungeon) and walks out, so the line says how
     // far that walk is rather than letting the map promise a door onto the camp.
@@ -1143,12 +1217,16 @@ export function radiantLog(state) {
         giver: state.active.giver,
         giverId: state.active.giverId ?? null,
         giverPerson: state.active.giverPerson ?? null,
+        // **Where the one who asked stands** (`personOffer`): a handed-in job has to lead the
+        // player back to a cell, and this is the only place the scene can read it from.
+        giverCell: state.active.giverCell ?? null,
         subject: state.active.subject,
         reward: state.active.reward,
         days: state.active.days,
         daysLeft: Math.max(0, state.active.days - (state.day - state.active.offeredOn)),
         completed: Boolean(state.active.completed),
         combat: slayProgress(state.active),
+        harvest: harvestProgress(state.active),
       }
       : null,
     objective: radiantObjective(state),

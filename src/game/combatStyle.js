@@ -509,6 +509,69 @@ export function stepStamina(state, dt) {
 }
 
 /**
+ * **How often an ordinary creature chooses the lunge over the arc.** The owner, 2026-11-04:
+ * *"i want everyone to use the normal attack but have a random low chance to dash that
+ * increases with the increasing of the player level."* No breed is dash-only any more: a rat,
+ * a wolf and a goblin all swing the arc most of the time, and the fight's own dice sometimes
+ * turn one blow into the committed lunge.
+ *
+ * `base` is the chance at player level 1 and every level adds `perLevel`, capped at `max` —
+ * so the chance rises as the hero does, but an ordinary blow never *becomes* a dash. GUESS,
+ * bounded by the player's own clock: a dash cannot be blocked or parried, so a third of blows
+ * at level 21 is the top of the band, not every other swing.
+ */
+export const DASH_CHANCE = Object.freeze({ base: 0.05, perLevel: 0.015, max: 0.35 });
+
+/**
+ * The chance an ordinary creature's next blow is a committed lunge, at a player level.
+ *
+ * Nonsense falls back to level 1 rather than to no chance at all: a creature is always at
+ * least as likely to lunge as it is at the start of the game.
+ *
+ * @param {number} playerLevel
+ * @returns {number} `DASH_CHANCE.base` … `DASH_CHANCE.max`
+ */
+export function dashChance(playerLevel = 1) {
+  const level = Math.max(1, Math.trunc(Number(playerLevel) || 1));
+  return Math.min(DASH_CHANCE.max, DASH_CHANCE.base + DASH_CHANCE.perLevel * (level - 1));
+}
+
+/**
+ * What shape a creature's blow owns.
+ *
+ *   * **`arc`** — the ordinary blow, and the default at every level: a 120° wedge in front of
+ *     the body, so stepping behind or beside it is a real answer;
+ *   * **`dash`** — the committed lunge down a lane. An ordinary creature takes it only when the
+ *     caller's own roll (`dashRoll`, 0–1) falls under `dashChance(playerLevel)`: the fight's
+ *     dice decide it, not the breed, and the chance grows with the player's level. A record
+ *     with `charge: true` is an explicit request and always lunges;
+ *   * **`circle`** — **Jagar Tharn** alone among ordinary spawns, and every elite variant. The
+ *     circle is the blow whose answer is to leave the area, and it stays the boss's signature.
+ *
+ * An elite alternates by its own attack count: the circle, then a dash (or a spell, which the
+ * scene chooses instead of a melee commitment).
+ *
+ * `dashRoll` defaults to 1, so a caller with no dice (a test, a scripted encounter) gets the
+ * arc and this module stays a pure function of its inputs.
+ *
+ * @param {object|null} monster
+ * @param {{index?: number, playerLevel?: number, dashRoll?: number}} [opts]
+ *   `index` is the creature's attack ordinal, for an elite's alternation; `playerLevel` and
+ *   `dashRoll` are the player's own level and the fight's roll in 0–1
+ * @returns {'arc'|'dash'|'circle'}
+ */
+export function attackShape(monster, { index = 0, playerLevel = 1, dashRoll = 1 } = {}) {
+  if (!monster) return 'arc';
+  if (monster.boss === 'jagar' || monster.id === 'jagartharn') return 'circle';
+  if (monster.elite) return Math.max(0, Math.trunc(index)) % 2 === 1 ? 'dash' : 'circle';
+  // **An explicit request wins.** A fixture, a scripted encounter or a creature whose own
+  // record says `charge` is asking for the committed lunge by name.
+  if (monster.charge === true) return 'dash';
+  const roll = Number.isFinite(dashRoll) ? dashRoll : 1;
+  return roll < dashChance(playerLevel) ? 'dash' : 'arc';
+}
+
+/**
  * How one creature's attack is laid out in time, so it can be read and answered.
  *
  * The *total* is Arena's own cadence (`attackInterval`, which the port already uses to decide
@@ -525,12 +588,14 @@ export function stepStamina(state, dt) {
  *     a shade beyond it, so a big thing can hit you before you can hit it.
  *
  * @param {object} monster  a rolled monster (`combat.js`'s `rollMonster`), or anything with a level
- * @param {{distance?: number}} [opts]  where the player is, in metres: read by the caller (a
- *   creature that is not in range never commits to the attack at all), and deliberately *not*
- *   part of the returned profile, which is a property of the creature and not of the moment
+ * @param {{distance?: number, index?: number, shape?: string|null, playerLevel?: number, dashRoll?: number}} [opts]
+ *   `distance` is where the player is, in metres: read by the caller (a creature that is not
+ *   in range never commits to the attack at all), and deliberately *not* part of the returned
+ *   profile, which is a property of the creature and not of the moment. `playerLevel` and
+ *   `dashRoll` are handed to `attackShape`, so the lunge is the fight's dice.
  * @returns {{windup: number, active: number, recover: number, reach: number, unblockable: boolean, charge: boolean, damageScale: number}}
  */
-export function attackProfile(monster, { distance = 0 } = {}) {
+export function attackProfile(monster, { distance = 0, index = 0, shape = null, playerLevel = 1, dashRoll = 1 } = {}) {
   // `distance` is accepted and deliberately unused: it is the caller's business whether the
   // creature is close enough to commit at all, and returning it here would put the moment
   // inside a value that is a property of the creature.
@@ -538,10 +603,12 @@ export function attackProfile(monster, { distance = 0 } = {}) {
   const level = Number.isFinite(monster?.level) ? monster.level : 1;
   const interval = Math.max(0.6, attackInterval({ level }));
   const heavy = Boolean(monster?.heavy) || level >= HEAVY_LEVEL;
-  const charge = Boolean(monster?.charge) || (heavy && interval >= CHARGE_INTERVAL);
-  // The split of the cadence. A charging blow spends more than half of its interval telling
-  // the player what it is; an ordinary one spends two fifths.
-  const windupShare = charge ? 0.55 : heavy ? 0.45 : 0.4;
+  const resolved = shape ?? attackShape(monster, { index, playerLevel, dashRoll });
+  const charge = resolved === 'dash';
+  const circle = resolved === 'circle';
+  // The split of the cadence. A committed lunge spends more than half of its interval telling
+  // the player what it is; the circle takes half, and an ordinary blow two fifths.
+  const windupShare = charge ? 0.55 : circle ? 0.5 : heavy ? 0.45 : 0.4;
   const windup = Math.max(0.25, interval * windupShare);
   const active = interval * 0.15;
   // The recovery is whatever is left, never negative — and the sum is the interval exactly,
@@ -557,7 +624,8 @@ export function attackProfile(monster, { distance = 0 } = {}) {
     reach,
     unblockable: charge,
     charge,
-    damageScale: charge ? 1.6 : heavy ? 1.25 : 1,
+    shape: resolved,
+    damageScale: charge ? 1.6 : circle ? 1.45 : heavy ? 1.25 : 1,
   };
 }
 
@@ -643,10 +711,11 @@ export function resolveDefence({ phase = 'active', intent = 'none', defence = 'n
 export function telegraphReading(profile, phase) {
   const reach = Number.isFinite(profile?.reach) ? profile.reach : REACH;
   const radius = Math.max(0, reach / CELL_SIZE);
-  const ground = Boolean(profile?.charge || profile?.unblockable);
-  if (phase?.phase === 'windup') return { ring: 'windup', colour: '#e0a03c', radiusInCells: radius, ground };
-  if (phase?.phase === 'active') return { ring: 'active', colour: '#d2402c', radiusInCells: radius, ground };
-  return { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false };
+  const shape = profile?.shape ?? (profile?.charge ? 'dash' : 'arc');
+  const ground = Boolean(profile?.charge || shape === 'circle');
+  if (phase?.phase === 'windup') return { ring: 'windup', colour: '#e0a03c', radiusInCells: radius, ground, shape };
+  if (phase?.phase === 'active') return { ring: 'active', colour: '#d2402c', radiusInCells: radius, ground, shape };
+  return { ring: 'none', colour: '#000000', radiusInCells: 0, ground: false, shape: 'none' };
 }
 
 /**

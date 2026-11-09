@@ -52,6 +52,8 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       if (!movie || movie.done) return movie;
       await page.pressKey('Escape');
       await page.pressKey('Escape', false);
+      await page.pressKey('Escape');
+      await page.pressKey('Escape', false);
       await page.waitFor('window.__debug.movie()?.done === true', { label: `skip ${movie.file}`, timeoutMs: 30000 });
       return await page.evalJs('window.__debug.movie()');
     };
@@ -204,7 +206,7 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       // port that stops answering after `1392` has lost seven of the eight beats.
       if (pieces >= 1) {
         const key = 1392 + pieces - 1;
-        await page.waitFor(`window.__debug.movie()?.textKey === ${key}`, { label: `Tharn’s answer to piece ${pieces}`, timeoutMs: 40000 });
+        await page.waitFor(`window.__debug.movie()?.textKey === ${key} && window.__debug.movie()?.file === "JAGAR.FLC"`, { label: `Tharn’s answer to piece ${pieces}`, timeoutMs: 40000 });
         const ambush = await page.evalJs('window.__debug.movie()');
         check(`piece ${pieces} is answered by Tharn (${key}), in his own movie, at the next encounter`,
           ambush?.textKey === key && ambush?.speaker === 'Jagar Tharn' && ambush?.file === 'JAGAR.FLC',
@@ -235,8 +237,13 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       check(`the map to ${stage.title} is found in ${stage.clue}`,
         clue.quest.mapKnown === true,
         clue.quest.mapKnown ? `mapKnown after ${clue.objective?.event}` : JSON.stringify(clue.quest.entries.at(-1)));
-      check(`the map in ${stage.clue} stands on dry, standable ground, never in a pool or a wall`,
-        clue.objective?.dry === true, JSON.stringify(clue.objective && { cell: [clue.objective.cellX, clue.objective.cellZ], dry: clue.objective.dry }));
+      // **On the level's own ground, not the margin its grid leaves around it** (`onMap`,
+      // `mifLevel.isVoidCell`). The Fortress of Ice's second storey is 64×58 of a 96×80 grid, and
+      // the map to Labyrinthian's piece used to be placed in that empty margin — the owner's
+      // *"in an non accessible place"*. Every clue and every piece is held to it here.
+      check(`the map in ${stage.clue} stands on dry, standable ground, never in a pool, a wall or the level’s empty margin`,
+        clue.objective?.dry === true && clue.objective?.onMap === true,
+        JSON.stringify(clue.objective && { cell: [clue.objective.cellX, clue.objective.cellZ], dry: clue.objective.dry, onMap: clue.objective.onMap }));
 
       await enter(`dungeon=${encodeURIComponent(stage.title)}&level=${staffLevels[pieces]}`);
       const piece = await takeWithE();
@@ -246,8 +253,9 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
         `pieces ${piece.quest.pieces}, step ${piece.quest.step}: ${piece.quest.entries.at(-1)}`);
       check(`the piece was taken from the deepest chamber of ${stage.title}`,
         (piece.objective?.depth ?? 0) > 5, `${piece.objective?.depth} cells deep of ${piece.objective?.cells} walkable`);
-      check(`piece ${pieces} stands on dry, standable ground`,
-        piece.objective?.dry === true, JSON.stringify(piece.objective && { cell: [piece.objective.cellX, piece.objective.cellZ], dry: piece.objective.dry }));
+      check(`piece ${pieces} stands on dry, standable ground, inside the level’s own canvas`,
+        piece.objective?.dry === true && piece.objective?.onMap === true,
+        JSON.stringify(piece.objective && { cell: [piece.objective.cellX, piece.objective.cellZ], dry: piece.objective.dry, onMap: piece.objective.onMap }));
 
       // The next sleep names the next place (`1294 + pieces`), exactly as the walkthrough has it.
       if (pieces === 1) {
@@ -269,15 +277,24 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
     await enter('interior=IMPPAL.MIF');
     // **His last answer comes first** (`1399`, the eighth piece): the palace is the next
     // encounter, so the vision he owes after Dagoth-Ur is not lost to the finale.
-    await page.waitFor('window.__debug.movie()?.textKey === 1399', { label: 'Tharn’s last answer', timeoutMs: 60000 });
+    await page.waitFor('window.__debug.movie()?.textKey === 1399 && window.__debug.movie()?.file === "JAGAR.FLC"', { label: 'Tharn’s last answer', timeoutMs: 60000 });
     const lastAnswer = await page.evalJs('window.__debug.movie()');
     check('the eighth piece is answered by Tharn (1399) at the palace, the next encounter',
       lastAnswer?.textKey === 1399 && lastAnswer?.speaker === 'Jagar Tharn' && lastAnswer?.file === 'JAGAR.FLC',
       JSON.stringify(lastAnswer && { file: lastAnswer.file, key: lastAnswer.textKey, speaker: lastAnswer.speaker }));
     await dismissMovie();
+    // **The reveal comes first** (`MORPH.FLC`): the palace gate is two films, Tharn's change
+    // of face and then his 1447 taunt. The reveal used to be unwired, so this is checked before
+    // the speech rather than assumed from the taunt's arrival.
+    await page.waitFor('window.__debug.movie()?.file === "MORPH.FLC"', { label: 'the palace reveal', timeoutMs: 30000 });
+    const reveal = await page.evalJs('window.__debug.movie()');
+    check('the palace gate first plays Tharn’s transformation (MORPH.FLC)',
+      reveal?.file === 'MORPH.FLC',
+      JSON.stringify(reveal && { file: reveal.file, frames: reveal.frameCount }));
+    await dismissMovie();
     // **Tharn's own words at the gate** (`1447`), in his own movie: he has watched the player
     // blunder here, and waits below.
-    await page.waitFor('window.__debug.movie()?.textKey === 1447', { label: 'Tharn at the palace gate', timeoutMs: 60000 });
+    await page.waitFor('window.__debug.movie()?.textKey === 1447 && window.__debug.movie()?.file === "JAGAR.FLC"', { label: 'Tharn at the palace gate', timeoutMs: 60000 });
     const palaceMovie = await dismissMovie();
     check('the palace then opens with Tharn’s own words at the gate (1447), and a key skips them',
       palaceMovie?.file === 'JAGAR.FLC' && palaceMovie?.textKey === 1447 && palaceMovie?.done === true,
@@ -316,6 +333,14 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       bottom.level === 3 && bottom.levelCount === 4, `level ${bottom.level + 1} · ${bottom.inf}`);
     check('the bottom level is the palace\'s fourth and final one',
       /IMPPAL4\.INF/i.test(bottom.inf), bottom.inf);
+    // **The last floor raises Tharn's shield before anything can be taken** (`JAGRSHLD.FLC`).
+    // A player who reaches the chamber sees it; the run observes it before the key's `E`.
+    await page.waitFor('window.__debug.movie()?.file === "JAGRSHLD.FLC"', { label: 'Tharn’s shield', timeoutMs: 30000 });
+    const shield = await page.evalJs('window.__debug.movie()');
+    check('the bottom floor raises Tharn’s shield over the Jewel (JAGRSHLD.FLC)',
+      shield?.file === 'JAGRSHLD.FLC',
+      JSON.stringify(shield && { file: shield.file, frames: shield.frameCount }));
+    await dismissMovie();
 
     // ── 4. the mithril key, the Jewel of Fire, and the Emperor ─────────────────
     const key = await takeWithE();
@@ -334,6 +359,12 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       jewel ? `key at ${key.objective.cellX},${key.objective.cellZ} · Jewel at ${jewel.cellX},${jewel.cellZ}` : 'no Jewel objective');
     await page.screenshot(path.join(shots, 'm5-finale-key.png'));
 
+    // **The boss waits for the Jewel.** This is the designed trigger: the chamber is empty of
+    // him until the Jewel is taken, and `takeObjective` starts the duel (`beginTharnDuel`).
+    const beforeJewel = await page.evalJs('window.__debug.combat().monsters.filter((m) => m.id === "jagartharn").length');
+    check('Jagar Tharn is not in the chamber before the Jewel is taken',
+      beforeJewel === 0, `${beforeJewel} Tharns before the Jewel`);
+
     const took = await takeWithE();
     check('the Jewel of Fire is taken with the key',
       took.quest.hasJewel === true, took.quest.entries.at(-1));
@@ -344,7 +375,7 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
       took.quest.ended === false, took.quest.entries.at(-1));
 
     // The Jewel's own beat is Tharn's cry (`1404`), and the chamber gets its boss.
-    await page.waitFor('window.__debug.movie()?.textKey === 1404', { label: 'the Jewel’s cry', timeoutMs: 30000 });
+    await page.waitFor('window.__debug.movie()?.textKey === 1404 && window.__debug.movie()?.file === "JAGAR.FLC"', { label: 'the Jewel’s cry', timeoutMs: 30000 });
     const cry = await page.evalJs('window.__debug.movie()');
     check('taking the Jewel is answered by Tharn’s own cry (1404)',
       cry?.file === 'JAGAR.FLC' && cry?.speaker === 'Jagar Tharn',
@@ -396,21 +427,41 @@ export function makeMainQuestSuite({ check, realErrors, shots, getPort }) {
     // is the caller). The written scene appears only when the movie is over, so this run
     // waits for it to be on screen, holds the world to the movie's own pause, then skips it
     // with a real key the way a player who has seen it does.
-    // The ending chains Tharn's fall (`JAGARDTH.FLC`) and then Arena's closing scene. A player
-    // who has seen the first skips it; the check below is about the second.
-    await page.waitFor('window.__debug.movie()?.file === "JAGARDTH.FLC"', { label: 'Tharn\'s fall', timeoutMs: 30000 });
-    const fall = await dismissMovie();
-    check('the last blow plays Tharn\'s own fall before the ending', fall?.file === 'JAGARDTH.FLC' && fall?.skipped === true,
-      JSON.stringify(fall && { file: fall.file, skipped: fall.skipped }));
-    await page.waitFor('window.__debug.movie()?.file === "END01.FLC"', { label: 'the closing movie', timeoutMs: 30000 });
-    const closing = await page.evalJs('window.__debug.movie()');
+    // **The whole closing chain, in the release's order.** This install carries the CD
+    // revision, so Tharn's fall is `NUJAGDTH.FLC` paired with `NUKING.FLC`; an install with
+    // only the originals gets `JAGARDTH.FLC`/`KING.FLC` (`endingMoviesFor`). Every film is
+    // observed and skipped the way a player who has seen it does.
+    const expectedEnding = ['NUJAGDTH.FLC', 'NUKING.FLC', 'END01.FLC', 'END02.FLC', 'AFLC2.FLC'];
+    const endingMovies = [];
+    let fall = null;
+    let closing = null;
+    for (const file of expectedEnding) {
+      await page.waitFor(`window.__debug.movie()?.file === "${file}"`, { label: file, timeoutMs: 30000 });
+      const movie = await page.evalJs('window.__debug.movie()');
+      endingMovies.push(movie?.file ?? null);
+      check(`the ending chain plays ${file} in order`,
+        movie?.file === file && (movie?.frameCount ?? 0) > 0,
+        JSON.stringify(movie && { file: movie.file, frames: movie.frameCount }));
+      if (file === 'NUJAGDTH.FLC') {
+        fall = await dismissMovie();
+        check('the last blow plays Tharn\'s own fall before the ending',
+          fall?.file === 'NUJAGDTH.FLC' && fall?.skipped === true,
+          JSON.stringify(fall && { file: fall.file, skipped: fall.skipped }));
+      } else {
+        if (file === 'END01.FLC') {
+          closing = movie;
+          check('and the world is held still while it plays, the way the menu holds it',
+            await page.evalJs('window.__debug.state().paused === true'));
+        }
+        await dismissMovie();
+      }
+      await settle(250);
+    }
+    check('the ending chain is the whole five-film sequence',
+      endingMovies.join(' → ') === expectedEnding.join(' → '), endingMovies.join(' → '));
     check('the ending plays the install\'s own closing movie, decoded from its own header',
       closing?.file === 'END01.FLC' && closing.frameCount > 0 && closing.width === 320 && closing.height === 200,
       JSON.stringify(closing && { file: closing.file, frames: closing.frameCount, size: [closing.width, closing.height], delay: closing.delayMs }));
-    check('and the world is held still while it plays, the way the menu holds it',
-      await page.evalJs('window.__debug.state().paused === true'));
-    await page.pressKey('Escape');
-    await page.pressKey('Escape', false);
     await page.waitFor('window.__debug.ending().shown === true', { label: 'the ending page', timeoutMs: 30000 });
     const ending = await page.evalJs('window.__debug.ending()');
     check('the ending is on screen, not just in memory', ending?.shown === true, JSON.stringify(ending?.reached));

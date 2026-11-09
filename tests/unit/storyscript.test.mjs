@@ -17,9 +17,9 @@ import { vocSeconds } from '../../src/arena/vocFile.js';
 import { STORY_SPEECH, narrationClips, narrationFiles, narrationMs } from '../../src/arena/storySpeech.js';
 import { STORY_LINES } from '../../src/game/storyLines.js';
 import {
-  CELL_DREAM, DEATH_TEXT, EMPEROR_THANKS, ETERNAL_CHAMPION, JEWEL_BRIEFING, JEWEL_CRY, PALACE_TAUNT,
-  QUEST_OPENING, STORY_BEATS, dueAmbush, dueCellDream, dueDream, riaDreamFor, storyKeys, storyMovie,
-  storySpeaker, storyText, tharnAmbushFor,
+  CELL_DREAM, DEATH_TEXT, DEATH_TEXT_BAD, EMPEROR_THANKS, ETERNAL_CHAMPION, JEWEL_BRIEFING, JEWEL_CRY,
+  PALACE_TAUNT, QUEST_OPENING, STORY_BEATS, dueAmbush, dueCellDream, dueDeathScene, dueDream,
+  riaDreamFor, storyKeys, storyMovie, storySpeaker, storyText, tharnAmbushFor,
 } from '../../src/game/storyScript.js';
 
 const ARENA = process.env.ARENA_PATH || 'C:/arenaproject/arena/ARENA';
@@ -51,6 +51,23 @@ test('death is Ria’s, and it is the install’s own line', { skip: !INSTALL &&
   assert.equal(narrationMs(DEATH_TEXT), 15450);
   const [entry] = templateEntries(parseTemplateDat(new Uint8Array(fs.readFileSync(TEMPLATE))), DEATH_TEXT);
   assert.equal(STORY_LINES[DEATH_TEXT], templateStrings(entry.value).join(' ').trim());
+});
+
+test('the other death is Tharn’s while the quest runs, and Ria’s once it is over', { skip: !INSTALL && 'no install' }, () => {
+  // UESP's *Imperial Palace*: "Jagar Tharn's 'game over' cutscene" plays after a death during
+  // the main quest and stops once the Emperor is free. `1403` is that speech; the install
+  // carries four `1403_*` clips (22.447 s), so it is spoken, not mimed.
+  assert.equal(DEATH_TEXT_BAD, 1403);
+  assert.equal(storySpeaker(DEATH_TEXT_BAD), 'Jagar Tharn');
+  assert.equal(storyMovie(DEATH_TEXT_BAD), 'JAGAR.FLC');
+  assert.match(storyText(DEATH_TEXT_BAD), /serve me well/);
+  assert.equal(narrationClips(DEATH_TEXT_BAD), 4);
+  assert.equal(narrationMs(DEATH_TEXT_BAD), 22447);
+  assert.equal(dueDeathScene({ step: 0, pieces: 0 }), DEATH_TEXT, 'a death in the cell is Ria\'s');
+  assert.equal(dueDeathScene({ step: 1, pieces: 0 }), DEATH_TEXT_BAD, 'the quest starts at the escape');
+  assert.equal(dueDeathScene({ pieces: 1 }), DEATH_TEXT_BAD);
+  assert.equal(dueDeathScene({ pieces: 8 }), DEATH_TEXT_BAD);
+  assert.equal(dueDeathScene({ pieces: 8, ended: true }), DEATH_TEXT, 'Tharn is gone after the ending');
 });
 
 test('the script carries exactly the beats the quest needs', () => {
