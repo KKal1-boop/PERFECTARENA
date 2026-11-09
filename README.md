@@ -9,15 +9,12 @@ at runtime from **your** Arena install; nothing game-owned is bundled.
 |---|---|
 | Main quest | Imperial Dungeons → eight Staff pieces → palace finale; **Arena's own movies** play at its beats (`VISION.FLC` on the escape, `END01.FLC` before the ending page), and the ending is in Arena's words |
 | World | All 288 settlements and all 144 dungeons reachable (128 dungeon maps assembled from data) |
-| Combat | Soulslike: telegraphed world-space windups, real dodge rolls with i-frames, a timed parry that opens a riposte window, charges you must dodge, bounded particles. Daggerfall's fight readout: floating hit/miss/critical/heal numbers, a reticle hit marker, a 0.4-alpha damage flash, and a target card with a ghost health bar |
+| Combat | Soulslike: telegraphed world-space windups, real dodge rolls with i-frames, a timed parry that opens a riposte window, charges you must dodge, bounded particles.
 | Enemies | Original `.CFA` art, per-actor walk/attack/death playback, charges labelled, sight checks; bounties are real fights |
 | Dungeons | Correct wall orientation, animated `.DFA` fixtures, loot that pays once, safe resting on `R`; keys carry Arena's type id (`(lockLevel - 1) % 12`), are spent when a lock turns, cap at twelve slots, and clear at a stair. Staff dungeons put up their own `DUNGEON.TXT` arrival page and carry `STAFDUNG.CIF`'s province mark on the map |
 | Towns | Day/night, people that walk schedules and work a regard ledger, jobs from people and boards |
 | Persistence | Character, quest, bounty progress, loot, door and regard state survive reloads |
 | Cutscenes | All 17 of the install's own 320×200 `.FLC` movies, played at the file's own frame delay, any key to skip. The start-up book (`INTRO`), the pre-title scroll cards, New Game's opening scroll and nine-panel history, Ria's and Tharn's visions, the Staff's assembly, the palace reveal and shield, and the whole ending chain (`NUJAGDTH`/`JAGARDTH` → `NUKING`/`KING` → `END01` → `END02` → `AFLC2`) are wired. `?cutscene=…` plays every film, including the cut Warhaft slide and the CD alternates |
-
-See [docs/PROGRESS.md](docs/PROGRESS.md) for what is claimed vs. proved, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for what must happen next.
 
 ## Run
 
